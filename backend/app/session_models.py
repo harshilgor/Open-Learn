@@ -42,6 +42,7 @@ class TeachingIntent(StrEnum):
     visualize = "visualize"
     check_understanding = "check_understanding"
     resume = "resume"
+    deepen = "deepen"
 
 
 class SessionCreate(ApiModel):
@@ -107,6 +108,7 @@ class TeachingActionInput(ApiModel):
     anchor: BranchAnchor | None = None
     expected_state_version: int | None = Field(default=None, ge=1)
     curriculum_version: int | None = Field(default=None, ge=1)
+    supersedes_action_id: str | None = Field(default=None, max_length=160)
 
     @field_validator("message")
     @classmethod
@@ -135,6 +137,13 @@ class LessonBlock(ApiModel):
     trust: ConceptTrust = Field(default_factory=ConceptTrust)
     order: int = Field(ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SessionGearUpdate(ApiModel):
+    """An explicit preference change; it never rewrites an in-flight lesson."""
+
+    gear: TeachingGear
+    expected_state_version: int | None = Field(default=None, ge=1)
 
 
 class LessonArtifact(ApiModel):

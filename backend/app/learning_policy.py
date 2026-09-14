@@ -25,12 +25,19 @@ from .policy_models import (
 from .session_models import LearningSession, TeachingGear, TeachingIntent
 
 
-POLICY_VERSION = "teaching_policy_v1"
+POLICY_VERSION = "teaching_policy_v2"
 DEFAULT_MAX_PREREQUISITE_DEPTH = 4
 DEFAULT_MAX_PREREQUISITE_NODES = 12
 
 
-def resolve_teaching_profile(gear: TeachingGear, intent: TeachingIntent) -> ResolvedTeachingProfile:
+def resolve_teaching_profile(
+    gear: TeachingGear,
+    intent: TeachingIntent,
+    *,
+    has_block_anchor: bool = False,
+    has_selection_anchor: bool = False,
+    is_branch: bool = False,
+) -> ResolvedTeachingProfile:
     """Compile the persistent gear and one local action into explicit dimensions."""
 
     defaults = {
@@ -40,7 +47,8 @@ def resolve_teaching_profile(gear: TeachingGear, intent: TeachingIntent) -> Reso
             step_size="large",
             derivation="none",
             example_mode="optional",
-            response_mode="brief_opportunity",
+            response_mode="brief_opportunity", include_intuition=False, include_assumptions=False,
+            include_connections=False, max_examples=1, response_opportunity_kind="brief",
         ),
         TeachingGear.guided: dict(
             depth="scaffolded",
@@ -48,7 +56,8 @@ def resolve_teaching_profile(gear: TeachingGear, intent: TeachingIntent) -> Reso
             step_size="manageable",
             derivation="when_needed",
             example_mode="worked",
-            response_mode="guided_opportunity",
+            response_mode="guided_opportunity", include_intuition=True, include_assumptions=False,
+            include_connections=True, max_examples=1, response_opportunity_kind="guided",
         ),
         TeachingGear.deep: dict(
             depth="mechanistic",
@@ -56,11 +65,13 @@ def resolve_teaching_profile(gear: TeachingGear, intent: TeachingIntent) -> Reso
             step_size="fine",
             derivation="include",
             example_mode="worked_with_boundaries",
-            response_mode="independent_opportunity",
+            response_mode="independent_opportunity", include_intuition=True, include_assumptions=True,
+            include_connections=True, max_examples=2, response_opportunity_kind="independent",
         ),
     }
     values = defaults[gear].copy()
     local_override = None if intent == TeachingIntent.teach else intent.value
+    visual_spec_kind = None
     visualize_format = "none"
     if intent == TeachingIntent.simplify:
         # Depth and derivation remain owned by the gear. This makes Deep +
@@ -69,13 +80,20 @@ def resolve_teaching_profile(gear: TeachingGear, intent: TeachingIntent) -> Reso
     elif intent == TeachingIntent.example:
         values["example_mode"] = "worked_with_boundaries"
     elif intent == TeachingIntent.visualize:
+        visual_spec_kind = "relationship_diagram"
         visualize_format = "relationship_diagram_with_text"
     elif intent == TeachingIntent.check_understanding:
         values["response_mode"] = "independent_opportunity"
+        values["response_opportunity_kind"] = "independent"
+    elif intent in {TeachingIntent.why, TeachingIntent.deepen}:
+        values.update(include_assumptions=True, include_connections=True)
+    anchor_scope = "branch" if is_branch else "selection" if has_selection_anchor else "block" if has_block_anchor else "lesson"
     return ResolvedTeachingProfile(
         gear=gear.value,
         local_override=local_override,
+        visual_spec_kind=visual_spec_kind,
         visualize_format=visualize_format,
+        anchor_scope=anchor_scope,
         **values,
     )
 
@@ -112,6 +130,9 @@ def assemble_action_context(
     intent: TeachingIntent,
     gear: TeachingGear,
     learner_graph: LearnerGraph,
+    has_block_anchor: bool = False,
+    has_selection_anchor: bool = False,
+    is_branch: bool = False,
 ) -> ActionContext:
     target = next(concept for concept in graph.concepts if concept.id == target_concept_id)
     return ActionContext(
@@ -131,7 +152,7 @@ def assemble_action_context(
             current_lesson_id=session.current_lesson_id,
             state_version=session.state_version,
         ),
-        teaching_profile=resolve_teaching_profile(gear, intent),
+        teaching_profile=resolve_teaching_profile(gear, intent, has_block_anchor=has_block_anchor, has_selection_anchor=has_selection_anchor, is_branch=is_branch),
         learner_evidence=_evidence_projection(graph, learner_graph),
         request_intent=intent.value,
         requires_edges=[
@@ -279,7 +300,7 @@ def _base_representations(profile: ResolvedTeachingProfile) -> list[str]:
 def _apply_local_override(sequence: list[str], intent: TeachingIntent) -> list[str]:
     if intent == TeachingIntent.simplify:
         return ["plain_language_definition", *sequence]
-    if intent == TeachingIntent.why:
+    if intent in {TeachingIntent.why, TeachingIntent.deepen}:
         return ["causal_or_logical_justification", *sequence]
     if intent == TeachingIntent.example:
         return ["worked_example", "explicit_assumptions", "checked_result", "response_opportunity"]
@@ -407,6 +428,11 @@ def validate_teaching_plan(graph: GraphVersion, context: ActionContext, plan: Te
             PrerequisiteOutcome.unsupported not in plan.prerequisite_resolution.outcomes or plan.limited
         ),
         "deterministic_provider_is_qualified": plan.limited,
+        "profile_is_auditable": bool(plan.teaching_profile.profile_version) and bool(plan.plan_version),
+        "check_withholds_answer": (
+            context.request_intent != TeachingIntent.check_understanding.value
+            or plan.representation_sequence == ["independent_check"]
+        ),
     }
     accepted = all(checks.values())
     outcome = "rejected" if not accepted else ("accepted_limited" if plan.limited else "accepted")

@@ -33,6 +33,7 @@ from .session_models import (
     LearningSession,
     RunStatus,
     SessionCreate,
+    SessionGearUpdate,
     TeachingActionInput,
 )
 from .state_models import StateEventCreate
@@ -203,6 +204,19 @@ def get_learning_session(session_id: str, db: Store = Depends(get_store)) -> Lea
     return session
 
 
+@app.patch("/v1/sessions/{session_id}/gear", response_model=LearningSession)
+def update_session_gear(session_id: str, request: SessionGearUpdate, db: Store = Depends(get_store)) -> LearningSession:
+    """Persist a preference for future actions without rewriting existing lessons."""
+    session = db.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
+    if request.expected_state_version is not None and request.expected_state_version != session.state_version:
+        raise HTTPException(status_code=409, detail={"code": "stale_session", "message": "The session changed; reload it before changing Teaching Gear."})
+    updated = session.model_copy(update={"gear": request.gear, "state_version": session.state_version + 1, "updated_at": utc_now()})
+    db.save_session(updated)
+    return updated
+
+
 @app.post("/v1/sessions/{session_id}/actions", response_model=RunStatus, status_code=status.HTTP_202_ACCEPTED)
 def create_teaching_action(
     session_id: str,
@@ -225,6 +239,12 @@ def create_teaching_action(
         existing = db.get_action_by_idempotency(session_id, idempotency_key)
         if existing is not None:
             return existing
+    if request.supersedes_action_id:
+        superseded = db.get_action(request.supersedes_action_id)
+        if superseded and superseded.session_id == session.id and superseded.status not in {ActionStatus.qualified_response, ActionStatus.delivered, ActionStatus.failed, ActionStatus.cancelled}:
+            cancelled = superseded.model_copy(update={"status": ActionStatus.cancelled, "message": "Replaced by a newer action for this anchor.", "updated_at": utc_now()})
+            db.save_action(cancelled)
+            _event(db, cancelled.run_id, 98, "action.cancelled", {"superseded_by": "pending"})
     graph = db.get_graph(session.graph_id)
     if graph is None:
         raise HTTPException(status_code=409, detail={"code": "graph_unavailable", "message": "The session's graph is no longer available."})
@@ -258,6 +278,9 @@ def create_teaching_action(
             intent=intent,
             gear=selected_gear,
             learner_graph=learner_projection,
+            has_block_anchor=bool(request.parent_block_id or request.anchor and request.anchor.block_id),
+            has_selection_anchor=bool(request.anchor and request.anchor.selected_text),
+            is_branch=bool(request.parent_lesson_id),
         )
         action = action.model_copy(update={"status": ActionStatus.context_ready, "progress": 30, "action_context": action_context, "message": "Graph, position, gear, evidence, and intent context assembled.", "updated_at": utc_now()})
         db.save_action(action, idempotency_key)
@@ -307,7 +330,7 @@ def create_teaching_action(
         action = action.model_copy(update={"status": ActionStatus.qualified_response, "progress": 100, "lesson": artifact, "message": "Lesson ready as a limited deterministic scaffold; no correctness or mastery claim was made.", "updated_at": utc_now()})
         db.save_action(action, idempotency_key)
         _event(db, action_id, 7, "lesson.completed", {"lesson_id": artifact.id, "qualified": True, "evidence_created": False, "mastery_updated": False})
-        updated_session = session.model_copy(update={"current_concept_id": concept.id, "current_lesson_id": artifact.id, "gear": selected_gear, "state_version": session.state_version + 1, "updated_at": utc_now()})
+        updated_session = session.model_copy(update={"current_concept_id": concept.id, "current_lesson_id": artifact.id, "state_version": session.state_version + 1, "updated_at": utc_now()})
         db.save_session(updated_session)
         LearnerStateService(db).append_event(
             session.learner_id,
@@ -337,6 +360,20 @@ def get_teaching_action(run_id: str, db: Store = Depends(get_store)) -> RunStatu
     if action is None:
         raise HTTPException(status_code=404, detail={"code": "action_not_found", "message": "Teaching action does not exist."})
     return action
+
+
+@app.post("/v1/runs/{run_id}/cancel", response_model=RunStatus)
+def cancel_teaching_action(run_id: str, db: Store = Depends(get_store)) -> RunStatus:
+    """Cancel a pending action. Completed artifacts are immutable history."""
+    action = db.get_action(run_id)
+    if action is None:
+        raise HTTPException(status_code=404, detail={"code": "action_not_found", "message": "Teaching action does not exist."})
+    if action.status in {ActionStatus.qualified_response, ActionStatus.delivered, ActionStatus.failed, ActionStatus.cancelled}:
+        return action
+    cancelled = action.model_copy(update={"status": ActionStatus.cancelled, "message": "Action cancelled.", "updated_at": utc_now()})
+    db.save_action(cancelled)
+    _event(db, run_id, 98, "action.cancelled", {"reason": "learner_cancelled"})
+    return cancelled
 
 
 @app.get("/v1/teaching-plans/{plan_id}", response_model=TeachingPlan)

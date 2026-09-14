@@ -65,10 +65,30 @@ def _representation_block(representation: str, graph: GraphVersion, concept: Con
     }
     check_like = representation in {"brief_response_opportunity", "guided_response_opportunity", "independent_response_opportunity", "response_opportunity", "independent_check"}
     kind = "example" if representation in {"worked_example", "explicit_assumptions", "checked_result"} else "visual" if representation == "relationship_diagram" else "check" if check_like else "explanation"
+    metadata = {"representation": representation, "policyVersion": plan.policy_version, "planId": plan.id}
+    if representation == "relationship_diagram":
+        # This is deliberately data-only. The browser renders a small allowlisted
+        # vocabulary and never receives model-produced HTML, SVG, or JavaScript.
+        metadata["visualSpec"] = {
+            "kind": "relationship_diagram",
+            "title": concept.title,
+            "nodes": [
+                {"id": "concept", "label": concept.title},
+                {"id": "relationship", "label": "key relationship"},
+                {"id": "outcome", "label": "observable consequence"},
+            ],
+            "edges": [
+                {"from": "concept", "to": "relationship", "label": "explains"},
+                {"from": "relationship", "to": "outcome", "label": "leads to"},
+            ],
+            "textEquivalent": f"{concept.title} explains a key relationship, which leads to an observable consequence.",
+        }
+    if representation in {"independent_check", "brief_response_opportunity", "guided_response_opportunity", "independent_response_opportunity", "response_opportunity"}:
+        metadata.update({"answerWithheld": True, "privateEvaluatorRef": "not_configured"})
     return LessonBlock(
         id=f"block_{uuid4().hex[:10]}", kind=kind, heading=representation.replace("_", " ").title(), body=bodies[representation],
         concept_ids=[concept.id], source_ids=list(concept.source_ids), trust=_trust(concept), order=order,
-        metadata={"representation": representation, "policyVersion": plan.policy_version},
+        metadata=metadata,
     )
 
 

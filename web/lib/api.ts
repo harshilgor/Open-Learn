@@ -132,6 +132,31 @@ export type LessonBlock = {
   sourceIds: string[];
   trust: ConceptTrust;
   order: number;
+  metadata?: {
+    representation?: string;
+    answerWithheld?: boolean;
+    visualSpec?: VisualSpec;
+    [key: string]: unknown;
+  };
+};
+
+export type VisualSpec = {
+  kind: 'relationship_diagram' | 'comparison_table' | 'number_line' | 'worked_structure' | 'validated_plot';
+  title: string;
+  textEquivalent: string;
+  nodes?: Array<{ id: string; label: string }>;
+  edges?: Array<{ from: string; to: string; label: string }>;
+};
+
+export type ResolvedTeachingProfile = {
+  gear: Gear;
+  depth: 'essential' | 'scaffolded' | 'mechanistic';
+  abstraction: 'accessible' | 'balanced' | 'technical';
+  stepSize: 'large' | 'manageable' | 'fine';
+  localOverride?: string | null;
+  anchorScope: 'lesson' | 'block' | 'selection' | 'branch';
+  visualSpecKind?: VisualSpec['kind'] | null;
+  profileVersion: string;
 };
 
 export type LessonArtifact = {
@@ -144,6 +169,7 @@ export type LessonArtifact = {
   nextAction?: 'continue' | 'check_understanding' | 'repair_prerequisite' | 'review' | null;
   status: 'pending' | 'approved' | 'qualified' | 'failed' | 'cancelled';
   verificationRunId?: string | null;
+  teachingPlanId?: string | null;
 };
 
 export type LearningSession = {
@@ -154,6 +180,7 @@ export type LearningSession = {
   currentConceptId?: string | null;
   currentLessonId?: string | null;
   stateVersion: number;
+  gear: Gear;
 };
 
 export type BranchAnchor = {
@@ -180,18 +207,20 @@ export type TeachingIntent =
   | 'why'
   | 'visualize'
   | 'check_understanding'
-  | 'resume';
+  | 'resume'
+  | 'deepen';
 
 export type TeachingActionInput = {
   intent: TeachingIntent;
   conceptId: string;
-  gear: Gear;
+  gear?: Gear | null;
   message?: string | null;
   parentLessonId?: string | null;
   parentBlockId?: string | null;
   anchor?: BranchAnchor | null;
   expectedStateVersion?: number | null;
   curriculumVersion?: number | null;
+  supersedesActionId?: string | null;
 };
 
 export type RunStatus = {
@@ -200,6 +229,7 @@ export type RunStatus = {
   progress?: number | null;
   message?: string | null;
   lesson?: LessonArtifact | null;
+  teachingPlan?: { teachingProfile: ResolvedTeachingProfile; representationSequence: string[] } | null;
 };
 
 export type AttemptInput = {
@@ -363,8 +393,12 @@ export const learningApi = {
     return request<KnowledgeGraph>(`/v1/graphs/${encodeURIComponent(graphId)}${suffix}`, { signal: params.signal });
   },
 
-  createSession(input: { graphId: string; graphRevision?: number; goal?: string }): Promise<LearningSession> {
+  createSession(input: { graphId: string; graphRevision?: number; goal?: string; gear?: Gear }): Promise<LearningSession> {
     return request<LearningSession>('/v1/sessions', { method: 'POST', body: JSON.stringify(input) });
+  },
+
+  updateSessionGear(sessionId: string, input: { gear: Gear; expectedStateVersion?: number | null }): Promise<LearningSession> {
+    return request<LearningSession>(`/v1/sessions/${encodeURIComponent(sessionId)}/gear`, { method: 'PATCH', body: JSON.stringify(input) });
   },
 
   teachingAction(sessionId: string, input: TeachingActionInput, options?: { signal?: AbortSignal; idempotencyKey?: string }): Promise<RunStatus> {

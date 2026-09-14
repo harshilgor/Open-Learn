@@ -190,6 +190,7 @@ def test_each_local_action_is_a_typed_local_override_not_a_prose_hint():
         "visualize": "relationship_diagram",
         "resume": "position_recap",
         "check_understanding": "independent_check",
+        "deepen": "causal_or_logical_justification",
     }
     for intent, representation in expected_first.items():
         graph, session = make_graph_and_session(topic=intent, gear="Deep")
@@ -203,6 +204,46 @@ def test_each_local_action_is_a_typed_local_override_not_a_prose_hint():
             assert profile["abstraction"] == "accessible"
         if intent == "visualize":
             assert profile["visualizeFormat"] == "relationship_diagram_with_text"
+
+
+def test_profiles_expose_semantic_dimensions_and_safe_visual_data():
+    graph, session = make_graph_and_session(topic="visual-policy", gear="Deep")
+    visual = post_action(session, graph, intent="visualize").json()
+    profile = visual["teachingPlan"]["teachingProfile"]
+    assert profile["profileVersion"] == "teaching_profile_v2"
+    assert profile["visualSpecKind"] == "relationship_diagram"
+    assert profile["includeAssumptions"] is True
+    block = next(item for item in visual["lesson"]["blocks"] if item["kind"] == "visual")
+    spec = block["metadata"]["visualSpec"]
+    assert spec["kind"] == "relationship_diagram"
+    assert "textEquivalent" in spec
+    assert "html" not in spec and "javascript" not in spec
+
+
+def test_session_gear_changes_future_actions_without_rewriting_prior_lesson():
+    graph, session = make_graph_and_session(topic="gear-persistence")
+    first = post_action(session, graph).json()
+    update = client.patch(
+        f"/v1/sessions/{session['id']}/gear",
+        json={"gear": "Deep", "expectedStateVersion": first["lesson"] and 2},
+    )
+    assert update.status_code == 200
+    assert update.json()["gear"] == "Deep"
+    assert client.get(f"/v1/lessons/{first['lesson']['id']}").json()["gear"] == "Guided"
+    later = post_action(update.json(), graph).json()
+    assert later["teachingPlan"]["teachingProfile"]["gear"] == "Deep"
+
+
+def test_check_blocks_withhold_answers_and_do_not_create_evidence():
+    learner_id = f"learner-{uuid4().hex}"
+    graph, session = make_graph_and_session(topic="check-policy", learner_id=learner_id)
+    before = client.get(f"/v1/learners/{learner_id}/knowledge-graph").json()
+    action = post_action(session, graph, intent="check_understanding").json()
+    check = action["lesson"]["blocks"][0]
+    assert check["metadata"]["answerWithheld"] is True
+    assert check["metadata"]["privateEvaluatorRef"] == "not_configured"
+    after = client.get(f"/v1/learners/{learner_id}/knowledge-graph").json()
+    assert after["state_version"] == before["state_version"]
 
 
 def test_idempotent_retry_does_not_duplicate_plan_artifact_or_events():

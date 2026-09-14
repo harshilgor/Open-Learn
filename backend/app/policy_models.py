@@ -88,8 +88,17 @@ class ResolvedTeachingProfile(ApiModel):
     derivation: Literal["none", "when_needed", "include"]
     example_mode: Literal["optional", "worked", "worked_with_boundaries"]
     response_mode: Literal["brief_opportunity", "guided_opportunity", "independent_opportunity"]
-    local_override: str | None = None
+    local_override: Literal["simplify", "why", "example", "visualize", "check_understanding", "resume", "deepen"] | None = None
+    include_intuition: bool = False
+    include_assumptions: bool = False
+    include_connections: bool = False
+    max_examples: int = Field(ge=0, le=2)
+    response_opportunity_kind: Literal["brief", "guided", "independent"] = "brief"
+    anchor_scope: Literal["lesson", "block", "selection", "branch"] = "lesson"
+    visual_spec_kind: Literal["relationship_diagram", "comparison_table", "number_line", "worked_structure", "validated_plot"] | None = None
+    # Kept for existing API consumers while visual_spec_kind becomes the typed contract.
     visualize_format: Literal["none", "relationship_diagram_with_text"] = "none"
+    profile_version: str = "teaching_profile_v2"
 
 
 class ActionContext(ApiModel):
@@ -141,6 +150,7 @@ class TeachingPlan(ApiModel):
     action_id: str
     session_id: str
     policy_version: str
+    plan_version: str = "teaching_plan_v2"
     context_schema_version: str
     target_concept_id: str
     target_objective: str
