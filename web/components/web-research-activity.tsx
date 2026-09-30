@@ -1,7 +1,8 @@
 "use client";
 
 import { useId } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import styles from './web-research-activity.module.css';
 
 export type AgentActivity =
@@ -265,7 +266,7 @@ function WritingVisual({ reduceMotion }: { reduceMotion: boolean | null }) {
 }
 
 export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useAppReducedMotion();
 
   if (!activity) return null;
 

@@ -6,12 +6,13 @@ import { learningApi, friendlyServiceError, type AnalyticsDimension, type UsageA
 import { formatCompactTokens, formatFullTokens } from './usage-settings';
 import styles from './usage-analytics.module.css';
 
-const SERIES_COLORS = ['#2f6fed', '#e08a3c', '#5da271', '#9a6fb0', '#3aa79b', '#8b8e86'];
+const SERIES_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)'];
 
 const DIMENSIONS: { id: AnalyticsDimension; label: string }[] = [
   { id: 'mode', label: 'By feature' },
   { id: 'model', label: 'By model' },
   { id: 'provider', label: 'By provider' },
+  { id: 'course', label: 'By course' },
 ];
 
 function colorFor(index: number): string {
@@ -192,7 +193,7 @@ function TrendChart({ days, lines, formatValue }: {
           <g>
             <line x1={x(hover)} x2={x(hover)} y1={padTop} y2={height - padBottom} className={styles.guide} />
             {lines.map(line => (
-              <circle key={line.key} cx={x(hover)} cy={y(line.values[hover] || 0)} r={3.5} fill={line.color} stroke="#fbfcf9" strokeWidth={1.5} />
+              <circle key={line.key} cx={x(hover)} cy={y(line.values[hover] || 0)} r={3.5} fill={line.color} stroke="var(--card)" strokeWidth={1.5} />
             ))}
           </g>
         ) : null}

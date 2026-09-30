@@ -12,7 +12,7 @@ from .note_draft_models import CreateNoteDraft, NoteDraftReplaceCommand
 from .note_draft_service import NoteDraftService
 from .study_note_models import ProposalCreate
 from .study_note_service import StudyNoteService
-from .mode_transition_models import ModeTransitionInteraction
+from .mode_transition_models import ModeClassificationRequest, ModeTransitionInteraction, ModeTransitionResponse
 from .mode_transition_service import ModeTransitionService
 
 
@@ -100,17 +100,57 @@ def build_learning_router(store_provider, provider_getter):
     def get_journey(sid: str, owner=Depends(material_owner), db=Depends(store_provider)):
         return JourneyService(db, provider_getter()).get(owner, sid)
 
+    @router.post("/sessions/{sid}/mode-classification")
+    def classify_mode(sid: str, command: ModeClassificationRequest, owner=Depends(material_owner), db=Depends(store_provider)):
+        session = MaterialService(db).session(owner, sid)
+        journey = JourneyService(db, None).get(owner, sid)
+        transitions = ModeTransitionService(db)
+        provider = provider_getter() if __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "rules").lower() == "provider" else None
+        if command.bypass_suggestion_id:
+            if not transitions.valid_bypass(owner, sid, command.bypass_suggestion_id):
+                problem("transition_unavailable", "This transition request has expired.", 409)
+            # A bypass only suppresses the same one-shot classification after the
+            # learner chose to continue in the current mode. It does not change mode.
+            result = transitions.classify(command.message, journey.get("turns", []),
+                command.current_mode, session_id=sid, owner=owner, concept_title=journey.get("steps", [{}])[journey.get("position", 0)].get("title") if journey.get("steps") else session.goal,
+                course_id=session.course_id, provider=provider, bypass_suggestion_id=command.bypass_suggestion_id)
+        else:
+            graph = db.get_graph(session.graph_id)
+            step = journey.get("steps", [])
+            position = min(journey.get("position", 0), max(0, len(step) - 1))
+            concept_title = step[position].get("title") if step else (graph.title if graph else session.goal)
+            concept_id = step[position].get("conceptId") if step else session.current_concept_id
+            result = transitions.classify(command.message, journey.get("turns", []),
+                command.current_mode, session_id=sid, owner=owner, concept_title=concept_title,
+                concept_id=concept_id, course_id=session.course_id, provider=provider)
+        if result.suggestion:
+            suggestion = result.suggestion.model_copy(update={"source_turn_id": f"request:{sid}:{journey.get('revision', 1)}",
+                "mode_revision": journey.get("modeRevision", 1)})
+            result.suggestion = suggestion
+            transitions.attach_suggestion_metadata(owner, sid, suggestion)
+        return result.model_dump(mode="json", by_alias=True)
+
+    @router.get("/sessions/{sid}/mode-transition")
+    def pending_mode_transition(sid: str, owner=Depends(material_owner), db=Depends(store_provider)):
+        MaterialService(db).session(owner, sid)
+        return {"pending": ModeTransitionService(db).pending(owner, sid)}
+
     @router.post("/sessions/{sid}/journey", status_code=202)
     def journey(sid: str, command: JourneyCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
         MaterialService(db).session(owner, sid)
         return enqueue(tasks, db, owner, sid, "journey", command.model_dump(mode="json"), key)
 
     @router.post("/sessions/{sid}/transition-interaction")
-    def transition_interaction(sid: str, interaction: ModeTransitionInteraction, owner=Depends(material_owner), db=Depends(store_provider)):
+    def transition_interaction(sid: str, interaction: ModeTransitionResponse, owner=Depends(material_owner), db=Depends(store_provider)):
         MaterialService(db).session(owner, sid)
-        interaction.session_id = sid
-        ModeTransitionService(db).record_interaction(owner, interaction)
-        return {"status": "ok"}
+        try:
+            result = ModeTransitionService(db).transition_interaction(owner, sid, ModeTransitionInteraction(
+                suggestion_id=interaction.suggestion_id, action=interaction.action,
+                target_mode=interaction.target_mode, session_id=sid),
+                expected_mode_revision=interaction.expected_mode_revision)
+        except ValueError as exc:
+            problem("transition_unavailable", str(exc), 409)
+        return result
 
     @router.get("/sessions/{sid}/transition-gap")
     def transition_gap(sid: str, concept_id: str, concept_title: str, consecutive_misses: int = 2, owner=Depends(material_owner), db=Depends(store_provider)):
@@ -149,9 +189,8 @@ def build_learning_router(store_provider, provider_getter):
         with db.transaction() as conn:
             return service.discard(conn, owner, draft_id)
     @router.get("/quizzes")
-    def listing(owner=Depends(material_owner), db=Depends(store_provider)):
-        records = WorkflowStore(db)
-        return {"quizzes": [{k: q[k] for k in ("id", "title", "sessionId", "status", "count")} for q in records.listing(owner, "quiz")]}
+    def listing(session_id: str | None = None, lesson_note_id: str | None = None, owner=Depends(material_owner), db=Depends(store_provider)):
+        return {"quizzes": QuizService(db, None).history(owner, session_id=session_id, lesson_note_id=lesson_note_id)}
 
     @router.post("/quizzes", status_code=202)
     def create(command: QuizCreate, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
@@ -162,6 +201,10 @@ def build_learning_router(store_provider, provider_getter):
     @router.get("/quizzes/{qid}/results")
     def get_quiz(qid: str, owner=Depends(material_owner), db=Depends(store_provider)):
         return QuizService(db, provider_getter()).public(owner, qid)
+
+    @router.get("/quizzes/{qid}/study-context")
+    def quiz_study_context(qid: str, owner=Depends(material_owner), db=Depends(store_provider)):
+        return QuizService(db, None).study_context(owner, qid)
 
     @router.post("/quizzes/{qid}/next", status_code=202)
     def next_question(qid: str, command: RevisionCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):

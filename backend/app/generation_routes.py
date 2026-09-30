@@ -22,7 +22,7 @@ def _frame(event) -> str:
 
 def build_generation_router(store_provider, provider_getter):
     router = APIRouter(prefix="/v1")
-    manager = GenerationManager(store_provider(), provider_getter())
+    manager = GenerationManager(store_provider(), provider_getter(), provider_getter)
     GenerationStore(store_provider()).interrupt_active()
 
     @router.post("/sessions/{sid}/generations", status_code=202)

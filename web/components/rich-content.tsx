@@ -1,13 +1,22 @@
 "use client";
 
 import { Children, isValidElement, useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import { readingRemarkPlugins as remarkPlugins, readingRehypePlugins as rehypePlugins } from '@/lib/markdown-rendering';
 import 'katex/dist/katex.min.css';
 import { normalizeMathMarkdown } from '@/lib/normalize-math-markdown';
 import styles from './reading.module.css';
+import { encodeConceptLinks, splitTutorContent } from '@/lib/tutor-format';
+import { ExerciseCard } from './exercise-card';
+
+function ConceptLink({ href, children, onSelect }: { href: string; children: ReactNode; onSelect?: (term: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const parsed = new URL(href, 'https://local.invalid');
+  const definition = parsed.searchParams.get('definition');
+  let term = parsed.pathname;
+  try { term = decodeURIComponent(term); } catch { /* Keep malformed links readable. */ }
+  return <span className={styles.conceptWrap}><button type="button" className={styles.conceptLink} aria-expanded={definition ? open : undefined} onClick={() => { if (definition) setOpen(value => !value); onSelect?.(term); }} title={definition || 'Ask about this concept'}>{children}</button>{open && definition ? <span className={styles.conceptDefinition} role="note">{definition}</span> : null}</span>;
+}
 
 function CodeBlock({ children, onExplore }: { children?: ReactNode; onExplore?: (raw: string, equation?: boolean) => void }) {
   const [copied, setCopied] = useState(false);
@@ -50,33 +59,23 @@ function CodeBlock({ children, onExplore }: { children?: ReactNode; onExplore?: 
   );
 }
 
-const remarkPlugins = [remarkGfm, [remarkMath, { singleDollarTextMath: true }]];
-const rehypePlugins = [[rehypeKatex, {
-  throwOnError: false,
-  trust: false,
-  maxExpand: 1000,
-  maxSize: 20,
-  output: 'htmlAndMathml',
-  strict: 'warn',
-}]];
-
 /**
  * Canonical renderer for all LLM-generated teaching content.
  * Persisted storage stays Markdown + LaTeX; this component typesets at presentation time.
  */
-export function RichContent({ body, onExplore }: { body: string; onExplore?: (raw: string, equation?: boolean) => void }) {
+export function RichContent({ body, onExplore, onExerciseResolved, onConceptSelect }: { body: string; onExplore?: (raw: string, equation?: boolean) => void; onExerciseResolved?: (id: string) => void; onConceptSelect?: (term: string) => void }) {
   const source = normalizeMathMarkdown(body);
   return (
     <div className={styles.rich}>
-      <ReactMarkdown
+      {splitTutorContent(source).map((part, partIndex) => part.kind === 'exercise' ? <ExerciseCard key={`exercise-${part.exercise.id}-${partIndex}`} exercise={part.exercise} onResolved={onExerciseResolved}/> : part.kind === 'pending_exercise' || part.kind === 'invalid_exercise' ? <p key={`exercise-status-${partIndex}`} role="status">{part.kind === 'pending_exercise' ? 'Preparing practice question…' : 'This practice question could not be displayed.'}</p> : <ReactMarkdown
+        key={`markdown-${partIndex}`}
         remarkPlugins={remarkPlugins as never}
         rehypePlugins={rehypePlugins as never}
+        urlTransform={url => url.startsWith('concept:') ? url : defaultUrlTransform(url)}
         skipHtml
         components={{
           pre: ({ children }) => <CodeBlock onExplore={onExplore}>{children}</CodeBlock>,
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
-          ),
+          a: ({ href, children }) => href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
           img: ({ alt }) => <span className={styles.imagePlaceholder}>{alt || 'Image reference'}</span>,
           table: ({ children }) => (
             <div className={styles.table}>
@@ -111,8 +110,8 @@ export function RichContent({ body, onExplore }: { body: string; onExplore?: (ra
           ),
         }}
       >
-        {source}
-      </ReactMarkdown>
+        {encodeConceptLinks('body' in part ? part.body : '')}
+      </ReactMarkdown>)}
     </div>
   );
 }

@@ -3,7 +3,8 @@
 import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
-import { motion, useReducedMotion } from "motion/react"
+import { motion } from "motion/react"
+import { useAppReducedMotion } from "@/lib/use-app-reduced-motion"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -56,7 +57,7 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
-  const reduceMotion = useReducedMotion()
+  const reduceMotion = useAppReducedMotion()
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />

@@ -173,13 +173,22 @@ function configureCredentialBridge() {
     }
     return true;
   });
-  ipcMain.handle('preferences:get', () => ({ reviewNotifications: readPreferences().reviewNotifications === true }));
+  ipcMain.handle('preferences:get', () => {
+    const saved = readPreferences();
+    return {
+      reviewNotifications: saved.reviewNotifications === true,
+      quietHoursStart: Number.isInteger(saved.quietHoursStart) ? saved.quietHoursStart : 22,
+      quietHoursEnd: Number.isInteger(saved.quietHoursEnd) ? saved.quietHoursEnd : 8,
+    };
+  });
   ipcMain.handle('preferences:set', (_event, values) => {
-    if (!values || typeof values.reviewNotifications !== 'boolean') throw new Error('Invalid desktop preference.');
-    const next = { ...readPreferences(), reviewNotifications: values.reviewNotifications };
+    if (!values || typeof values.reviewNotifications !== 'boolean'
+        || !Number.isInteger(values.quietHoursStart) || values.quietHoursStart < 0 || values.quietHoursStart > 23
+        || !Number.isInteger(values.quietHoursEnd) || values.quietHoursEnd < 0 || values.quietHoursEnd > 23) throw new Error('Invalid desktop preference.');
+    const next = { ...readPreferences(), reviewNotifications: values.reviewNotifications, quietHoursStart: values.quietHoursStart, quietHoursEnd: values.quietHoursEnd };
     writePreferences(next);
     if (next.reviewNotifications) void notifyDueReviews();
-    return { reviewNotifications: next.reviewNotifications };
+    return { reviewNotifications: next.reviewNotifications, quietHoursStart: next.quietHoursStart, quietHoursEnd: next.quietHoursEnd };
   });
 }
 
@@ -188,6 +197,11 @@ function notifyServiceStatus(status) { window?.webContents.send('forma:service-s
 async function notifyDueReviews() {
   const preferences = readPreferences();
   if (!preferences.reviewNotifications || !apiPort || !apiToken || !Notification.isSupported()) return;
+  const quietStart = Number.isInteger(preferences.quietHoursStart) ? preferences.quietHoursStart : 22;
+  const quietEnd = Number.isInteger(preferences.quietHoursEnd) ? preferences.quietHoursEnd : 8;
+  const localHour = new Date().getHours();
+  const quietNow = quietStart === quietEnd || (quietStart < quietEnd ? localHour >= quietStart && localHour < quietEnd : localHour >= quietStart || localHour < quietEnd);
+  if (quietNow) return;
   try {
     const response = await fetch(`http://127.0.0.1:${apiPort}/v1/learners/local/review-queue`, { headers: { 'X-Forma-Desktop-Token': apiToken } });
     if (!response.ok) return;

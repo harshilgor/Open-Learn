@@ -1,12 +1,14 @@
 .page { width: min(100%, 760px); margin: 0 auto; padding: 40px 0 90px; box-sizing: border-box; }
 .empty { min-height: calc(100dvh - 80px); display: flex; flex-direction: column; justify-content: center; padding-bottom: 18vh; }
 .empty h1 { font-size: clamp(24px, 2.4vw, 30px); font-weight: 500; letter-spacing: -0.8px; line-height: 1.3; text-align: center; margin-bottom: 24px; }
-.greeting { display: flex; justify-content: center; min-height: 32px; margin: 0 0 14px; padding: 0 16px; text-align: center; font-size: 18px; font-weight: 450; letter-spacing: -0.2px; line-height: 1.5; color: #4c544a; }
+.greeting { display: flex; justify-content: center; min-height: 32px; margin: 0 0 14px; padding: 0 16px; text-align: center; font-size: var(--type-heading); font-weight: 450; letter-spacing: -0.2px; line-height: 1.5; color: #4c544a; }
 .greeting span { display: inline-block; max-width: 100%; }
 .composer { width: 100%; max-width: 100%; border: 1px solid #deded9; border-radius: 18px; padding: 12px 14px; background: #fff; box-shadow: 0 5px 24px #00000004; }
 .composer textarea { display: block; box-sizing: border-box; width: 100%; height: 44px; min-height: 44px; max-height: 196px; resize: none; overflow-y: hidden; overscroll-behavior: contain; font: inherit; font-size: 15px; line-height: 1.55; border: 0; background: transparent; outline: none; }
 .composer textarea::placeholder { font-size: 14px; color: #9aa09a; }
-.composer:focus-within { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--focus-ring); }
+.composer textarea,.followupComposer textarea,.composer textarea::placeholder,.followupComposer textarea::placeholder { font-size: var(--type-body); }
+.composer:focus-within { border-color: var(--focus-border); box-shadow: none; }
+.composer textarea:focus-visible { border: 0; outline: none; box-shadow: none; }
 .chatComposer { position: relative; }
 .chatComposer textarea { resize: none; }
 .composerTools { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -74,9 +76,10 @@
 .lessonArticle section { margin: 22px 0; }
 .lessonArticle p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .followupComposer { width: 100%; max-width: 100%; margin-top: 46px; border: 1px solid #d8dbd1; border-radius: 18px; padding: 12px 14px; background: #fff; box-shadow: 0 5px 24px #00000008; }
-.followupComposer:focus-within { border-color: var(--focus-border); box-shadow: 0 0 0 3px var(--focus-ring); }
+.followupComposer:focus-within { border-color: var(--focus-border); box-shadow: none; }
+.followupComposer textarea:focus-visible { border: 0; outline: none; box-shadow: none; }
 .followupComposer textarea { display: block; box-sizing: border-box; width: 100%; height: 44px; min-height: 44px; max-height: 196px; resize: none; overflow-y: hidden; overscroll-behavior: contain; font: inherit; font-size: 15px; line-height: 1.55; border: 0; background: transparent; outline: none; }
-.followupComposer textarea::placeholder { font-size: 14px; color: #9aa09a; }
+.followupComposer textarea::placeholder { font-size: var(--type-body); color: #9aa09a; }
 .lessonActions { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 12px; }
 .studyPanel { position: fixed; z-index: 30; top: 18px; right: 18px; bottom: 18px; width: min(410px, calc(100vw - 36px)); overflow-y: auto; padding: 26px 28px; border: 1px solid #d9ddd3; border-radius: 20px; background: #fff; box-shadow: 0 16px 55px #1f281c2b; }
 .panelHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
@@ -113,7 +116,7 @@
 .chatScroll{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:0 24px;scroll-padding-bottom:var(--composer-clearance, 168px)}
 /* Bottom padding clears the floating composer (~120px) plus room so the last
 recommendation stays fully visible and clickable — not a large empty band. */
-.chatShell .page{width:min(100%,760px);margin:0 auto;min-height:100%;padding:20px 0 var(--composer-clearance, 168px);box-sizing:border-box}
+.chatShell .page{width:min(100%,calc(var(--reading-width,720px) + 40px));margin:0 auto;min-height:100%;padding:20px 0 var(--composer-clearance, 168px);box-sizing:border-box}
 /* Bottom-anchored conversation: short threads rest directly above the
 composer instead of top-anchoring with dead space below. margin-top:auto
 (rather than justify-content:flex-end) keeps tall threads scrollable
@@ -174,6 +177,7 @@ does not read as a solid white empty slab. */
 }
 
 .courseBadgeRow {
+
   display: flex;
   align-items: center;
   margin: 0 0 16px;
@@ -262,3 +266,29 @@ does not read as a solid white empty slab. */
 :global(.dark) .sources { border-color: var(--border); }
 :global(.dark) .newContentIndicator svg,
 :global(.dark) .courseBadge svg { color: var(--primary); }
+
+/* Composer surfaces shared by the main chat and compact concept panel. */
+.composer,.followupComposer{margin:0;border:1px solid var(--border);border-radius:20px;background:var(--surface-2,#f4f5f2);box-shadow:0 8px 32px rgba(0,0,0,.12);color:var(--foreground)}
+:global(.dark) .composer,:global(.dark) .followupComposer{background:var(--surface-2,#242424);border-color:var(--border);box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.composer:focus-within,.followupComposer:focus-within{border-color:var(--focus-border);box-shadow:0 0 0 2px var(--focus-ring),0 8px 32px rgba(0,0,0,.16)}
+.composer textarea,.followupComposer textarea{min-height:29px;height:29px;max-height:196px;color:var(--foreground)}
+.composer textarea::placeholder,.followupComposer textarea::placeholder{color:var(--muted-foreground)}
+.composerBottom{margin-top:9px}
+.composerBottom button,.composerBottom [role=combobox]{height:32px;min-height:32px}
+.composerBottom>button:last-child{width:32px;border-radius:9px;background:var(--primary);color:var(--primary-foreground)}
+.composerBottom>button:last-child:disabled{background:var(--muted);color:var(--muted-foreground);opacity:1}
+.attachButton,.modeTrigger,.gearSelect{border:0;background:transparent;color:var(--foreground);border-radius:8px}
+.attachButton:hover,.modeTrigger:hover,.gearSelect:hover{background:var(--accent);color:var(--accent-foreground)}
+.modeTrigger{height:32px;padding:0 8px;border-radius:8px;font-size:13px}
+.modeTile{background:var(--accent)!important;color:var(--accent-foreground)!important;width:20px;height:20px}
+.gearSelect{width:auto;gap:5px;padding:0 8px}
+.gearSelect>span:first-child{color:var(--muted-foreground)}
+.composerDock{padding-bottom:max(14px,env(safe-area-inset-bottom));background:linear-gradient(to top,var(--background) 0%,color-mix(in srgb,var(--background) 92%,transparent) 64%,transparent 100%)}
+.compactComposer{box-shadow:none;border-radius:16px;padding:10px}
+.contextRow{display:flex;gap:6px;margin-bottom:8px}
+.contextRow>span{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid var(--border);border-radius:7px;padding:3px 6px;background:var(--accent);color:var(--accent-foreground);font-size:12px}
+.contextRow button{display:grid;place-items:center;border-radius:4px}
+.quickActions{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px}
+.quickActions button{border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--surface-2,#f4f5f2);color:var(--foreground);font-size:12px}
+.quickActions button:hover{background:var(--accent)}
+@media(max-width:390px){.composerTools{gap:2px}.modeTrigger{gap:4px;padding:0 5px}.gearSelect{padding:0 4px}.gearSelect>span:first-child{display:none}}

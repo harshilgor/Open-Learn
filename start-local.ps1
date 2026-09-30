@@ -6,8 +6,25 @@ $logRoot = Join-Path $projectRoot 'work\local-runtime'
 New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
 if (-not (Test-Path -LiteralPath $runtime)) { throw 'Install the local dependencies with .\install-local.ps1 first. See docs\INSTALL.md for help.' }
 
+# A development sandbox can inject an intentionally unreachable loopback
+# proxy. Do not pass that proxy to the tutor process: provider requests would
+# fail before reaching OpenRouter or OpenAI. Preserve real user proxies.
+foreach ($proxyName in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy')) {
+    $proxyValue = [Environment]::GetEnvironmentVariable($proxyName, 'Process')
+    if ($proxyValue -match '^https?://127\.0\.0\.1:9/?$') {
+        [Environment]::SetEnvironmentVariable($proxyName, $null, 'Process')
+    }
+}
+
 function Test-LocalService([string]$Address) {
-    try { return (Invoke-WebRequest -Uri $Address -UseBasicParsing -NoProxy -TimeoutSec 3).StatusCode -eq 200 }
+    try {
+        $request = [System.Net.WebRequest]::Create($Address)
+        $request.Proxy = $null
+        $request.Timeout = 3000
+        $response = $request.GetResponse()
+        try { return [int]$response.StatusCode -eq 200 }
+        finally { $response.Close() }
+    }
     catch { return $false }
 }
 

@@ -124,13 +124,14 @@ function UsageOverview() {
                 <dd title={`${formatFullTokens(totals.totalTokens)} tokens`}>{formatCompactTokens(totals.totalTokens)}</dd>
                 <dd className={styles.sub}>
                   {formatCompactTokens(totals.promptTokens)} in · {formatCompactTokens(totals.completionTokens)} out
-                  {totals.estimatedGenerations > 0 ? ` · ${totals.estimatedGenerations} estimated` : ' · actual'}
+                  {totals.exactGenerations > 0 ? ` · ${totals.exactGenerations} provider-reported` : ''}
+                  {totals.estimatedGenerations > 0 ? ` · ${totals.estimatedGenerations} estimated` : ''}
                 </dd>
               </div>
               <div className={styles.headline}>
                 <dt>Generations</dt>
                 <dd>{formatFullTokens(totals.generations)}</dd>
-                <dd className={styles.sub}>{totals.exactGenerations} measured</dd>
+                <dd className={styles.sub}>{totals.exactGenerations} provider-reported · {totals.estimatedGenerations} estimated</dd>
               </div>
               <div className={styles.headline}>
                 <dt>Provider cost</dt>

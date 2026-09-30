@@ -1,0 +1,18 @@
+.panel { display: flex; flex-direction: column; min-height: 0; width: min(420px, 42vw); flex: none; border-left: 1px solid var(--border); background: var(--background); }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.header > div { display: grid; gap: 3px; min-width: 0; }
+.header strong { font-size: var(--type-ui); }
+.header span { font-size: var(--type-caption); color: var(--muted-foreground); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.header button { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border-radius: 6px; cursor: pointer; }
+.header button:hover { background: var(--muted); }
+.context { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: var(--type-caption); color: var(--muted-foreground); }
+.context summary { cursor: pointer; }
+.context p { max-height: 130px; overflow: auto; white-space: pre-wrap; padding-top: 8px; }
+.content { flex: 1; min-height: 0; overflow: auto; padding: 18px 16px; }
+.empty { color: var(--muted-foreground); font-size: var(--type-ui); line-height: 1.6; }
+.turn { margin-bottom: 24px; }
+.turn h3 { font-size: var(--type-body); margin: 14px 0 8px; font-weight: 600; }
+.question { border-radius: 10px; background: var(--muted); padding: 10px 12px; margin-bottom: 16px; font-size: var(--type-ui); overflow-wrap: anywhere; }
+.composer { flex: none; padding: 10px; border-top: 1px solid var(--border); }
+.error { color: var(--destructive); font-size: var(--type-ui); line-height: 1.5; }
+@media (max-width: 900px) { .panel { position: absolute; inset: 0 0 0 auto; z-index: 35; width: min(440px, 100%); box-shadow: -12px 0 40px #0002; } }

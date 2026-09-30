@@ -9,6 +9,12 @@
  */
 
 export type Gear = 'Quick' | 'Guided' | 'Deep';
+export type ClassRecording = { id: string; noteId: string; title: string; mediaType: string; byteCount: number; durationMs: number; markersMs: number[]; status: 'queued' | 'processing' | 'completed' | 'failed'; error?: string | null; createdAt: number; updatedAt: number };
+export type LectureStatus = { id: string; noteId: string; title: string; courseId: string | null; recordingStatus: string; captureComplete: boolean; captureInterrupted: boolean; durationMs: number; markersMs: number[]; chunks: { expected: number | null; serverConfirmed: number; transcribed: number; failed: number; missing: number[] }; stages: { transcription: string; semanticAnalysis: string; noteGeneration: string; verification: string }; preferences: Record<string, unknown>; generationVersion: number; pipelineVersion: number; error: string | null; updatedAt: number };
+export type LectureEvidence = { segmentId: string; startMs: number; endMs: number };
+export type LectureNoteBlock = { id: string; sectionId: string; entityId: string; ordinal: number; blockType: string; title: string; content: string; evidence: LectureEvidence[]; sourceKind: string; verificationStatus: string };
+export type LectureSection = { id: string; ordinal: number; title: string; sectionType: string; summary: string; startMs: number; endMs: number; evidence: LectureEvidence[]; confidence: number | null; analysisStatus: string };
+export type LectureTranscriptSegment = { id: string; chunkId: string; startMs: number; endMs: number; speaker: string; rawText: string; normalizedText: string; confidence: number | null };
 
 export type GraphRevision = {
   id: string;
@@ -171,11 +177,26 @@ export type ModeTransitionSuggestion = {
     [key: string]: unknown;
   };
   createdAt: string;
+  sourceTurnId?: string | null;
+  modeRevision?: number | null;
+  status?: 'pending' | 'accepted' | 'dismissed' | 'expired' | 'superseded';
+};
+
+export type ModeClassification = {
+  intent: 'ask' | 'learn' | 'quiz' | 'none';
+  confidence: number;
+  reason: string;
+  targetMode?: 'ask' | 'learn' | 'quiz' | null;
+  suggestion?: ModeTransitionSuggestion | null;
+  decision: 'stay' | 'suggest' | 'request_transition';
+  classificationSource: 'rule' | 'model' | 'fallback';
+  ruleId?: string | null;
+  rationale: string;
 };
 
 export type ModeTransitionInteraction = {
   suggestionId: string;
-  action: 'accept' | 'dismiss';
+  action: 'accept' | 'dismiss' | 'applied' | 'failed';
   targetMode: 'ask' | 'learn' | 'quiz';
   sessionId?: string;
   reason?: string;
@@ -389,9 +410,18 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     // FastAPI's default errors (e.g. unknown routes on a stale backend) carry
     // a plain-string detail; surface it instead of a generic status message.
     const error = typeof rawDetail === 'object' && rawDetail !== null ? rawDetail as ErrorResponse : envelope;
+    const validationMessage = Array.isArray(rawDetail)
+      ? rawDetail.map(item => {
+        if (!item || typeof item !== 'object') return '';
+        const issue = item as { loc?: unknown; msg?: unknown };
+        const path = Array.isArray(issue.loc) ? issue.loc.filter(part => part !== 'body' && part !== 'query' && part !== 'path').join('.') : '';
+        const message = typeof issue.msg === 'string' ? issue.msg : '';
+        return [path, message].filter(Boolean).join(': ');
+      }).filter(Boolean).join('; ')
+      : '';
     const message = typeof rawDetail === 'string' && rawDetail
       ? rawDetail
-      : error.message || `Learning API request failed (${response.status})`;
+      : error.message || (validationMessage ? `Request validation failed: ${validationMessage}` : `Learning API request failed (${response.status})`);
     throw new LearningApiError(response.status, error.code || 'request_failed', message, error.details);
   }
   return body as T;
@@ -509,6 +539,7 @@ export type ProviderSettingsStatus = {
   openAiConfigured: boolean;
   restartRequired: boolean;
 };
+export type ProviderConnectionStatus = { connected: boolean; provider: string; model: string };
 
 export type UsageRange = '7d' | '30d' | 'all';
 
@@ -535,7 +566,7 @@ export type UsageSummary = {
   byProvider: UsageProviderEntry[];
 };
 
-export type AnalyticsDimension = 'mode' | 'model' | 'provider';
+export type AnalyticsDimension = 'mode' | 'model' | 'provider' | 'course';
 
 export type AnalyticsSeries = {
   key: string;
@@ -588,13 +619,15 @@ export type LocalDataExport = {
 export type WorkspaceNoteSummary = {
   id: string;
   title: string;
+  preview: string;
+  noteType: 'manual' | 'lesson' | 'recording';
   frontmatter: Record<string, unknown>;
   revision: number;
   relativePath: string;
   updatedAt: string;
 };
 
-export type WorkspaceNote = WorkspaceNoteSummary & {
+export type WorkspaceNote = Omit<WorkspaceNoteSummary, 'preview' | 'noteType'> & {
   learnerId: string;
   body: string;
   createdAt: string;
@@ -701,17 +734,32 @@ export const learningApi = {
     return request<LearningSession>(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', body: JSON.stringify({ title }) });
   },
 
+  regenerateChatTitle(sessionId: string, automatic = false): Promise<LearningSession> {
+    return request<LearningSession>(`/v1/sessions/${encodeURIComponent(sessionId)}/regenerate-title${automatic ? '?automatic=true' : ''}`, { method: 'POST' });
+  },
+
   deleteChatSession(sessionId: string): Promise<void> {
     return request<void>(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
   },
 
-  recordTransitionInteraction(suggestionId: string, action: 'accept' | 'dismiss', targetMode: 'ask' | 'learn' | 'quiz', sessionId?: string): Promise<{ status: string }> {
-    return request<{ status: string }>(`/v1/sessions/${encodeURIComponent(sessionId || 'default')}/transition-interaction`, {
+  classifyMode(sessionId: string, message: string, currentMode: 'ask' | 'learn', bypassSuggestionId?: string): Promise<ModeClassification> {
+    return request<ModeClassification>(`/v1/sessions/${encodeURIComponent(sessionId)}/mode-classification`, {
+      method: 'POST', body: JSON.stringify({ message, currentMode, bypassSuggestionId }),
+    });
+  },
+
+  getPendingModeTransition(sessionId: string): Promise<{ pending: { suggestion: ModeTransitionSuggestion; decision: 'suggest' | 'request_transition'; status: 'pending' | 'accepted'; startupStatus?: string; originalRequest: string } | null }> {
+    return request(`/v1/sessions/${encodeURIComponent(sessionId)}/mode-transition`);
+  },
+
+  recordTransitionInteraction(suggestionId: string, action: 'accept' | 'dismiss' | 'applied' | 'failed', targetMode: 'ask' | 'learn' | 'quiz', sessionId?: string, expectedModeRevision?: number): Promise<{ status: string; startupStatus?: string; replayed?: boolean; suggestion?: ModeTransitionSuggestion }> {
+    return request<{ status: string; startupStatus?: string; replayed?: boolean; suggestion?: ModeTransitionSuggestion }>(`/v1/sessions/${encodeURIComponent(sessionId || 'default')}/transition-interaction`, {
       method: 'POST',
       body: JSON.stringify({
         suggestionId,
         action,
         targetMode,
+        expectedModeRevision,
       }),
     });
   },
@@ -727,6 +775,10 @@ export const learningApi = {
 
   getProviderSettings(): Promise<ProviderSettingsStatus> {
     return request<ProviderSettingsStatus>('/v1/provider-settings');
+  },
+
+  testProviderConnection(): Promise<ProviderConnectionStatus> {
+    return request<ProviderConnectionStatus>('/v1/provider-settings/test', { method: 'POST' });
   },
 
   saveProviderKey(provider: 'openrouter' | 'openai', apiKey: string): Promise<ProviderSettingsStatus> {
@@ -1045,6 +1097,107 @@ export const learningApi = {
     const suffix = query.size ? `?${query.toString()}` : '';
     return request<{ sessions: ChatSessionSummary[]; total: number }>(`/v1/courses/${encodeURIComponent(courseId)}/sessions${suffix}`);
   },
+
+  refreshNoteTitles(learnerId = 'local'): Promise<{ updated: number; skipped: number }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/refresh-titles`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  uploadClassRecording(noteId: string, audio: Blob, durationMs: number, markersMs: number[], learnerId = 'local'): Promise<ClassRecording> {
+    return request<ClassRecording>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}/class-recording`, {
+      method: 'PUT',
+      headers: { 'X-Dev-Learner-Id': learnerId, 'Content-Type': audio.type || 'audio/webm', 'X-Recording-Duration-Ms': String(durationMs), 'X-Recording-Markers-Ms': markersMs.join(',') },
+      body: audio,
+    });
+  },
+
+  getClassRecording(noteId: string, learnerId = 'local'): Promise<ClassRecording> {
+    return request<ClassRecording>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}/class-recording`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
+  async getClassRecordingAudio(recordingId: string, learnerId = 'local'): Promise<Blob> {
+    const headers = new Headers({ Accept: 'audio/*', 'X-Dev-Learner-Id': learnerId });
+    const token = desktopToken();
+    if (token) headers.set('X-Forma-Desktop-Token', token);
+    const response = await fetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/class-recordings/${encodeURIComponent(recordingId)}/audio`), { headers });
+    if (!response.ok) throw new Error('Class recording audio is unavailable.');
+    return response.blob();
+  },
+
+  retryClassRecording(noteId: string, learnerId = 'local'): Promise<ClassRecording> {
+    return request<ClassRecording>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}/class-recording/retry`, {
+      method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
+  createLectureRecording(input: { id: string; title: string; courseId?: string | null; startedAtMs: number; noteFolder?: string | null; preferences: Record<string, unknown> }, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId }, body: JSON.stringify(input) });
+  },
+
+  listLectureRecordings(learnerId = 'local'): Promise<{ recordings: LectureStatus[] }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  getLectureRecording(id: string, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  uploadLectureChunk(id: string, chunk: { sequenceNumber: number; startMs: number; endMs: number; mimeType: string; sha256: string; blob: Blob }, learnerId = 'local'): Promise<{ recordingId: string; sequenceNumber: number; sha256: string; duplicate: boolean }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks/${chunk.sequenceNumber}`, {
+      method: 'PUT', headers: { 'X-Dev-Learner-Id': learnerId, 'Content-Type': chunk.mimeType, 'X-Chunk-Start-Ms': String(chunk.startMs), 'X-Chunk-End-Ms': String(chunk.endMs), 'X-Chunk-Sha256': chunk.sha256 }, body: chunk.blob,
+    });
+  },
+
+  finalizeLectureRecording(id: string, input: { expectedChunkCount: number; durationMs: number; markersMs: number[]; captureInterrupted: boolean }, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/finalize`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId }, body: JSON.stringify(input) });
+  },
+
+  getLectureChunks(id: string, learnerId = 'local'): Promise<{ chunks: { sequenceNumber: number; startMs: number; endMs: number; mediaType: string; transcriptionStatus: string; error: string | null }[] }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  getLectureTranscript(id: string, learnerId = 'local'): Promise<{ segments: LectureTranscriptSegment[] }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/transcript`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  getLectureSections(id: string, learnerId = 'local'): Promise<{ sections: LectureSection[] }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/sections`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  getLectureNotes(id: string, learnerId = 'local'): Promise<{ generationVersion: number; blocks: LectureNoteBlock[] }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/notes`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  retryLectureFailures(id: string, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/retry`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  regenerateLectureNotes(id: string, preferences: Record<string, unknown>, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/regenerate`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId }, body: JSON.stringify(preferences) });
+  },
+
+  async getLectureChunkAudio(id: string, sequence: number, learnerId = 'local'): Promise<Blob> {
+    const headers = new Headers({ Accept: 'audio/*', 'X-Dev-Learner-Id': learnerId });
+    const token = desktopToken();
+    if (token) headers.set('X-Forma-Desktop-Token', token);
+    const response = await fetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks/${sequence}/audio`), { headers });
+    if (!response.ok) throw new Error('Lecture audio is unavailable.');
+    return response.blob();
+  },
+
+  deleteWorkspaceNote(noteId: string, expectedRevision: number, learnerId = 'local'): Promise<void> {
+    return request<void>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}?${new URLSearchParams({ expectedRevision: String(expectedRevision) })}`, {
+      method: 'DELETE',
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+  addCourseSession(courseId: string, sessionId: string): Promise<{ courseId: string; sessionId: string }> {
+    return request(`/v1/courses/${encodeURIComponent(courseId)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'PUT' });
+  },
+  removeCourseSession(courseId: string, sessionId: string): Promise<void> {
+    return request(`/v1/courses/${encodeURIComponent(courseId)}/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  },
   listCourseNotes(courseId: string): Promise<{ notes: WorkspaceNoteSummary[]; total: number }> {
     return request<{ notes: WorkspaceNoteSummary[]; total: number }>(`/v1/courses/${encodeURIComponent(courseId)}/notes`);
   },
@@ -1306,7 +1459,7 @@ export type CoursePublic = {
 
 export type CourseCreateInput = {
   name: string;
-  goal: string;
+  goal?: string;
   teachingPreferences?: Partial<CourseTeachingPreferences>;
   reminderPreferences?: Partial<CourseReminderPreferences>;
 };

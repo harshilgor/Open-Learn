@@ -456,8 +456,35 @@ class WorkspaceNoteService:
 
     @staticmethod
     def _summary(record: WorkspaceNoteRecord) -> WorkspaceNoteSummary:
+        metadata = record.frontmatter or {}
+        note_type = ("recording" if metadata.get("lecture_recording_id") or metadata.get("class_recording_id")
+                     else "lesson" if metadata.get("study_note") is True else "manual")
+        lines = []
+        in_code = False
+        for raw in record.body.splitlines():
+            line = raw.strip()
+            if line.startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code or not line or line.startswith(("#", "|", "---", "![")):
+                continue
+            if line.startswith(("This Lesson was created when you started Learn.", "Keep learning in chat", "Study notes maintained with the tutor.", "Your own writing is never rewritten.")):
+                continue
+            from .content_titles import looks_like_prompt
+            if looks_like_prompt(line):
+                continue
+            line = re.sub(r"^(?:[-*+]|\d+[.)])\s+", "", line)
+            line = re.sub(r"\[([^]]+)\]\([^)]+\)", r"\1", line)
+            line = re.sub(r"[`*_~]", "", line).strip()
+            if line:
+                lines.append(line)
+            if len(" ".join(lines)) >= 180:
+                break
+        paragraph = " ".join(lines).strip()
+        preview = re.split(r"(?<=[.!?])\s+", paragraph, maxsplit=1)[0][:180].strip()
         return WorkspaceNoteSummary(
-            id=record.id, title=record.title, frontmatter=record.frontmatter,
+            id=record.id, title=record.title, preview=preview, note_type=note_type,
+            frontmatter=record.frontmatter,
             revision=record.revision, relative_path=record.relative_path,
             updated_at=record.updated_at,
         )
@@ -469,6 +496,13 @@ class WorkspaceNoteService:
         now = _utc_now()
         note_id = f"note_{uuid4().hex}"
         frontmatter = dict(request.frontmatter)
+        from .content_titles import generate_content_title, looks_like_prompt
+        if frontmatter.get("title_source") != "user" and looks_like_prompt(request.title):
+            headings = [{"heading": line.lstrip("# ")} for line in request.body.splitlines() if line.startswith("#")]
+            title = generate_content_title(request.title, headings)
+            old_heading = f"# {request.title}\n"
+            body = f"# {title}\n{request.body[len(old_heading):]}" if request.body.startswith(old_heading) else request.body
+            request = request.model_copy(update={"title": title, "body": body})
         # Canonical fields always win over supplied import/draft metadata.
         frontmatter.update({
             "id": note_id,
@@ -491,6 +525,39 @@ class WorkspaceNoteService:
         record = self._read_file(learner_id, note_id)
         self._upsert_index(record, self._file_hash(self.note_path(learner_id, note_id).read_text(encoding="utf-8")))
         return record
+
+    def refresh_generated_titles(self, learner_id: str) -> dict[str, int]:
+        """Repair legacy prompt titles and recover course IDs from explicit session links."""
+        from .content_titles import generate_content_title, looks_like_prompt
+        updated = skipped = 0
+        for summary in self.list(learner_id):
+            metadata = summary.frontmatter or {}
+            session_ids = metadata.get("session_ids") or []
+            session = self.store.get_session(session_ids[0]) if isinstance(session_ids, list) and session_ids and isinstance(session_ids[0], str) else None
+            if session and session.learner_id != learner_id:
+                session = None
+            changes = {}
+            if session and session.course_id and not metadata.get("course_id"):
+                changes["course_id"] = session.course_id
+            rename = metadata.get("title_source") != "user" and looks_like_prompt(summary.title)
+            if not rename and not changes:
+                continue
+            try:
+                note = self.get(learner_id, summary.id)
+                title = note.title
+                body = note.body
+                if rename:
+                    headings = [{"heading": line.lstrip("# ")} for line in body.splitlines() if line.startswith("#")]
+                    title = session.title if session and session.title and not looks_like_prompt(session.title) else generate_content_title(note.title, headings)
+                    old_heading = f"# {note.title}\n"
+                    if body.startswith(old_heading):
+                        body = f"# {title}\n{body[len(old_heading):]}"
+                    changes["title_source"] = "auto"
+                self.update(learner_id, note.id, WorkspaceNoteUpdate(expected_revision=note.revision, title=title, body=body, frontmatter=changes))
+                updated += 1
+            except WorkspaceNoteError:
+                skipped += 1
+        return {"updated": updated, "skipped": skipped}
 
     def list(self, learner_id: str) -> list[WorkspaceNoteSummary]:
         self._validate_learner(learner_id)

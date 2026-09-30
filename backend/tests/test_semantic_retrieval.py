@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
+import httpx
 
 from backend.app import semantic_retrieval
 from backend.app import automatic_note_context
@@ -9,6 +10,8 @@ from types import SimpleNamespace
 
 
 def test_embedding_model_requires_explicit_opt_in(monkeypatch):
+    monkeypatch.setenv("AI_TUTOR_PROVIDER", "openai")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "configured")
     monkeypatch.delenv("AI_TUTOR_EMBEDDING_MODEL", raising=False)
     assert semantic_retrieval.configured_model() is None
@@ -16,6 +19,26 @@ def test_embedding_model_requires_explicit_opt_in(monkeypatch):
     assert semantic_retrieval.configured_model() == "text-embedding-3-small"
     monkeypatch.delenv("OPENAI_API_KEY")
     assert semantic_retrieval.configured_model() is None
+
+
+def test_openrouter_embedding_uses_existing_key_and_model_slug(monkeypatch):
+    monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AI_TUTOR_EMBEDDING_MODEL", "text-embedding-3-small")
+    model = semantic_retrieval.configured_model()
+    assert model == "openai/text-embedding-3-small"
+    captured = {}
+
+    def post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return httpx.Response(200, request=httpx.Request("POST", url), json={
+            "data": [{"index": 0, "embedding": [1.0, 0.0]}]})
+
+    monkeypatch.setattr(httpx, "post", post)
+    assert semantic_retrieval._embed(["sample"], model) == [[1.0, 0.0]]
+    assert captured["url"] == "https://openrouter.ai/api/v1/embeddings"
+    assert captured["headers"]["Authorization"] == "Bearer test-router-key"
 
 
 class MemoryStore:

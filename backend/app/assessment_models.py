@@ -6,10 +6,13 @@ from .session_models import ApiModel, NoteContextInput, TeachingGear
 
 class QuizCreate(ApiModel):
     session_id: str
+    requested_topic: str | None = Field(default=None, max_length=500)
+    lesson_note_id: str | None = Field(default=None, max_length=120)
+    source_transition_id: str | None = Field(default=None, max_length=120)
     concept_ids: list[str] = Field(default_factory=list, max_length=10)
     count: int = Field(default=5, ge=1, le=10)
     difficulty: Literal["adaptive", "foundational", "standard", "stretch"] = "adaptive"
-    origin: Literal["quiz", "learn_inline"] = "quiz"
+    origin: Literal["quiz", "learn_inline", "ask", "learn"] = "ask"
     mode: Literal["topic_drill", "timed_short_quiz"] = "topic_drill"
     mode_config: dict[str, int] = Field(default_factory=dict)
     selected_span_ids: list[str] = Field(default_factory=list, max_length=6)
@@ -90,9 +93,10 @@ class Candidate(ApiModel):
 
 class JourneyCommand(ApiModel):
     expected_revision: int = Field(default=1, ge=1)
+    classification_bypass_id: str | None = Field(default=None, max_length=100)
     action: Literal["message", "start", "next", "repair", "pause", "resume", "adjust", "mode"] = "message"
     mode: Literal["ask", "learn"] = "learn"
-    gear: TeachingGear = TeachingGear.guided
+    gear: TeachingGear = TeachingGear.quick
     message: str = Field(default="", max_length=4000)
     note_context: NoteContextInput | None = None
 

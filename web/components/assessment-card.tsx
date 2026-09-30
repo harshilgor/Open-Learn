@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { Button } from '@/components/ui/button';
 import { RichContent } from './rich-content';
 import type { Attempt, Presentation } from '@/lib/learning-workflows';
@@ -12,7 +13,7 @@ export function AssessmentCard({ item, attempt, busy, onAnswer, onHint, onChalle
   onAnswer: (response: { response: string; selectedIds: string[]; outcome: 'answer' | 'dont_know' | 'skip' }) => void;
   onHint: () => void; onChallenge: (reason: string) => void; onCreateRepairNote?: (attemptId: string) => void; onOpenSource?: (source: { spanId: string; versionId?: string; title?: string }) => void;
 }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useAppReducedMotion();
   const [draft] = useState<{response?: string; selected?: string[]}>(() => { try { return JSON.parse(localStorage.getItem(`quiz-draft:${item.id}`) || '{}'); } catch { return {}; } });
   const [response, setResponse] = useState(draft.response || '');
   const [selected, setSelected] = useState<string[]>(draft.selected || []);
@@ -25,7 +26,7 @@ export function AssessmentCard({ item, attempt, busy, onAnswer, onHint, onChalle
   return <motion.article className={styles.card} aria-label="Quiz question" initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
     <span className={styles.meta}>{item.difficulty} · {item.kind === 'multiple' ? 'Select all correct answers · exact match scoring' : item.kind === 'short' ? 'Explain your reasoning' : 'Select one answer'}</span>
     <RichContent body={item.stem} />
-    {item.sources?.length ? <div className={styles.sourceChips} aria-label="Question sources">{item.sources.map(source => <Button key={source.spanId} type="button" size="sm" variant="outline" onClick={() => onOpenSource?.(source)}>{source.title} · Page {source.pageIndex + 1}</Button>)}</div> : null}
+    {item.sources?.length ? <div className={styles.sourceChips} aria-label="Question sources">{item.sources.map(source => <Button key={source.spanId} type="button" size="sm" variant="outline" onClick={() => onOpenSource?.(source)}>{source.spanId.startsWith('quiz-context:') ? source.title : `${source.title} · Page ${source.pageIndex + 1}`}</Button>)}</div> : null}
     <fieldset disabled={busy || !!attempt} className={styles.responses}>
       <legend className="sr-only">Your answer</legend>
       {item.kind === 'short' ? <textarea aria-label="Your reasoning" rows={5} value={response} onChange={e => save(e.target.value, selected)} maxLength={6000} placeholder="Explain how you reached your answer…" /> : item.options.map(option => <label key={option.id} className={styles.option}>

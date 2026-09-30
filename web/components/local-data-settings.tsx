@@ -7,6 +7,7 @@ import { learningApi } from '@/lib/api';
 import styles from './local-data-settings.module.css';
 import { ProviderSettings } from './provider-settings';
 import { ReviewNotificationSettings } from './review-notification-settings';
+import { clearAllLocalLectures } from '@/lib/lecture-local-store';
 
 type UpdateStatus = { state: 'idle' | 'checking' | 'downloading' | 'ready' | 'up-to-date' | 'error' | 'unavailable'; currentVersion: string; availableVersion?: string; detail?: string };
 type DesktopUpdates = { status: () => Promise<UpdateStatus>; check: () => Promise<UpdateStatus>; install: () => Promise<boolean>; onStatus: (callback: (status: UpdateStatus) => void) => () => void };
@@ -41,6 +42,14 @@ export function UpdateSection() {
 function download(base64: string, filename: string, type: string) {
   const raw = atob(base64); const bytes = Uint8Array.from(raw, char => char.charCodeAt(0));
   const url = URL.createObjectURL(new Blob([bytes], { type })); const link = document.createElement('a'); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url);
+}
+
+function clearSavedLearningBrowserData() {
+  const preserved = new Set(['forma-settings-preferences-v1', 'forma-desktop-setup-v1', 'forma-notes-list-v1', 'forma-workspace-panel-v1', 'open-learn-note-folders-v1']);
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (key && !preserved.has(key) && (key.startsWith('forma-') || key.startsWith('quiz-draft:'))) localStorage.removeItem(key);
+  }
 }
 
 /** Export, backup, restore, and deletion for locally stored learner data. */
@@ -82,15 +91,25 @@ export function DataActionsSection() {
   }
 
   async function deleteData() {
-    if (!window.confirm('Delete all local learner data, lessons, quizzes, and imported materials? This cannot be undone.')) return;
+    if (!window.confirm('Delete local learning data, lessons, quizzes, imported materials, class recordings, and saved browser audio? Your appearance and settings preferences and provider credentials are kept. This cannot be undone.')) return;
     setBusy('delete'); setMessage('');
-    try { await learningApi.deleteLocalData(); localStorage.clear(); setMessage('All local learning data was deleted.'); }
+    try {
+      await learningApi.deleteLocalData();
+      try {
+        clearSavedLearningBrowserData();
+        await clearAllLocalLectures();
+      } catch {
+        setMessage('Learning data was removed from the local service, but saved browser audio could not be cleared. Close other Open Learn tabs and retry the deletion.');
+        return;
+      }
+      setMessage('Learning data, recordings, and saved browser audio were deleted. Your settings and provider credentials were kept. Reload Open Learn to refresh open views.');
+    }
     catch (error) { setMessage(error instanceof Error ? error.message : 'The local data could not be deleted.'); }
     finally { setBusy(null); }
   }
 
   return <>
-    <div className={styles.callout}><ShieldCheck size={18} /><span>Open Learn keeps your learner data on this device. Provider keys use the desktop operating system’s encrypted credential store.</span></div>
+    <div className={styles.callout}><ShieldCheck size={18} /><span>Backups include uploaded learning data and retained class audio, are checksummed, and are limited to 512 MiB. Provider credentials are excluded. Unuploaded browser audio is not part of the server backup.</span></div>
     <div className={styles.actions}>
       <Button variant="outline" disabled={busy !== null} onClick={exportData}><Download size={15} />{busy === 'export' ? 'Preparing export…' : 'Export local data'}</Button>
       <Button variant="outline" disabled={busy !== null} onClick={backupData}><Download size={15} />{busy === 'backup' ? 'Creating backup…' : 'Download backup'}</Button>

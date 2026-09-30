@@ -24,6 +24,45 @@ def headers(learner_id="local"):
     return {"X-Dev-Learner-Id": learner_id}
 
 
+def test_legacy_title_repair_is_idempotent_and_preserves_user_names(note_api):
+    client, _, _ = note_api
+    base = '/v1/learners/local/workspace-notes'
+    note = client.post(base, headers=headers(), json={'title':'Original', 'body':'# Neural Network Fundamentals\n\nNeurons learn weighted connections.', 'frontmatter':{'study_note':True}}).json()
+    client.patch(f"{base}/{note['id']}", headers=headers(), json={'expectedRevision':1,'title':'can you teach me neural networks'})
+    manual = client.post(base, headers=headers(), json={'title':'Please remember this', 'body':'My chosen title.', 'frontmatter':{'title_source':'user'}}).json()
+    refreshed = client.post(f'{base}/refresh-titles',headers=headers())
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()['updated'] == 1
+    repaired = client.get(f"{base}/{note['id']}",headers=headers()).json()
+    assert repaired['title'] == 'Neural Network Fundamentals'
+    assert client.get(f"{base}/{manual['id']}",headers=headers()).json()['title'] == 'Please remember this'
+    assert client.post(f'{base}/refresh-titles',headers=headers()).json()['updated'] == 0
+    summary = next(n for n in client.get(base,headers=headers()).json() if n['id'] == note['id'])
+    assert summary['preview'] == 'Neurons learn weighted connections.'
+    assert summary['noteType'] == 'lesson'
+
+
+def test_course_backfill_uses_session_id_and_preserves_manual_title(note_api):
+    from backend.app.session_models import LearningSession
+    from backend.app.models import utc_now, TopicScope, GraphVersion
+    from backend.app.course_service import CourseService
+    from backend.app.course_models import CourseCreate
+    client, store, _ = note_api
+    now = utc_now()
+    course = CourseService(store).create_course('local', CourseCreate(name='Physics'))
+    store.save_scope(TopicScope(id='scope1',topic='Motion',resolved_meaning='Motion',objective='Study motion',depth='introductory',created_at=now))
+    store.save_graph(GraphVersion(id='g1',scope_id='scope1',title='Motion',description='Motion',publication_state='draft',trust_summary='Test',concepts=[],edges=[],generated_by='test',created_at=now))
+    store.save_session(LearningSession(id='s1',graph_id='g1',course_id=course.id,title='Motion',created_at=now,updated_at=now))
+    base = '/v1/learners/local/workspace-notes'
+    note = client.post(base,headers=headers(),json={'title':'Please retain my title','body':'Motion has direction. Speed is its magnitude.','frontmatter':{'title_source':'user','session_ids':['s1']}}).json()
+    assert client.post(f'{base}/refresh-titles',headers=headers()).json()['updated'] == 1
+    repaired = client.get(f"{base}/{note['id']}",headers=headers()).json()
+    assert repaired['title'] == 'Please retain my title'
+    assert repaired['frontmatter']['course_id'] == course.id
+    summary = client.get(base,headers=headers()).json()[0]
+    assert summary['preview'] == 'Motion has direction.'
+
+
 def test_markdown_note_crud_conflicts_search_and_export(note_api):
     client, _, vault = note_api
     created = client.post(

@@ -1,7 +1,7 @@
 """Versioned, local-only Forma backup archives.
 
 Archives deliberately contain application data only: SQLite records, the
-learner-owned Markdown vault, and locally owned material objects.  Provider
+learner-owned Markdown vault, locally owned material objects, and recordings. Provider
 credentials live in the desktop OS credential store and are never read here.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from sqlalchemy import inspect, text
 
 ARCHIVE_FORMAT = "forma-local-backup"
 ARCHIVE_VERSION = 1
-MAX_ARCHIVE_BYTES = 80 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 
 
 class BackupError(Exception):
@@ -52,6 +52,7 @@ class BackupService:
         self.data_root = Path(db_path).resolve().parent if db_path and db_path != ":memory:" else Path(__file__).resolve().parents[1] / "data"
         self.vault_root = Path(os.getenv("AI_TUTOR_NOTE_VAULT_DIR", str(self.data_root / "notes"))).resolve()
         self.material_root = Path(os.getenv("AI_TUTOR_MATERIAL_DIR", str(self.data_root / "materials"))).resolve()
+        self.recording_root = Path(os.getenv("AI_TUTOR_RECORDINGS_DIR", str(self.data_root / "recordings"))).resolve()
 
     def _tables(self) -> dict[str, list[dict[str, Any]]]:
         tables = [name for name in inspect(self.store.engine).get_table_names() if name != "alembic_version"]
@@ -72,7 +73,7 @@ class BackupService:
     def create(self) -> bytes:
         export = {"format": "forma-local-export", "version": 1, "tables": self._tables()}
         members: list[tuple[str, bytes | Path]] = [("data/export.json", json.dumps(export, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))]
-        members += self._files(self.vault_root, "vault") + self._files(self.material_root, "materials")
+        members += self._files(self.vault_root, "vault") + self._files(self.material_root, "materials") + self._files(self.recording_root, "recordings")
         checksums = {name: hashlib.sha256(value if isinstance(value, bytes) else value.read_bytes()).hexdigest() for name, value in members}
         manifest = {"format": ARCHIVE_FORMAT, "version": ARCHIVE_VERSION, "createdAt": datetime.now(timezone.utc).isoformat(), "files": checksums,
                     "excludes": ["provider credentials", "desktop tokens", "environment variables", "logs"]}
@@ -80,7 +81,10 @@ class BackupService:
             with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr("manifest.json", json.dumps(manifest, separators=(",", ":")))
                 for name, value in members:
-                    archive.writestr(name, value if isinstance(value, bytes) else value.read_bytes())
+                    if isinstance(value, bytes):
+                        archive.writestr(name, value)
+                    else:
+                        archive.write(value, name)
             output.seek(0)
             return output.read()
 
@@ -161,7 +165,7 @@ class BackupService:
                         parameters = ", ".join(f":{column}" for column in columns)
                         connection.execute(text(f'INSERT INTO "{table.replace(chr(34), chr(34) * 2)}" ({quoted}) VALUES ({parameters})'), [{key: self._decode(value) for key, value in row.items()} for row in rows])
                 connection.exec_driver_sql("PRAGMA foreign_keys=ON")
-            for name, root in (("vault", self.vault_root), ("materials", self.material_root)):
+            for name, root in (("vault", self.vault_root), ("materials", self.material_root), ("recordings", self.recording_root)):
                 staged = stage / name
                 if root.exists():
                     shutil.rmtree(root)

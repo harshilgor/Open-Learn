@@ -61,6 +61,12 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
         authorize(learner_id, x_dev_learner_id)
         return translate(lambda: service().list(learner_id))
 
+    @router.post("/learners/{learner_id}/workspace-notes/refresh-titles")
+    def refresh_titles(learner_id: str = learner_path(),
+                       x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> dict[str, int]:
+        authorize(learner_id, x_dev_learner_id)
+        return translate(lambda: service().refresh_generated_titles(learner_id))
+
     @router.get("/learners/{learner_id}/workspace-notes/search", response_model=WorkspaceNoteSearchResponse)
     def search_notes(query: str = Query(default="", max_length=240), limit: int = Query(default=30, ge=1, le=100),
                      learner_id: str = learner_path(),
@@ -129,6 +135,10 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
                     x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> Response:
         authorize(learner_id, x_dev_learner_id)
         translate(lambda: service().delete(learner_id, note_id, expected_revision))
+        from .class_recording_service import ClassRecordingService
+        ClassRecordingService(store_provider()).delete(learner_id, note_id)
+        from .lecture_service import LectureService
+        LectureService(store_provider()).delete(learner_id, note_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return router

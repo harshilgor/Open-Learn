@@ -1,9 +1,10 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { WorkspacePanel, type WorkspacePanelLayout } from './workspace-panel';
-import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_PANEL_SET_COLLAPSED_EVENT, WORKSPACE_PANEL_TOGGLE_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, type WorkspaceNoteSeed } from '@/lib/workspace-events';
+import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_PANEL_SET_COLLAPSED_EVENT, WORKSPACE_PANEL_TOGGLE_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, type WorkspaceNoteSeed, type WorkspaceQuizOpen } from '@/lib/workspace-events';
 import styles from './workspace-split.module.css';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
@@ -34,13 +35,14 @@ function validLayout(value: unknown): value is WorkspacePanelLayout {
 }
 
 export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePanel = false }: { children: ReactNode; quizSessionId?: string | null; quizConceptId?: string; hidePanel?: boolean }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useAppReducedMotion();
   const [layout, setLayout] = useState<WorkspacePanelLayout>(DEFAULT_LAYOUT);
   const [ready, setReady] = useState(false);
   const [compact, setCompact] = useState(false);
   const [noteSeed, setNoteSeed] = useState<WorkspaceNoteSeed | null>(null);
   const [noteToOpen, setNoteToOpen] = useState<string | null>(null);
   const [sourceToOpen, setSourceToOpen] = useState<{ spanId: string; versionId?: string } | null>(null);
+  const [quizToOpen, setQuizToOpen] = useState<WorkspaceQuizOpen | null>(null);
   const groupRef = useRef<HTMLDivElement | null>(null);
   const resizing = useRef(false);
 
@@ -77,6 +79,21 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     return () => window.removeEventListener(WORKSPACE_SOURCE_OPEN_EVENT, receiveSource);
   }, []);
   useEffect(() => {
+    const receiveQuiz = (event: Event) => {
+      const detail = (event as CustomEvent<WorkspaceQuizOpen>).detail;
+      if (!detail?.sessionId) return;
+      setQuizToOpen(detail);
+      if (detail.origin === 'learn' && detail.lessonNoteId) {
+        setNoteToOpen(detail.lessonNoteId);
+        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
+      } else {
+        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('quiz') ? current.tabs : [...current.tabs, 'quiz'], activeTab: 'quiz' }));
+      }
+    };
+    window.addEventListener(WORKSPACE_QUIZ_OPEN_EVENT, receiveQuiz);
+    return () => window.removeEventListener(WORKSPACE_QUIZ_OPEN_EVENT, receiveQuiz);
+  }, []);
+  useEffect(() => {
     const handleToggle = () => {
       setLayout(current => ({ ...current, collapsed: !current.collapsed }));
     };
@@ -95,7 +112,11 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     const timer = window.setTimeout(() => {
       try {
         const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-        if (validLayout(stored)) setLayout({ ...stored, width: Math.min(70, Math.max(30, stored.width)), tabs: stored.tabs.length ? stored.tabs : ['notes'] });
+        if (validLayout(stored)) {
+          const hasSavedQuiz = Boolean(localStorage.getItem(`forma-quiz:${quizSessionId || 'panel'}`) || localStorage.getItem('forma-quiz'));
+          const tabs = stored.tabs.filter(tab => tab !== 'quiz' || hasSavedQuiz);
+          setLayout({ ...stored, width: Math.min(70, Math.max(30, stored.width)), tabs: tabs.length ? tabs : ['notes'], activeTab: tabs.includes(stored.activeTab) ? stored.activeTab : 'notes' });
+        }
       } catch { /* A session remains usable without browser storage. */ }
       setReady(true);
     }, 0);
@@ -124,7 +145,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     toggle: () => setLayout(current => ({ ...current, collapsed: !current.collapsed })),
   }), [layout.collapsed]);
 
-  const panel = <WorkspacePanel quizSessionId={quizSessionId} quizConceptId={quizConceptId} layout={layout} onLayoutChange={setLayout} noteSeed={noteSeed} noteToOpen={noteToOpen} sourceToOpen={sourceToOpen} onNoteSeedConsumed={id => setNoteSeed(current => current?.id === id ? null : current)} onNoteOpenConsumed={noteId => setNoteToOpen(current => current === noteId ? null : current)}
+  const panel = <WorkspacePanel quizSessionId={quizSessionId} quizConceptId={quizConceptId} quizToOpen={quizToOpen} layout={layout} onLayoutChange={setLayout} noteSeed={noteSeed} noteToOpen={noteToOpen} sourceToOpen={sourceToOpen} onNoteSeedConsumed={id => setNoteSeed(current => current?.id === id ? null : current)} onNoteOpenConsumed={noteId => setNoteToOpen(current => current === noteId ? null : current)}
     onCollapse={() => setLayout(current => ({ ...current, collapsed: true }))}
     onExpand={() => setLayout(current => ({ ...current, collapsed: false }))} />;
 

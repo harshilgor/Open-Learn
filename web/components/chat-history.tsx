@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Ellipsis, Plus, Search } from 'lucide-react';
-import { learningApi, LearningApiError, type ChatSessionSummary } from '@/lib/api';
+import { Ellipsis, Plus } from 'lucide-react';
+import { learningApi, LearningApiError, type ChatSessionSummary, type CourseSummary } from '@/lib/api';
 import styles from './chat-history.module.css';
 
 type Group = 'Today' | 'Yesterday' | 'Previous 7 days' | 'Older';
@@ -20,10 +20,22 @@ function groupFor(iso: string, now: Date): Group {
 
 const GROUP_ORDER: Group[] = ['Today', 'Yesterday', 'Previous 7 days', 'Older'];
 
-export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
+function relativeTime(iso: string, now: Date) {
+  const minutes = Math.max(0, Math.floor((now.getTime() - new Date(iso).getTime()) / 60000));
+  if (!Number.isFinite(minutes)) return '';
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h ago`;
+  if (minutes < 10080) return `${Math.floor(minutes / 1440)}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [], courseFilter = null }: {
   activeSessionId: string | null;
   refreshKey: number;
   onOpen: (sessionId: string | null) => void;
+  courses?: CourseSummary[];
+  courseFilter?: string | null;
 }) {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,7 +52,6 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
     }
     return { message: 'Could not load conversations.', detail: 'Please retry. Your chats stay saved on the server.' };
   }
-  const [query, setQuery] = useState('');
   const [menuId, setMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -86,22 +97,18 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
     return () => window.removeEventListener('keydown', close);
   }, [menuId]);
 
-  const visible = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return sessions;
-    return sessions.filter(item => item.title.toLowerCase().includes(needle));
-  }, [sessions, query]);
-
   const groups = useMemo(() => {
     const now = new Date();
-    const buckets = new Map<Group, ChatSessionSummary[]>();
-    for (const item of visible) {
-      const group = groupFor(item.updatedAt, now);
+    const buckets = new Map<string, ChatSessionSummary[]>();
+    const courseNames = new Map(courses.map(course => [course.id, course.name]));
+    for (const item of sessions) {
+      if (courseFilter && item.courseId !== courseFilter) continue;
+      const group = item.courseId ? `course:${item.courseId}` : `date:${groupFor(item.updatedAt, now)}`;
       if (!buckets.has(group)) buckets.set(group, []);
       buckets.get(group)!.push(item);
     }
-    return GROUP_ORDER.filter(group => buckets.has(group)).map(group => ({ group, items: buckets.get(group)! }));
-  }, [visible]);
+    return [...courses.map(course => `course:${course.id}`).filter(key => buckets.has(key)), ...[...buckets.keys()].filter(key => key.startsWith('course:') && !courseNames.has(key.slice(7))), ...GROUP_ORDER.map(group => `date:${group}`).filter(key => buckets.has(key))].map(key => ({ group: key.startsWith('course:') ? courseNames.get(key.slice(7)) || 'Other course' : key.slice(5), key, items: buckets.get(key)! }));
+  }, [sessions, courses, courseFilter]);
 
   async function commitRename(id: string) {
     const title = draft.trim();
@@ -139,12 +146,22 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
     }
   }
 
+  async function regenerateTitle(id: string) {
+    if (busyId) return;
+    setBusyId(id); setMenuId(null);
+    try {
+      const updated = await learningApi.regenerateChatTitle(id);
+      setSessions(current => current.map(item => item.id === id ? { ...item, title: updated.title || item.title } : item));
+      window.dispatchEvent(new CustomEvent('forma:chat-title-changed'));
+    } catch (cause) {
+      const friendly = friendlyError(cause);
+      setError(friendly.message); setErrorDetail(cause instanceof Error ? cause.message : friendly.detail);
+    } finally { setBusyId(null); }
+  }
+
   return (
     <div className={styles.history}>
-      <div className={styles.label}><span>Recent chats</span>{sessions.length > 0 && !loading ? <span className={styles.count}>{sessions.length}</span> : null}</div>
-      {sessions.length > 8 && !loading ? (
-        <div className={styles.search}><Search size={14} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search chats" aria-label="Search chat history" /></div>
-      ) : null}
+      <div className={styles.label}>Recents</div>
       {loading ? (
         <div aria-busy="true" aria-label="Loading chat history" className={styles.loading}>
           {[0, 1, 2].map(index => <span key={index} className={styles.skeleton} />)}
@@ -157,17 +174,14 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
           <button type="button" className={styles.retry} onClick={() => void load()}>Retry</button>
         </div>
       ) : null}
-      {!loading && !error && sessions.length === 0 ? (
+      {!loading && !error && groups.length === 0 ? (
         <div className={styles.state}>
           <p>No conversations yet. Ask your first question and it will appear here.</p>
           <button type="button" className={styles.retry} onClick={() => onOpen(null)}><Plus size={14} />New chat</button>
         </div>
       ) : null}
-      {!loading && !error && sessions.length > 0 && visible.length === 0 ? (
-        <div className={styles.state}><p>No chats match “{query.trim()}”.</p></div>
-      ) : null}
-      {!loading && !error ? groups.map(({ group, items }) => (
-        <div key={group}>
+      {!loading && !error ? groups.map(({ group, key, items }) => (
+        <div key={key}>
           <div className={styles.groupLabel}>{group}</div>
           <ul className={styles.list}>
             {items.map(item => (
@@ -194,7 +208,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
                     className={'nav-item ' + styles.item + (item.id === activeSessionId ? ' active' : '')}
                     onClick={() => onOpen(item.id)}
                   >
-                    <span className={styles.title}>{item.title}</span>
+                    <span className={styles.itemBody}><span className={styles.title}>{item.title}</span><span className={styles.meta}>{relativeTime(item.updatedAt, new Date())}{item.courseId ? <span className={styles.courseTag}>{courses.find(course => course.id === item.courseId)?.name || 'Course'}</span> : null}</span></span>
                   </button>
                 )}
                 {renamingId !== item.id ? (
@@ -213,6 +227,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen }: {
                     <button type="button" aria-hidden tabIndex={-1} className={styles.scrim} onClick={() => { setMenuId(null); setConfirmDeleteId(null); }} />
                     <div className={styles.menu} role="menu" aria-label={`Actions for ${item.title}`}>
                       <button type="button" role="menuitem" onClick={() => { setDraft(item.title); setRenamingId(item.id); setMenuId(null); setConfirmDeleteId(null); }}>Rename</button>
+                      <button type="button" role="menuitem" disabled={busyId === item.id || item.turnCount === 0} onClick={() => void regenerateTitle(item.id)}>Regenerate title</button>
                       {confirmDeleteId === item.id ? (
                         <button type="button" role="menuitem" className={styles.danger} disabled={busyId === item.id} onClick={() => void commitDelete(item.id)}>
                           {busyId === item.id ? 'Deleting…' : 'Confirm delete'}

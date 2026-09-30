@@ -107,7 +107,7 @@ def build_usage_router(store_provider) -> APIRouter:
     @router.get("/usage/analytics", response_model=UsageAnalytics)
     def analytics_view(
         range: Literal["7d", "30d"] = Query(default="7d"),
-        dimension: Literal["mode", "model", "provider"] = Query(default="mode"),
+        dimension: Literal["mode", "model", "provider", "course"] = Query(default="mode"),
         limit: int = Query(default=5, ge=1, le=20),
         owner: str = Depends(material_owner),
     ) -> dict:

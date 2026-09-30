@@ -74,7 +74,7 @@ class SessionCreate(ApiModel):
     # Local single-user default for the prototype. Hosted authentication will
     # replace this request field with the authenticated learner identity.
     learner_id: str = Field(default="local", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
-    gear: TeachingGear = TeachingGear.guided
+    gear: TeachingGear = TeachingGear.quick
     domain_pack_id: str | None = Field(default=None, max_length=120)
     domain_pack_version: int | None = Field(default=None, ge=1)
     course_id: str | None = Field(default=None, max_length=160)
@@ -102,7 +102,7 @@ class LearningSession(ApiModel):
     title: str | None = Field(default=None, max_length=120)
     current_concept_id: str | None = None
     current_lesson_id: str | None = None
-    gear: TeachingGear = TeachingGear.guided
+    gear: TeachingGear = TeachingGear.quick
     state_version: int = 1
     authority_revision: int = 1
     current_branch_id: str | None = None

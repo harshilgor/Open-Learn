@@ -12,6 +12,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Path, Header
 from sqlalchemy import inspect, text
 
+from .lecture_storage import LectureObjectStore
+
 
 def _identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
@@ -67,8 +69,14 @@ def build_privacy_router(store_provider: Any) -> APIRouter:
         store = local_store()
         tables = [name for name in inspect(store.engine).get_table_names() if name != "alembic_version"]
         deleted: dict[str, int] = {}
+        lecture_objects: list[tuple[str, str, str]] = []
         with store.engine.begin() as connection:
             object_keys = [row[0] for row in connection.execute(text("SELECT object_key FROM material_versions WHERE object_key IS NOT NULL"))]
+            if {"lecture_recordings", "lecture_audio_chunks"}.issubset(tables):
+                lecture_objects = [tuple(row) for row in connection.execute(text("""
+                    SELECT r.learner_id,c.recording_id,c.storage_key FROM lecture_audio_chunks c
+                    JOIN lecture_recordings r ON r.id=c.recording_id
+                """))]
             connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             for table in tables:
                 result = connection.execute(text(f"DELETE FROM {_identifier(table)}"))
@@ -78,6 +86,9 @@ def build_privacy_router(store_provider: Any) -> APIRouter:
         for key in object_keys:
             if isinstance(key, str) and key.isidentifier():
                 (material_root / key).unlink(missing_ok=True)
+        objects = LectureObjectStore()
+        for owner, recording_id, storage_key in lecture_objects:
+            objects.delete(owner, recording_id, storage_key)
         return {"deleted": deleted, "total": sum(deleted.values())}
 
     return router

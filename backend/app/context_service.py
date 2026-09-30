@@ -147,7 +147,10 @@ def save_manifest(store, owner, sid, query, sources, selected_span_ids=None):
         "sources": [{key: source[key] for key in ("spanId", "versionId", "pageIndex", "retrieval") if key in source} for source in sources],
         "evidenceBytes": sum(len(source["text"].encode("utf-8")) for source in sources),
         "selectedSpanIds": list(selected_span_ids or []),
-        "limitations": ["Text extraction only", "No claim-level verification", "Only attached, learner-owned passages enter this context", "Sample papers and answer keys excluded"] + ([] if any(source.get("retrieval") == "hybrid_embedding" for source in sources) else ["No semantic ranking"]),
+        "limitations": ["Text extraction only", "No claim-level verification", "Sample papers and answer keys excluded"]
+            + (["Study context is not independently verified"] if any(source.get("retrieval") == "study_context" for source in sources)
+               else ["Only attached, learner-owned passages enter this context"])
+            + ([] if any(source.get("retrieval") == "hybrid_embedding" for source in sources) else ["No semantic ranking"]),
     }
     with store.transaction() as connection:
         connection.execute(text("INSERT INTO context_records(id,owner_id,kind,session_id,sequence,payload) VALUES(:id,:owner,'retrieval_manifest',:sid,0,:payload)"), {"id": manifest["id"], "owner": owner, "sid": sid, "payload": encoded(manifest)})
@@ -163,5 +166,12 @@ def get_manifest(store, owner, manifest_id):
     service = MaterialService(store)
     service.session(owner, manifest["sessionId"])
     for source in manifest["sources"]:
-        service.version(owner, source["versionId"])
+        version_id = source["versionId"]
+        if version_id.startswith("quiz-context:"):
+            from .workflow_store import WorkflowStore
+            quiz = WorkflowStore(store).read(owner, version_id.removeprefix("quiz-context:"), "quiz")
+            if quiz.get("sessionId") != manifest["sessionId"]:
+                problem("context_not_found", "Context is not available", 404)
+        else:
+            service.version(owner, version_id)
     return manifest

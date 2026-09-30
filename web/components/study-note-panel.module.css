@@ -19,9 +19,11 @@
 .updated span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .updated button{flex:none;border:0;border-radius:6px;padding:4px 8px;background:transparent;color:#51604a;font-size:12px}
 .updated button:hover{background:#e2e9dc}
-.studyBar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid #edf0eb;background:#fafcf8;color:#5b6656;font-size:12px}
-.studyBar>svg{flex:none;color:#798c68}
-.studyBarText{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.studyBar{display:grid;gap:8px;padding:10px 14px;border-bottom:1px solid #edf0eb;background:#fafcf8;color:#5b6656;font-size:12px}
+.studyBarDetails{display:flex;min-width:0;align-items:flex-start;gap:8px;line-height:1.45}
+.studyBarDetails>svg{flex:none;margin-top:1px;color:#798c68}
+.studyBarText{min-width:0;flex:1;white-space:normal;overflow-wrap:anywhere}
+.studyBarActions{display:flex;justify-content:flex-end;align-items:center;gap:8px}
 .studyBarLink{display:inline-flex;flex:none;align-items:center;gap:3px;border:0;border-radius:6px;padding:4px 7px;background:transparent;color:#51604a;font-size:12px}
 .studyBarLink:hover{background:#edf3e9}
 .studyBarMode select{flex:none;height:28px;border:1px solid #dfe5dc;border-radius:6px;background:#fff;color:#4e5e47;font-size:11px;padding:0 6px}

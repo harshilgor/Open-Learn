@@ -43,9 +43,11 @@ function readingParts(block: ReadingBlock) {
   ]);
 }
 
-export function LessonReader({ id, blocks, onSelect, visualPending = false, lessonId }: {
+export function LessonReader({ id, blocks, onSelect, visualPending = false, lessonId, onExerciseResolved, onConceptSelect }: {
   id: string; blocks: ReadingBlock[]; visualPending?: boolean; lessonId?: string;
   onSelect?: (block: ReadingBlock, raw: string, equation?: boolean) => void;
+  onExerciseResolved?: (id: string) => void;
+  onConceptSelect?: (term: string) => void;
 }) {
   const stored = useSyncExternalStore(subscribe, snapshot, () => defaults);
   const prefs = { size: 'standard', spacing: 'comfortable' };
@@ -56,7 +58,7 @@ export function LessonReader({ id, blocks, onSelect, visualPending = false, less
     {blocks.map((block, blockIndex) => <section key={block.id} id={`${id}-${block.id}`} tabIndex={-1} data-reading-block className={styles.block} style={{ fontSize: size }}>
       <h2>{block.heading || 'Explore this idea'}</h2>
       {readingParts(block).map((part, index) => <div key={part.key}>
-        {part.text && <RichContent body={part.text} onExplore={onSelect ? (raw, equation) => onSelect(block, raw, equation) : undefined}/>}
+        {part.text && <RichContent body={part.text} onExplore={onSelect ? (raw, equation) => onSelect(block, raw, equation) : undefined} onExerciseResolved={onExerciseResolved} onConceptSelect={onConceptSelect}/>}
         {part.visual && <Visualization value={part.visual} lessonId={part.visual.sourceLessonId || lessonId}/>}
         {visualPending && blockIndex === 0 && index === 0 && !(block.visualizations?.length) && <VisualizationPlaceholder/>}
       </div>)}

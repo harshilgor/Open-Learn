@@ -79,6 +79,7 @@ def _record_usage(row: dict) -> dict | None:
             provider_label = provider_label or "unknown"
     model = str(row.get("model") or metrics.get("model") or "unknown")
     mode = str(row.get("mode") or "").lower()
+    course = str(row.get("course_name") or "Unassigned")
     return {
         "total": total,
         "prompt": prompt,
@@ -91,6 +92,7 @@ def _record_usage(row: dict) -> dict | None:
         "provider": provider_label,
         "model": model,
         "mode": mode,
+        "course": course,
         "session_id": str(row.get("session_id") or "unknown"),
     }
 
@@ -165,10 +167,15 @@ def fetch_completed_rows(store, owner: str, session_id: str | None = None) -> li
     """Load completed generation rows for one owner. Ownership enforced here."""
     from sqlalchemy import text
 
-    query = "SELECT id, owner_id, session_id, status, mode, provider, model, payload, created_at FROM generation_records WHERE owner_id=:owner AND status='completed'"
+    query = """SELECT g.id, g.owner_id, g.session_id, g.status, g.mode, g.provider, g.model, g.payload, g.created_at,
+                      c.name AS course_name
+               FROM generation_records g
+               LEFT JOIN learning_sessions s ON s.id=g.session_id AND s.learner_id=g.owner_id
+               LEFT JOIN courses c ON c.id=s.course_id AND c.owner_id=g.owner_id
+               WHERE g.owner_id=:owner AND g.status='completed'"""
     params: dict[str, object] = {"owner": owner}
     if session_id:
-        query += " AND session_id=:session"
+        query += " AND g.session_id=:session"
         params["session"] = session_id
     with store.engine.connect() as connection:
         result = connection.execute(text(query), params).mappings().all()
@@ -200,7 +207,7 @@ def fetch_session_titles(store, owner: str) -> dict[str, str]:
     return titles
 
 
-DIMENSIONS = ("mode", "model", "provider")
+DIMENSIONS = ("mode", "model", "provider", "course")
 MODE_LABELS = {"ask": "Ask", "learn": "Learn"}
 SERIES_LIMIT = 5
 
@@ -210,6 +217,8 @@ def _dimension_key(item: dict, dimension: str) -> str:
         return item["model"]
     if dimension == "provider":
         return item["provider"]
+    if dimension == "course":
+        return item["course"]
     return MODE_LABELS.get(item["mode"], "Other")
 
 

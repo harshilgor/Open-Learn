@@ -1,5 +1,5 @@
 .card{--viz-accent:#59836b;--viz-soft:#edf3ed;--viz-line:#a8b5a9;margin:18px 0;padding:18px;min-width:0;overflow:hidden;border:1px solid var(--border);border-radius:12px;background:var(--card);color:var(--foreground)}
-:global(.dark) .card{--viz-accent:#94c5a6;--viz-soft:#20312a;--viz-line:#647c6c}
+:global(.dark) .card{--viz-accent:#c5c5c5;--viz-soft:#353535;--viz-line:#858585}
 .card figcaption{margin-bottom:10px}.card figcaption strong{display:block;font-size:16px;line-height:1.4;font-weight:600}.card figcaption p{margin:5px 0 0;color:var(--muted-foreground);font-size:13px;line-height:1.5}
 .eyebrow{display:block;margin-bottom:4px;color:var(--viz-accent);font-size:10px;font-weight:650;letter-spacing:.09em;text-transform:uppercase}
 .chart{width:100%;height:310px;min-width:0}.chart :global(svg){font-size:11px}

@@ -15,6 +15,7 @@ from .generation_store import GenerationStore, TERMINAL
 from .context_provenance import block_decision, provider_input_fingerprint
 from .journey_service import JourneyService
 from .model_provider import ModelProviderError, OpenRouterLessonProvider, usage_metrics
+from .teaching_output_limits import teaching_output_limit
 from .streaming_lesson import ProgressiveLessonParser
 
 ERRORS = {"VALIDATION_FAILED", "CONTEXT_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_ERROR", "VISION_UNSUPPORTED", "STREAM_INTERRUPTED", "REPLAY_EXPIRED", "CANCELLED", "PERSISTENCE_FAILED", "REVISION_CONFLICT"}
@@ -154,9 +155,10 @@ class DurableReplayEventStore:
 
 
 class GenerationManager:
-    def __init__(self, store, provider):
+    def __init__(self, store, provider, provider_getter=None):
         self.store = store
         self.provider = provider
+        self.provider_getter = provider_getter
         self.records = GenerationStore(store)
         self.buffer: ReplayEventStore = DurableReplayEventStore(self.records)
         self.tasks: dict[str, asyncio.Task] = {}
@@ -167,23 +169,26 @@ class GenerationManager:
         self.flush_seconds = int(os.getenv("GENERATION_STREAM_FLUSH_MS", "80")) / 1000
 
     def create(self, owner: str, session_id: str, request: GenerationRequest, key: str) -> dict:
-        if not self.provider:
+        provider = self.provider_getter() if self.provider_getter else self.provider
+        if not provider:
             raise ModelProviderError("Connect a model provider before starting a generation.")
+        self.provider = provider
         from .material_service import MaterialService
         MaterialService(self.store).session(owner, session_id)
-        journey_service = JourneyService(self.store, self.provider)
+        journey_service = JourneyService(self.store, provider)
         record = self.records.create(owner, session_id, request.model_dump(mode="json", by_alias=True), key,
-            getattr(self.provider, "provider_name", "unknown"), getattr(self.provider, "model", "unknown"),
+            getattr(provider, "provider_name", "unknown"), getattr(provider, "model", "unknown"),
             on_create=lambda conn, generation_id: journey_service.submit_stream_turn(conn, owner, session_id, request, generation_id))
         if record["status"] == "queued" and record["id"] not in self.tasks:
-            self.tasks[record["id"]] = asyncio.create_task(self._run(record["id"], owner, request), name=record["id"])
+            self.tasks[record["id"]] = asyncio.create_task(self._run(record["id"], owner, request, provider), name=record["id"])
         return record
 
-    async def _run(self, generation_id: str, owner: str, request: GenerationRequest) -> None:
+    async def _run(self, generation_id: str, owner: str, request: GenerationRequest, active_provider=None) -> None:
         sequence = 0
         visual_task = None
         started_at = time.time()
-        provider = copy.copy(self.provider) if isinstance(self.provider, OpenRouterLessonProvider) else self.provider
+        chosen_provider = active_provider if active_provider is not None else self.provider
+        provider = copy.copy(chosen_provider) if isinstance(chosen_provider, OpenRouterLessonProvider) else chosen_provider
         try:
             try:
                 self.records.transition(generation_id, "preparing")
@@ -243,8 +248,9 @@ class GenerationManager:
             self.records.update_metrics(generation_id, {"providerStartedAt": provider_started_at})
             provider_input = prepared["generationContext"] if getattr(provider, "supports_generation_context", False) else prepared["prompt"]
             context = prepared["generationContext"]
+            output_limit = teaching_output_limit(request.gear, provider, context)
             block_decisions = [block_decision(block) for block in context.blocks]
-            wire_payload = provider.streaming_payload(provider_input, 3500, prepared.get("images")) if hasattr(provider, "streaming_payload") else provider_input
+            wire_payload = provider.streaming_payload(provider_input, output_limit, prepared.get("images")) if hasattr(provider, "streaming_payload") else provider_input
             # Hash the exact provider-facing payload together with the model and
             # provider identity. Persist only this digest and safe decisions;
             # the payload can contain learner text, note excerpts, or images.
@@ -261,6 +267,7 @@ class GenerationManager:
                 "providerInputSha256": wire_digest,
                 "estimatedInputTokens": context.estimated_input_tokens,
                 "contextBudgetTokens": context.budget_tokens,
+                "requestedOutputTokens": output_limit,
                 "recentMessageCount": len(context.recent_messages),
                 "contextBlockCount": len(context.blocks),
                 "contextOmittedCount": len(context.omitted),
@@ -277,7 +284,7 @@ class GenerationManager:
                 "learnerContextUsed": any(block.kind == "evidence" for block in context.blocks),
                 "courseContextUsed": any(block.kind == "course" for block in context.blocks),
             })
-            provider_stream = provider.stream_text(provider_input, 3500, images=prepared.get("images")) if prepared.get("images") else provider.stream_text(provider_input, 3500)
+            provider_stream = provider.stream_text(provider_input, output_limit, images=prepared.get("images")) if prepared.get("images") else provider.stream_text(provider_input, output_limit)
             async for delta in provider_stream:
                 if self.records.cancelled(generation_id):
                     await self._cancel(generation_id)
@@ -356,7 +363,9 @@ class GenerationManager:
                     self.records.update_metrics(generation_id, {"errorCode": code, "completedAt": time.time()}, connection)
                     self.records.transition(generation_id, "failed", error_code=code, sequence=sequence, connection=connection)
                     JourneyService(self.store, provider).finish_stream_turn(owner, record["session"], generation_id, "failed", code, connection)
-                    self.records.append_event(generation_id, "generation.error", {"code": code, "message": "The generation could not be completed. Please try again."}, connection)
+                    detail = str(exc).strip() if isinstance(exc, ModelProviderError) else ""
+                    message = detail if detail and detail not in ERRORS else "The generation could not be completed. Please try again."
+                    self.records.append_event(generation_id, "generation.error", {"code": code, "message": message}, connection)
         finally:
             if visual_task and not visual_task.done():
                 visual_task.cancel()

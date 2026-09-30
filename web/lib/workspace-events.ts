@@ -10,11 +10,33 @@ export const WORKSPACE_NOTE_OPEN_EVENT = 'forma:workspace-note-open';
 export const WORKSPACE_NOTE_MENTION_EVENT = 'forma:workspace-note-mention';
 export const WORKSPACE_NOTE_REPLACE_DRAFT_EVENT = 'forma:workspace-note-replace-draft';
 export const WORKSPACE_SOURCE_OPEN_EVENT = 'forma:workspace-source-open';
+export const WORKSPACE_QUIZ_OPEN_EVENT = 'forma:workspace-quiz-open';
+export const WORKSPACE_QUIZ_REQUEST_EVENT = 'forma:workspace-quiz-request';
 export const CHAT_SESSION_OPEN_EVENT = 'forma:chat-session-open';
 export const WORKSPACE_PANEL_TOGGLE_EVENT = 'forma:workspace-panel-toggle';
 export const WORKSPACE_PANEL_SET_COLLAPSED_EVENT = 'forma:workspace-panel-set-collapsed';
 
 export type WorkspaceNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
+export type WorkspaceQuizOpen = {
+  id: string;
+  sessionId: string;
+  conceptId?: string;
+  requestedTopic?: string;
+  lessonNoteId?: string;
+  sourceTransitionId?: string;
+  origin: 'ask' | 'learn';
+  quizId?: string;
+};
+
+export function openWorkspaceQuiz(input: Omit<WorkspaceQuizOpen, 'id'>): void {
+  window.dispatchEvent(new CustomEvent<WorkspaceQuizOpen>(WORKSPACE_QUIZ_OPEN_EVENT, {
+    detail: { ...input, id: crypto.randomUUID() },
+  }));
+}
+
+export function requestWorkspaceQuiz(): void {
+  window.dispatchEvent(new Event(WORKSPACE_QUIZ_REQUEST_EVENT));
+}
 
 export function toggleWorkspacePanel(): void {
   window.dispatchEvent(new CustomEvent(WORKSPACE_PANEL_TOGGLE_EVENT));

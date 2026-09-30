@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Literal
 from uuid import uuid4
 
@@ -59,9 +60,14 @@ from .recommendation_routes import build_recommendation_router
 from .backup_routes import build_backup_router
 from .course_routes import build_course_router
 from .study_note_routes import build_study_note_router
+from .study_note_service import StudyNoteService
 from .usage_routes import build_usage_router
 from .review_routes import build_review_router
 from .session_snapshot_routes import build_session_snapshot_router
+from .class_recording_routes import build_class_recording_router
+from .lecture_routes import build_lecture_router
+from .lecture_pipeline import LectureWorker
+from threading import Thread
 
 app = FastAPI(title="AI Tutor Harness API", version="0.1.0")
 local_web_origin = os.getenv("FORMA_WEB_ORIGIN", "http://127.0.0.1:3000")
@@ -87,6 +93,17 @@ generator = GraphGenerator()
 lesson_provider = configured_lesson_provider()
 
 
+def apply_browser_provider(values: dict[str, str]) -> None:
+    """Activate browser-saved keys for subsequent requests without a restart."""
+    global lesson_provider
+    for name in ("AI_TUTOR_PROVIDER", "OPENROUTER_API_KEY", "OPENAI_API_KEY"):
+        if name in values:
+            os.environ[name] = values[name]
+        else:
+            os.environ.pop(name, None)
+    lesson_provider = configured_lesson_provider()
+
+
 def get_store() -> Store:
     return store
 
@@ -100,7 +117,7 @@ app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
 app.include_router(build_privacy_router(get_store))
-app.include_router(build_provider_key_router())
+app.include_router(build_provider_key_router(apply_browser_provider, lambda: lesson_provider))
 app.include_router(build_workspace_note_router(get_store))
 app.include_router(build_recommendation_router(get_store))
 app.include_router(build_backup_router(get_store))
@@ -108,6 +125,28 @@ app.include_router(build_study_note_router(get_store, lambda: lesson_provider))
 app.include_router(build_usage_router(get_store))
 app.include_router(build_review_router(get_store, lambda: lesson_provider))
 app.include_router(build_session_snapshot_router(get_store))
+app.include_router(build_class_recording_router(get_store, lambda: lesson_provider))
+app.include_router(build_lecture_router(get_store, lambda: lesson_provider))
+
+
+@app.on_event("startup")
+def resume_interrupted_class_recordings() -> None:
+    """Resume recordings left queued or running when the local app restarts."""
+    from sqlalchemy import text
+    with store.engine.connect() as connection:
+        pending = connection.execute(text("SELECT id, learner_id FROM class_recordings WHERE status IN ('queued','processing')")).all()
+    with store.transaction() as connection:
+        connection.execute(text("UPDATE class_recordings SET status='queued',error=NULL WHERE status='processing'"))
+    from .class_recording_service import ClassRecordingService
+    for recording_id, learner_id in pending:
+        Thread(target=ClassRecordingService(store, lesson_provider).process, args=(recording_id, learner_id), daemon=True).start()
+
+
+@app.on_event("startup")
+def resume_lecture_pipeline() -> None:
+    worker = LectureWorker(store, lambda: lesson_provider)
+    worker.reconcile()
+    Thread(target=worker.drain, daemon=True).start()
 app.include_router(build_course_router(get_store, lambda: lesson_provider))
 
 
@@ -340,9 +379,47 @@ def rename_chat_session(
     owner: str = Depends(material_owner),
     db: Store = Depends(get_store),
 ) -> LearningSession:
+    previous = db.get_session(session_id)
     updated = db.rename_session(session_id, owner, request.title)
     if updated is None:
         raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
+    try:
+        StudyNoteService(db, lesson_provider).sync_session_title(owner, session_id, previous.title if previous else "", updated.title)
+    except WorkspaceNoteError:
+        pass
+    return updated
+
+
+@app.post("/v1/sessions/{session_id}/regenerate-title", response_model=LearningSession)
+def regenerate_chat_title(
+    session_id: str,
+    automatic: bool = Query(default=False),
+    owner: str = Depends(material_owner),
+    db: Store = Depends(get_store),
+) -> LearningSession:
+    """Name a specific concept after the first tutor reply; explicit regeneration is always allowed."""
+    session = db.get_session(session_id)
+    if session is None or session.learner_id != owner:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
+    if automatic and (session.title or "") not in {"", "Untitled conversation", short_title(session.goal)}:
+        return session
+    from .journey_service import JourneyService
+    journey = JourneyService(db, lesson_provider).get(owner, session_id)
+    completed = next((turn for turn in journey.get("turns", []) if turn.get("lesson")), None)
+    if not completed:
+        raise HTTPException(status_code=409, detail={"code": "title_not_ready", "message": "Wait for the first tutor response before naming this chat."})
+    if lesson_provider is None:
+        raise HTTPException(status_code=503, detail={"code": "provider_unavailable", "message": "Connect a model provider to generate a chat title."})
+    first_blocks = (completed.get("lesson") or {}).get("blocks") or []
+    from .content_titles import generate_content_title
+    title = generate_content_title(str(completed.get("question") or session.goal or ""), first_blocks, lesson_provider)
+    updated = db.rename_session(session_id, owner, title)
+    if updated is None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
+    try:
+        StudyNoteService(db, lesson_provider).sync_session_title(owner, session_id, session.title or "", updated.title)
+    except WorkspaceNoteError:
+        pass
     return updated
 
 

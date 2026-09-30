@@ -107,6 +107,28 @@ def build_course_router(store_provider: Any, provider_getter: Any = None) -> API
             "total": total,
         }
 
+    @router.put("/courses/{course_id}/sessions/{session_id}")
+    def add_course_session(
+        course_id: str,
+        session_id: str,
+        owner: str = Depends(material_owner),
+        svc: CourseService = Depends(service),
+    ) -> dict:
+        if not svc.set_session_course(owner, course_id, session_id):
+            raise HTTPException(status_code=404, detail={"code": "course_or_session_not_found", "message": "Course or chat does not exist."})
+        return {"courseId": course_id, "sessionId": session_id}
+
+    @router.delete("/courses/{course_id}/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def remove_course_session(
+        course_id: str,
+        session_id: str,
+        owner: str = Depends(material_owner),
+        svc: CourseService = Depends(service),
+    ) -> None:
+        if not svc.set_session_course(owner, course_id, session_id, remove=True):
+            raise HTTPException(status_code=404, detail={"code": "course_or_session_not_found", "message": "Course or chat does not exist."})
+        return None
+
     @router.get("/courses/{course_id}/notes")
     def list_course_notes(
         course_id: str,

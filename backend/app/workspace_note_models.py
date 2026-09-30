@@ -43,6 +43,8 @@ class WorkspaceNoteRecord(ApiModel):
 class WorkspaceNoteSummary(ApiModel):
     id: str
     title: str
+    preview: str = ""
+    note_type: Literal["manual", "lesson", "recording"] = "manual"
     frontmatter: dict[str, Any] = Field(default_factory=dict)
     revision: int = Field(ge=1)
     relative_path: str

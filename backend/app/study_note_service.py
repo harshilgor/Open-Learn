@@ -114,7 +114,7 @@ class StudyNoteService:
             title = "Study notes"
         # Auto-apply by default so Learn writes the Lesson into Notes while
         # chat stays for teaching, quizzes, and follow-ups.
-        frontmatter = {"study_note": True, "session_ids": [sid], "tutor_updates": "auto"}
+        frontmatter = {"study_note": True, "session_ids": [sid], "tutor_updates": "auto", "title_source": "auto"}
         if session.course_id:
             frontmatter["course_id"] = session.course_id
         return self.notes.create(
@@ -131,6 +131,21 @@ class StudyNoteService:
                 frontmatter=frontmatter,
             ),
         )
+
+    def sync_session_title(self, owner: str, sid: str, previous_title: str, title: str) -> None:
+        """Rename an untouched automatic lesson title when its chat gets a better name."""
+        note = self.find_note(owner, sid)
+        if note is None or note.title == title:
+            return
+        source = note.frontmatter.get("title_source")
+        if source == "user" or (source is None and note.title != previous_title):
+            return
+        old_heading = f"# {note.title}\n"
+        body = f"# {title}\n{note.body[len(old_heading):]}" if note.body.startswith(old_heading) else note.body
+        self.notes.update(owner, note.id, WorkspaceNoteUpdate(
+            expected_revision=note.revision, title=title, body=body,
+            frontmatter={"title_source": "auto"},
+        ))
 
     def ensure_learn_lesson(self, owner, sid) -> WorkspaceNoteRecord:
         """Open the Notes Lesson for Learn: create if needed, auto-apply, flush backlog."""

@@ -42,6 +42,24 @@ be upgraded in place.
 The API is available at `http://127.0.0.1:8000` and its OpenAPI document at
 `/docs`.
 
+## Class recordings to study notes
+
+Class audio is uploaded from the browser to the owner-scoped local API, stored
+beside the database, and linked to the existing Markdown note. Processing
+transcribes with the selected provider's audio transcription API and creates a Markdown study
+guide with the selected text provider. Processing state survives restarts;
+queued or interrupted recordings resume on startup. Failed jobs keep the audio
+and can be retried from the note.
+
+Recordings are limited to 24 MB per file. Transcription follows `AI_TUTOR_PROVIDER`
+by default: OpenRouter users can use their existing `OPENROUTER_API_KEY`, and
+OpenAI users can use `OPENAI_API_KEY`. `AI_TUTOR_TRANSCRIPTION_PROVIDER` can
+select either provider independently. The OpenRouter audio model defaults to
+`openai/whisper-large-v3` (`AI_TUTOR_OPENROUTER_TRANSCRIPTION_MODEL` overrides it);
+the direct OpenAI model defaults to `gpt-4o-mini-transcribe`
+(`AI_TUTOR_TRANSCRIPTION_MODEL` overrides it). Audio and note files can be placed in custom
+locations with `AI_TUTOR_RECORDINGS_DIR` and `AI_TUTOR_NOTE_VAULT_DIR`.
+
 ## First graph flow
 
 ```text
@@ -173,3 +191,10 @@ checksummed archive of local SQLite records, vault Markdown, and owned material
 objects only; it never reads credential storage, desktop tokens, environment
 variables, or logs. Restore requires preflight and explicit replacement when
 local data already exists.
+# Lecture recording pipeline
+
+New class recordings use `POST /v1/learners/{learner_id}/lecture-recordings` to create a durable session and note, followed by eight-second browser audio slices sent to `PUT .../{recording_id}/chunks/{sequence}`. Each upload includes `X-Chunk-Start-Ms`, `X-Chunk-End-Ms`, and `X-Chunk-Sha256`; the server acknowledges an exact duplicate. Stop calls `POST .../{recording_id}/finalize` with the expected chunk count. `GET .../{recording_id}` reports missing slices and the progress of transcription, semantic analysis, verification, and note generation. The legacy `class-recording` API remains available for existing recordings.
+
+The browser persists slices in IndexedDB before upload, resumes on reconnect or reload, and asks the learner to finish an interrupted capture. The backend saves retained files under `AI_TUTOR_RECORDINGS_DIR/lectures`, uses the existing leased job table for processing, and resumes jobs on startup. Audio transcription follows the selected OpenRouter or OpenAI provider, while the selected text provider handles section analysis and claim verification. Saved failures can be retried after changing provider settings. Generated note blocks live in lecture tables and appear beside the learner's editable note body; regeneration does not change authored text.
+
+For a local development check, run `python -m pytest backend/tests/test_lecture_pipeline.py -q`. The test suite includes a simulated hour with 450 slices. Deployments with multiple backend processes require shared object storage and a dedicated durable worker before handling real classrooms.

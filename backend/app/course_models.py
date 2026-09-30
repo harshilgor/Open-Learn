@@ -29,17 +29,22 @@ class CourseReminderPreferences(ApiModel):
 
 class CourseCreate(ApiModel):
     name: str = Field(min_length=1, max_length=300)
-    goal: str = Field(min_length=1, max_length=2000)
+    goal: str = Field(default="", max_length=2000)
     teaching_preferences: CourseTeachingPreferences | None = None
     reminder_preferences: CourseReminderPreferences | None = None
 
-    @field_validator("name", "goal")
+    @field_validator("name")
     @classmethod
     def normalize_text(cls, value: str) -> str:
         value = " ".join(value.split())
         if not value:
             raise ValueError("Field must contain at least one non-whitespace character.")
         return value
+
+    @field_validator("goal")
+    @classmethod
+    def normalize_goal(cls, value: str) -> str:
+        return " ".join(value.split())
 
 
 class CourseUpdate(ApiModel):

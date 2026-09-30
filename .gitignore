@@ -18,6 +18,7 @@ backend/data/*.db
 backend/build/
 backend/data/materials/
 backend/data/notes*/
+backend/data/recordings/
 work/
 
 # Local configuration and nested repository backup

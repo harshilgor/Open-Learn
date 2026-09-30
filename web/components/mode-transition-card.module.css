@@ -1,6 +1,6 @@
 .transitionCard {
-  margin: 0.75rem 0 0.5rem 0;
-  padding: 0.85rem 1rem;
+  margin: 0 0 0.5rem;
+  padding: 0.65rem 0.8rem;
   border-radius: 12px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   background: var(--card, #ffffff);
@@ -8,7 +8,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  max-width: 540px;
+  width: 100%;
+  max-width: 760px;
   position: relative;
   overflow: hidden;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -137,6 +138,23 @@
 .dismissButton:hover {
   color: var(--foreground);
   background: rgba(0, 0, 0, 0.04);
+}
+
+.primaryButton:focus-visible,
+.dismissButton:focus-visible,
+.originBadge button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.spinner { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+@media (max-width: 620px) {
+  .transitionCard { gap: 0.45rem; padding: 0.6rem 0.7rem; }
+  .actions { margin-top: 0; gap: 0.25rem; flex-wrap: wrap; }
+  .primaryButton, .dismissButton { min-height: 36px; }
 }
 
 :global(.dark) .dismissButton:hover {

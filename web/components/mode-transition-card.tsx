@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { CircleHelp, GraduationCap, Sparkles, X, ArrowRight } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
+import { CircleHelp, GraduationCap, MessageCircleQuestion, Sparkles, X, ArrowRight, LoaderCircle } from 'lucide-react';
 import type { ModeTransitionSuggestion } from '@/lib/api';
 import styles from './mode-transition-card.module.css';
 
@@ -19,12 +20,25 @@ export function ModeTransitionCard({
   onDismiss,
   disabled = false,
 }: ModeTransitionCardProps) {
-  const reduceMotion = useReducedMotion();
-  const [dismissed, setDismissed] = useState(false);
+  const reduceMotion = useAppReducedMotion();
   const [busy, setBusy] = useState(false);
 
   const isLearn = suggestion.targetMode === 'learn';
-  const Icon = isLearn ? GraduationCap : CircleHelp;
+  const accepted = suggestion.status === 'accepted';
+  const isQuiz = suggestion.targetMode === 'quiz';
+  const Icon = isLearn ? GraduationCap : isQuiz ? CircleHelp : MessageCircleQuestion;
+  const topic = String(suggestion.context?.conceptTitle || 'this topic').replace(/[\u0000-\u001f<>]/g, '').slice(0, 100).trim() || 'this topic';
+  const modeName = isLearn ? 'Learn' : isQuiz ? 'Quiz' : 'Ask';
+  const modeStyle = isQuiz ? styles.quiz : styles.learn;
+  const title = isLearn ? (suggestion.reason === 'persistent_concept_gap' ? `Review ${topic}?` : 'Switch to Learn?') : isQuiz ? 'Switch to Quiz?' : 'Switch to Ask?';
+  const description = isLearn
+    ? `Work through ${topic} step by step, then return to this conversation.`
+    : isQuiz ? `Practice ${topic} using material from this conversation.` : 'Get a direct answer without the structured lesson.';
+  const actionLabel = accepted
+    ? (isLearn ? 'Continue in Learn' : isQuiz ? 'Continue to Quiz' : 'Continue in Ask')
+    : (suggestion.reason === 'persistent_concept_gap'
+      ? 'Review in Learn'
+      : suggestion.actionLabel || (isLearn ? 'Continue in Learn' : 'Switch to Quiz'));
 
   const handleAccept = async () => {
     if (busy || disabled) return;
@@ -38,48 +52,54 @@ export function ModeTransitionCard({
 
   const handleDismiss = async () => {
     if (busy) return;
-    setDismissed(true);
-    await onDismiss(suggestion);
+    setBusy(true);
+    try { await onDismiss(suggestion); } finally { setBusy(false); }
   };
-
-  if (dismissed) return null;
 
   return (
     <AnimatePresence>
       <motion.div
-        className={`${styles.transitionCard} ${isLearn ? styles.learn : styles.quiz}`}
+        className={`${styles.transitionCard} ${modeStyle}`}
         role="region"
         aria-label="Mode handoff suggestion"
+        aria-live="polite"
+        tabIndex={-1}
+        onKeyDown={event => {
+          if (!accepted && event.key === 'Escape' && event.currentTarget.contains(document.activeElement)) {
+            event.preventDefault();
+            void handleDismiss();
+          }
+        }}
         initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={reduceMotion ? undefined : { opacity: 0, y: -6, scale: 0.98 }}
         transition={{ duration: 0.22, ease: 'easeOut' }}
       >
         <div className={styles.header}>
-          <span className={`${styles.iconTile} ${isLearn ? styles.learn : styles.quiz}`}>
+          <span className={`${styles.iconTile} ${modeStyle}`}>
             <Icon size={14} />
           </span>
-          <strong className={styles.title}>{suggestion.title}</strong>
+          <strong className={styles.title}>{title}</strong>
         </div>
-        <p className={styles.description}>{suggestion.description}</p>
+        <p className={styles.description}>{accepted ? `Your switch is saved. Continue to open ${modeName}.` : description}</p>
         <div className={styles.actions}>
           <button
             type="button"
-            className={`${styles.primaryButton} ${isLearn ? styles.learn : styles.quiz}`}
+            className={`${styles.primaryButton} ${modeStyle}`}
             disabled={disabled || busy}
             onClick={() => void handleAccept()}
           >
-            <span>{suggestion.actionLabel}</span>
-            <ArrowRight size={13} />
+            <span>{busy ? 'Working…' : actionLabel}</span>
+            {busy ? <LoaderCircle className={styles.spinner} size={13} aria-hidden="true" /> : <ArrowRight size={13} />}
           </button>
-          <button
+          {!accepted ? <button
             type="button"
             className={styles.dismissButton}
             disabled={disabled || busy}
             onClick={() => void handleDismiss()}
           >
-            {suggestion.dismissLabel || 'Not now'}
-          </button>
+            {suggestion.dismissLabel || 'Cancel'}
+          </button> : null}
         </div>
       </motion.div>
     </AnimatePresence>
@@ -92,7 +112,7 @@ interface OriginBadgeProps {
 }
 
 export function OriginBadge({ summary, onDismiss }: OriginBadgeProps) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useAppReducedMotion();
 
   return (
     <motion.div

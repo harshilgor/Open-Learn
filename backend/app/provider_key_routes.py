@@ -4,8 +4,8 @@ The desktop shell keeps keys in the OS credential store and injects them as
 process environment. The browser development shell has no such bridge, so this
 module persists keys to the server's own ``backend/.env`` file -- the exact
 location already documented in ``backend/.env.example``. Key values are never
-returned by any endpoint; callers only learn presence. A process restart is
-required before a new key takes effect, matching the desktop contract.
+returned by any endpoint; callers only learn presence. Browser changes are
+applied to new requests immediately.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -97,8 +97,23 @@ class ProviderKeyInput(BaseModel):
         return value
 
 
-def build_provider_key_router() -> APIRouter:
+def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None = None,
+                              provider_getter: Callable[[], object] | None = None) -> APIRouter:
     router = APIRouter(prefix="/v1")
+
+    def restart_required(values: dict[str, str]) -> bool:
+        if provider_getter is None:
+            return False
+        active = provider_getter()
+        desired = values.get("AI_TUTOR_PROVIDER", "deterministic_baseline").lower()
+        if desired not in {"openrouter", "openai"}:
+            return active is not None
+        return (active is None or str(getattr(active, "provider_name", "")).split("/")[0] != desired
+                or getattr(active, "api_key", None) != values.get(_PROVIDER_ENV_VAR[desired]))
+
+    def apply(values: dict[str, str]) -> None:
+        if on_change is not None:
+            on_change(values)
 
     @router.get("/provider-settings")
     def status(owner: str = Depends(material_owner)) -> dict:
@@ -107,33 +122,48 @@ def build_provider_key_router() -> APIRouter:
             "provider": effective_provider(values),
             "openRouterConfigured": key_present("OPENROUTER_API_KEY", values),
             "openAiConfigured": key_present("OPENAI_API_KEY", values),
-            "restartRequired": False,
+            "restartRequired": restart_required(values),
         }
+
+    @router.post("/provider-settings/test")
+    def test_connection(owner: str = Depends(material_owner)) -> dict:
+        provider = provider_getter() if provider_getter is not None else None
+        if provider is None:
+            raise HTTPException(status_code=503, detail={"code": "provider_unavailable", "message": "Connect a model provider before testing the connection."})
+        try:
+            result = provider.complete_json('Return exactly this JSON object: {"connection": "ok"}.', 32)
+            if not isinstance(result, dict):
+                raise ValueError("Invalid provider result")
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail={"code": "provider_test_failed", "message": "The provider did not complete a small connection check. Verify the key, model access, and provider availability."}) from exc
+        return {"connected": True, "provider": str(getattr(provider, "provider_name", "Configured provider")), "model": str(getattr(provider, "model", "Unknown model"))}
 
     @router.put("/provider-settings")
     def save_key(request: ProviderKeyInput, owner: str = Depends(material_owner)) -> dict:
         _write_values({_PROVIDER_ENV_VAR[request.provider]: request.api_key, "AI_TUTOR_PROVIDER": request.provider})
         values = _read_values(env_path())
+        apply(values)
         return {
             "provider": effective_provider(values),
             "openRouterConfigured": key_present("OPENROUTER_API_KEY", values),
             "openAiConfigured": key_present("OPENAI_API_KEY", values),
-            "restartRequired": True,
+            "restartRequired": restart_required(values),
         }
 
     @router.delete("/provider-settings/{provider}")
     def delete_key(provider: Literal["openrouter", "openai"], owner: str = Depends(material_owner)) -> dict:
         values = _read_values(env_path())
         updates: dict[str, str | None] = {_PROVIDER_ENV_VAR[provider]: None}
-        if values.get("AI_TUTOR_PROVIDER", "").lower() == provider and not os.getenv("AI_TUTOR_PROVIDER"):
+        if values.get("AI_TUTOR_PROVIDER", "").lower() == provider:
             updates["AI_TUTOR_PROVIDER"] = "deterministic_baseline"
         _write_values(updates)
         values = _read_values(env_path())
+        apply(values)
         return {
             "provider": effective_provider(values),
             "openRouterConfigured": key_present("OPENROUTER_API_KEY", values),
             "openAiConfigured": key_present("OPENAI_API_KEY", values),
-            "restartRequired": True,
+            "restartRequired": restart_required(values),
         }
 
     return router

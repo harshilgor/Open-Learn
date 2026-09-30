@@ -37,27 +37,29 @@ export function StudyNoteBar({ draft, onChanged }: {
 
   return (
     <div className={styles.studyBar} aria-label="Study note provenance">
-      <BookOpenCheck size={15} />
-      <span className={styles.studyBarText}>
-        Study note{mode === 'auto' ? ' · grows automatically as you learn' : mode === 'never' ? ' · tutor never edits' : ' · tutor proposes additions'}
-      </span>
-      {draft.frontmatter.course_id ? (
-        <span className={styles.courseTag} title="Attached to course">Course note</span>
-      ) : null}
-      {sessions.length > 0 ? (
-        <button type="button" className={styles.studyBarLink} onClick={() => openChatSession(sessions[0])}>
-          Open chat<ArrowUpRight size={13} />
-        </button>
-      ) : null}
-      <label className={styles.studyBarMode}>
-        <span className="sr-only">Tutor updates</span>
-        <select value={mode} disabled={busy} aria-label="Tutor updates"
-          onChange={event => void changeMode(event.target.value as Mode)}>
-          <option value="ask">Ask first</option>
-          <option value="auto">Auto-add</option>
-          <option value="never">Never</option>
-        </select>
-      </label>
+      <div className={styles.studyBarDetails}>
+        <BookOpenCheck size={15} />
+        <span className={styles.studyBarText}>
+          Study note{mode === 'auto' ? ' · grows automatically as you learn' : mode === 'never' ? ' · tutor never edits' : ' · tutor proposes additions'}
+        </span>
+        {draft.frontmatter.course_id ? <span className={styles.courseTag} title="Attached to course">Course note</span> : null}
+      </div>
+      <div className={styles.studyBarActions}>
+        {sessions.length > 0 ? (
+          <button type="button" className={styles.studyBarLink} onClick={() => openChatSession(sessions[0])}>
+            Open chat<ArrowUpRight size={13} />
+          </button>
+        ) : null}
+        <label className={styles.studyBarMode}>
+          <span className="sr-only">Tutor updates</span>
+          <select value={mode} disabled={busy} aria-label="Tutor updates"
+            onChange={event => void changeMode(event.target.value as Mode)}>
+            <option value="ask">Ask first</option>
+            <option value="auto">Auto-add</option>
+            <option value="never">Never</option>
+          </select>
+        </label>
+      </div>
       {error ? <span className={styles.error} role="alert">{error}</span> : null}
     </div>
   );

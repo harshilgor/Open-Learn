@@ -1,25 +1,25 @@
-.usage{display:grid;gap:20px}
-.tabs{display:flex;gap:2px;border-bottom:1px solid #e6ebe2}
-.tab{border:0;background:transparent;padding:8px 12px;font-size:13.5px;color:#656960;border-bottom:2px solid transparent;margin-bottom:-1px}
-.tab:hover{color:#394731}
-.tabActive{color:#292e29;font-weight:600;border-bottom-color:#394731}
-.rangeRow{display:flex;gap:6px}
-.rangeButton{border:1px solid #e3e8db;border-radius:999px;background:transparent;padding:5px 12px;font-size:12.5px;color:#656960}
-.rangeButton:hover{background:#eceee7}
-.rangeActive{background:#394731;border-color:#394731;color:#fbfcf9}
-.headlines{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:0}
-.headline{margin:0}
-.headline dt{font-size:12px;color:#858b7e;margin-bottom:2px}
-.headline dd{margin:0;font-size:26px;font-weight:550;letter-spacing:-.4px;color:#292e29}
-.headline .sub{margin-top:2px;font-size:12px;font-weight:400;letter-spacing:0;color:#858b7e}
-.muted{margin:0;color:#7f8777;font-size:13px;line-height:1.6}
-.sectionTitle{margin:0 0 8px;font-size:13px;font-weight:600;color:#394731}
-.bars{display:flex;align-items:flex-end;gap:4px;height:72px;padding:10px 2px 2px;border-bottom:1px solid #e6ebe2}
-.bar{flex:1;min-width:3px;border-radius:2px 2px 0 0;background:#c9d1bf}
-.rows{list-style:none;margin:0;padding:0;display:grid;gap:2px}
-.row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid #eef1ea;font-size:13px}
-.row:last-child{border-bottom:0}
-.name{color:#292e29;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.value{flex:none;color:#656960;font-variant-numeric:tabular-nums}
-@media(max-width:560px){.headlines{grid-template-columns:1fr 1fr}.headline dd{font-size:22px}}
-@media(prefers-reduced-motion:reduce){.rangeButton{transition:none}}
+.usage { display: grid; gap: 20px; color: var(--foreground); }
+.tabs { display: flex; gap: 3px; border-bottom: 1px solid var(--border); }
+.tab { border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 7px 7px 0 0; background: transparent; padding: 9px 13px; color: var(--muted-foreground); font-size: 13.5px; }
+.tab:hover { background: var(--muted); color: var(--foreground); }
+.tabActive { border-bottom-color: var(--settings-accent, #718568); color: var(--foreground); font-weight: 650; }
+.rangeRow { display: flex; flex-wrap: wrap; gap: 7px; }
+.rangeButton { border: 1px solid var(--border); border-radius: 999px; background: var(--background); padding: 6px 12px; color: var(--muted-foreground); font-size: 12.5px; }
+.rangeButton:hover { background: var(--muted); color: var(--foreground); }
+.rangeActive { border-color: var(--settings-accent, #718568); background: var(--accent); color: var(--accent-foreground); font-weight: 600; }
+.headlines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 0; }
+.headline { min-width: 0; margin: 0; }
+.headline dt { margin-bottom: 4px; color: var(--muted-foreground); font-size: 12px; }
+.headline dd { margin: 0; color: var(--foreground); font-size: 26px; font-weight: 600; letter-spacing: -.4px; font-variant-numeric: tabular-nums; }
+.headline .sub { margin-top: 4px; color: var(--muted-foreground); font-size: 12px; font-weight: 400; letter-spacing: 0; line-height: 1.5; }
+.muted { margin: 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.6; }
+.sectionTitle { margin: 0 0 8px; color: var(--foreground); font-size: 13px; font-weight: 600; }
+.bars { display: flex; align-items: flex-end; gap: 4px; height: 88px; padding: 10px 2px 2px; border-bottom: 1px solid var(--border); }
+.bar { flex: 1; min-width: 3px; border-radius: 3px 3px 0 0; background: var(--settings-accent, #718568); opacity: .75; }
+.rows { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding: 8px 0; font-size: 13px; }
+.row:last-child { border-bottom: 0; }
+.name { overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; }
+.value { flex: none; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+@media (max-width: 620px) { .headlines { grid-template-columns: 1fr 1fr; gap: 14px; } .headline dd { font-size: 22px; } }
+@media (prefers-reduced-motion: reduce) { .rangeButton { transition: none; } }

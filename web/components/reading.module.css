@@ -2,8 +2,8 @@
 .rich p { margin: 0 0 0.7em !important; white-space: normal !important; }
 .rich strong { color: #344d40; font-weight: 650; background: #eaf3e9; border-radius: 4px; padding: .04em .16em; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .rich em { color: #50425f; }
-.rich h1,.rich h2,.rich h3,.rich h4 { font-weight: 600; line-height: 1.4; margin: 1.1em 0 .4em; }
-.rich h1,.rich h2 { font-size: 1.14em; }
+.rich h1,.rich h2,.rich h3,.rich h4 { font-weight: 600; line-height: var(--reading-heading-leading, 1.4); margin: 1.1em 0 .4em; }
+.rich h1,.rich h2 { font-size: var(--reading-heading-size, 1.14em); }
 .rich h3,.rich h4 { font-size: 1em; }
 .rich ul,.rich ol { padding-left: 1.5em; margin: .6em 0 .9em; }
 .rich ul { list-style: disc; }
@@ -49,6 +49,7 @@
 .blockTools button { font-size: 12px; color: #64745a; border-radius: 7px; padding: 5px 9px; border: 1px solid #e0e5da; cursor: pointer; }
 .blockTools button:hover { background: #eef3e9; }
 .imagePlaceholder { color: #747c6b; font-size: .9em; }
+.conceptWrap{display:inline;position:relative}.conceptLink{display:inline;border:0;border-bottom:1px dashed currentColor;padding:0;background:transparent;color:var(--primary);font:inherit;font-weight:600}.conceptLink:hover{background:var(--accent)}.conceptDefinition{display:inline-block;margin:0 4px;border:1px solid var(--border);border-radius:5px;padding:2px 6px;background:var(--surface-2,var(--card));color:var(--foreground);font-size:.83em;line-height:1.4}
 .rich button:focus-visible,.toolbar select:focus-visible,.blockTools button:focus-visible,.detail summary:focus-visible { outline: 2px solid #68785c; outline-offset: 3px; }
 @media (max-width: 600px) {
   .equation { margin: .85em 0; text-align: left; }

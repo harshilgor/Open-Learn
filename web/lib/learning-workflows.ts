@@ -3,7 +3,7 @@ import { LearningApiError, request, type Gear, type LessonArtifact, type ModeTra
 export type ChatMode = 'ask' | 'learn' | 'quiz';
 export type Source = { spanId: string; title: string; text: string; pageIndex: number };
 export type Journey = {
-  id: string; sessionId: string; revision: number; mode: ChatMode; gear: Gear; goal: string;
+  id: string; sessionId: string; revision: number; modeRevision?: number; mode: ChatMode; gear: Gear; goal: string;
   status: string; position: number; steps: { conceptId: string; title: string; objective: string }[];
   turns: { question: string; lesson?: LessonArtifact; sessionId: string; generationId?: string; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; submittedAt?: number; sources?: Source[]; noteContext?: { label: string; totalCharacters: number; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[] }; transitionSuggestion?: ModeTransitionSuggestion | null }[];
 };
@@ -19,6 +19,8 @@ export type Attempt = {
 };
 export type Quiz = {
   id: string; sessionId: string; title: string; revision: number; status: string; count: number;
+  lessonNoteId?: string | null; requestedTopic?: string | null; origin?: string;
+  contextSource?: boolean;
   mode: 'topic_drill' | 'timed_short_quiz'; modeConfig: { duration_seconds?: number }; deadlineAt: string | null; remainingSeconds: number | null;
   current: Presentation | null; attempts: Attempt[];
   summary: { score: number | null; evaluated: number; attempted: number; total: number; assisted: number; skipped: number; dontKnow: number; independentCorrect: number; retries: number; contested: number };
@@ -32,7 +34,7 @@ export const updateSessionPosition = (sid: string, input: SessionPositionUpdate)
 
 /** Stable URL for a learning session. localStorage is only a disposable hint. */
 export function sessionPath(sessionId: string | null | undefined): string {
-  return sessionId ? `/s/${encodeURIComponent(sessionId)}` : '/';
+  return sessionId ? `/s/${encodeURIComponent(sessionId)}` : '/chat';
 }
 
 export function sessionIdFromPath(pathname: string): string | null {
@@ -57,8 +59,10 @@ export function rememberSessionHint(sessionId: string | null): void {
 
 export function navigateToSession(sessionId: string | null, replace = false): void {
   if (typeof window === 'undefined') return;
-  const next = sessionPath(sessionId);
-  if (window.location.pathname === next) return;
+  if (replace && window.location.pathname === '/notes') return;
+  const query = new URLSearchParams(window.location.search);
+  const next = `${sessionPath(sessionId)}${query.has('course') ? `?${new URLSearchParams({ course: query.get('course') || '' })}` : ''}`;
+  if (`${window.location.pathname}${window.location.search}` === next) return;
   window.history[replace ? 'replaceState' : 'pushState']({ sessionId }, '', next);
 }
 
@@ -74,12 +78,12 @@ export async function restoreSessionAuthority(sessionId: string): Promise<{ snap
 }
 
 /** Persist the job ID before polling so reloads recover committed operations. */
-export async function workflow(path: string, body: unknown, scope: string): Promise<Job['result']> {
+export async function workflow(path: string, body: unknown, scope: string, idempotencyKey?: string): Promise<Job['result']> {
   const serialized = JSON.stringify(body);
-  let key = crypto.randomUUID();
+  let key = idempotencyKey || crypto.randomUUID();
   try {
     const pending = JSON.parse(localStorage.getItem(`forma-command:${scope}`) || 'null');
-    if (pending?.path === path && pending?.body === serialized) key = pending.key;
+    if (!idempotencyKey && pending?.path === path && pending?.body === serialized) key = pending.key;
     localStorage.setItem(`forma-command:${scope}`, JSON.stringify({ path, body: serialized, key }));
   } catch { /* In-memory requests remain idempotent. */ }
   const job = await request<Job>(`/v1${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body) });

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { ArrowRight, BookOpen, Check, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -38,7 +39,7 @@ export function ReviewWorkspace({
   onDone?: () => void;
   onStartLearning?: () => void;
 }) {
-  const reduceMotion = useReducedMotion();
+  const reduceMotion = useAppReducedMotion();
   const [dash, setDash] = useState<ReviewDashboard | null>(null);
   const [session, setSession] = useState<ReviewSession | null>(null);
   const [length, setLength] = useState<'quick' | 'standard' | 'deep'>('standard');

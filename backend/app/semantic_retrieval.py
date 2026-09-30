@@ -1,4 +1,4 @@
-"""Opt-in OpenAI embeddings for attached material passages.
+"""Opt-in embeddings for attached material passages.
 
 The cache is scoped through MaterialService's owner checks. Missing credentials,
 API errors, and oversized sets leave ordinary lexical retrieval available.
@@ -20,13 +20,21 @@ def configured_model() -> str | None:
     # must explicitly opt in by naming a model. A key alone is insufficient.
     if not configured or configured.lower() in {"off", "disabled", "none"}:
         return None
+    provider = os.getenv("AI_TUTOR_PROVIDER", "").strip().lower()
+    if provider == "openrouter":
+        return (configured if "/" in configured else f"openai/{configured}") if os.getenv("OPENROUTER_API_KEY") else None
+    if provider == "openai":
+        return configured if os.getenv("OPENAI_API_KEY") else None
+    if os.getenv("OPENROUTER_API_KEY"):
+        return configured if "/" in configured else f"openai/{configured}"
     return configured if os.getenv("OPENAI_API_KEY") else None
 
 
 def _embed(texts: list[str], model: str) -> list[list[float]]:
+    openrouter = "/" in model
     response = httpx.post(
-        "https://api.openai.com/v1/embeddings",
-        headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        "https://openrouter.ai/api/v1/embeddings" if openrouter else "https://api.openai.com/v1/embeddings",
+        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY' if openrouter else 'OPENAI_API_KEY']}"},
         json={"model": model, "input": texts}, timeout=30.0,
     )
     response.raise_for_status()

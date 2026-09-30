@@ -134,8 +134,6 @@ class CourseService:
         teaching_prefs = input_data.teaching_preferences or CourseTeachingPreferences()
         reminder_prefs = input_data.reminder_preferences or CourseReminderPreferences()
 
-        roadmap_data = _generate_default_roadmap(course_id, input_data.goal)
-
         with self.store.transaction() as conn:
             conn.execute(
                 text(
@@ -153,14 +151,6 @@ class CourseService:
                     "updated_at": now,
                 },
             )
-            for node in roadmap_data:
-                conn.execute(
-                    text(
-                        "INSERT INTO course_roadmap_nodes(id, course_id, phase, concept_id, title, status, order_index, created_at) "
-                        "VALUES(:id, :course_id, :phase, :concept_id, :title, :status, :order_index, :created_at)"
-                    ),
-                    node,
-                )
 
         result = self.get_course(owner_id, course_id)
         if not result:
@@ -363,6 +353,30 @@ class CourseService:
                 {"cid": course_id, "owner": owner_id, "limit": limit, "offset": offset},
             ).mappings().all()
         return ([LearningSession.model_validate_json(row["payload"]) for row in rows], int(total))
+
+    def set_session_course(self, owner_id: str, course_id: str, session_id: str, *, remove: bool = False) -> bool:
+        if not self.get_course(owner_id, course_id):
+            return False
+        with self.store.transaction() as conn:
+            row = conn.execute(
+                text("SELECT payload, course_id FROM learning_sessions WHERE id = :sid AND learner_id = :owner"),
+                {"sid": session_id, "owner": owner_id},
+            ).mappings().first()
+            if not row or (remove and row["course_id"] != course_id):
+                return False
+            next_course_id = None if remove else course_id
+            payload = json.loads(row["payload"])
+            now = utc_now()
+            payload["courseId"] = next_course_id
+            payload["course_id"] = next_course_id
+            payload["updatedAt"] = now.isoformat()
+            conn.execute(
+                text("UPDATE learning_sessions SET course_id = :cid, payload = :payload, updated_at = :now "
+                     "WHERE id = :sid AND learner_id = :owner"),
+                {"cid": next_course_id, "payload": json.dumps(payload), "now": now,
+                 "sid": session_id, "owner": owner_id},
+            )
+        return True
 
     def list_course_notes(self, owner_id: str, course_id: str) -> list[WorkspaceNoteSummary]:
         from .workspace_note_service import WorkspaceNoteService

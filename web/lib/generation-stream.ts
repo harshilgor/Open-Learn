@@ -2,7 +2,7 @@ import { apiBaseUrl, request, type Gear } from './api';
 import type { VisualType } from './visualization-spec';
 
 export type GenerationMode = 'ask' | 'learn';
-export type GenerationRequest = { mode: GenerationMode; message: string; gear: Gear; expectedRevision: number; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
+export type GenerationRequest = { mode: GenerationMode; message: string; gear: Gear; expectedRevision: number; classificationBypassId?: string; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
 export type GenerationEvent = { generationId: string; sequence: number; type: string; data: Record<string, unknown> };
 export type GenerationUsage = { totalTokens: number; promptTokens?: number | null; completionTokens?: number | null; usageSource: 'exact' | 'estimated'; provider?: string | null; model?: string | null };
 export type GenerationDescriptor = { id: string; sessionId: string; mode: GenerationMode; status: string; sequence: number; provider: string; model: string; journeyRevision?: number | null; finalRevision?: number | null; errorCode?: string | null; metrics?: Record<string, number | string | boolean | null> | null };

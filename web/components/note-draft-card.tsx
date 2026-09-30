@@ -1,13 +1,14 @@
 "use client";
 import { useState } from 'react';
-import { motion, useReducedMotion } from 'motion/react';
+import { motion } from 'motion/react';
+import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { FileText, Trash2, Save, ExternalLink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { learningApi, type NoteDraft } from '@/lib/api';
 import { openWorkspaceNoteDraft, openWorkspaceNote } from '@/lib/workspace-events';
 import styles from './learn-chat.module.css';
 export function NoteDraftCard({ draft, onHandled }: { draft: NoteDraft; onHandled: (draft: NoteDraft) => void }) {
- const reduceMotion=useReducedMotion();
+ const reduceMotion=useAppReducedMotion();
  const [busy,setBusy]=useState(false); const [error,setError]=useState('');
  async function save(){setBusy(true);setError('');try{const result=await learningApi.saveNoteDraft(draft.id);onHandled({...draft,status:'saved'});openWorkspaceNote(result.noteId)}catch(e){setError(e instanceof Error?e.message:'Could not save note draft.')}finally{setBusy(false)}}
  async function discard(){setBusy(true);setError('');try{await learningApi.discardNoteDraft(draft.id);onHandled({...draft,status:'discarded'})}catch(e){setError(e instanceof Error?e.message:'Could not discard note draft.')}finally{setBusy(false)}}

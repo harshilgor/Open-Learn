@@ -85,6 +85,9 @@
   overflow: hidden;
 }
 
+.preservedTab { height: 100%; min-height: 0; overflow: auto; }
+.preservedTab[hidden] { display: none; }
+
 .notes {
   height: 100%;
   width: 100%;
@@ -98,7 +101,7 @@
   min-width: 0;
   flex-direction: column;
   border-right: 1px solid var(--border);
-  background: var(--card);
+  background: var(--sidebar);
 }
 
 .noteListTop {
@@ -106,6 +109,19 @@
   gap: 6px;
   padding: 10px;
 }
+
+.noteListActions { display: grid; gap: 5px; padding: 0 10px 10px; }
+.noteListActions button { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); font-size: var(--type-caption); font-weight: 600; cursor: pointer; }
+.noteListActions button:hover { opacity: .87; }
+.folderForm { display: flex; gap: 4px; padding: 0 10px 10px; }
+.folderForm input { width: 100%; min-width: 0; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); color: var(--foreground); font-size: var(--type-caption); }
+.folderForm button { border: 0; background: transparent; color: var(--foreground); font-size: var(--type-caption); cursor: pointer; }
+.folderNav { display: grid; gap: 1px; padding: 0 6px 8px; border-bottom: 1px solid var(--border); }
+.navSectionLabel { display: flex; align-items: center; gap: 8px; padding: 7px 9px 3px; color: var(--muted-foreground); font-size: var(--type-meta); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.folderNav button { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--foreground); text-align: left; font-size: var(--type-ui); cursor: pointer; }
+.folderNav button:hover, .folderNav button.folderActive { background: var(--sidebar-accent); }
+.folderNav button:focus-visible, .noteItem:focus-visible, .noteMenuButton:focus-visible, .editorMenuTrigger:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.folderNav small { margin-left: auto; color: var(--muted-foreground); }
 
 .listCollapsed,
 .notesHome.listCollapsed {
@@ -167,22 +183,44 @@
   border: 0;
   outline: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--type-ui);
   color: var(--foreground);
 }
 
 .noteItems {
   overflow: auto;
-  padding: 2px 6px 10px;
+  padding: 2px 8px 10px;
 }
 
 .groupLabel {
-  margin: 10px 9px 4px;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted-foreground);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 14px 6px 8px;
+  color: var(--foreground);
+  font-size: var(--type-ui);
   font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.35;
+}
+
+.groupCount {
+  min-width: 20px;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: var(--sidebar-accent);
+  color: var(--muted-foreground);
+  font-size: var(--type-meta);
+  font-weight: 500;
+  text-align: center;
+}
+.groupHeading { display: inline-flex; align-items: center; gap: 6px; }
+
+.generatedGroup {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--sidebar-border);
 }
 
 .noteItem {
@@ -198,6 +236,21 @@
   transition: background-color 0.15s ease;
 }
 
+.noteRow { position: relative; display: flex; align-items: center; border-radius: 8px; }
+.noteRow:hover { background: var(--sidebar-accent); }
+.noteRow.selected { background: var(--sidebar-accent); box-shadow: inset 2px 0 0 var(--settings-accent, var(--sidebar-ring)); }
+.noteRow.selected .noteItem { color: var(--foreground); }
+.noteRow.selected .noteItem, .noteRow.selected .noteItem:hover { background: transparent; }
+.noteRow .noteItem { min-width: 0; flex: 1; padding-right: 31px; }
+.noteMenuButton { position: absolute; right: 4px; top: 50%; display: grid; place-items: center; width: 26px; height: 26px; transform: translateY(-50%); border: 0; border-radius: 6px; background: transparent; color: var(--muted-foreground); opacity: 0; cursor: pointer; }
+.noteRow:hover .noteMenuButton, .noteRow:focus-within .noteMenuButton, .noteMenuButton[aria-expanded="true"] { opacity: 1; }
+.noteMenuButton:hover { background: var(--muted); color: var(--foreground); }
+.noteMenu { position: absolute; z-index: 30; top: calc(100% - 2px); right: 2px; display: grid; min-width: 155px; max-height: 240px; overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 8px 22px rgba(0,0,0,.15); }
+.noteMenu span { padding: 6px; color: var(--muted-foreground); font-size: 10px; text-transform: uppercase; }
+.noteMenu button { border: 0; border-radius: 5px; padding: 6px 8px; background: transparent; color: inherit; text-align: left; font-size: 11px; cursor: pointer; }
+.noteMenu button:hover { background: var(--muted); }
+.noteMenu .deleteAction { color: var(--destructive); border-top: 1px solid var(--border); border-radius: 0; margin-top: 4px; }
+
 .noteItem:hover,
 .noteItem.selected {
   background: var(--muted);
@@ -212,15 +265,25 @@
 }
 
 .noteItem strong {
-  font-size: 12px;
+  font-size: var(--type-ui);
   font-weight: 500;
 }
+.noteTitle { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.noteTitle > span { flex: none; color: var(--muted-foreground); }
+.noteTitle strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.noteExcerpt { display: block; margin: 4px 0 0 22px; overflow: hidden; color: var(--muted-foreground); font-size: var(--type-meta); text-overflow: ellipsis; white-space: nowrap; }
+.noteItem .noteCourse { display: inline-block; max-width: 105px; margin-left: 6px; padding: 1px 5px; overflow: hidden; border-radius: 4px; background: var(--sidebar-accent); text-overflow: ellipsis; vertical-align: middle; }
 
 .noteItem small {
   margin-top: 2px;
   color: var(--muted-foreground);
-  font-size: 10px;
+  font-size: var(--type-meta);
 }
+
+:global(.dark) .noteRow:hover:not(.selected) { background: #171717; }
+:global(.dark) .noteRow.selected { background: #252525; }
+:global(.dark) .noteRow:hover .noteItem { background: transparent; }
+:global(.dark) .noteItem small { color: #a3a3a3; }
 
 .emptyList,
 .muted {
@@ -244,12 +307,24 @@
   background: var(--background);
 }
 
+.lessonEditor { min-height: 0; overflow-y: auto; }
+.lessonEditor .bodyWrap { flex: 0 0 auto; min-height: 320px; }
+.lessonEditor .notePreview { min-height: 320px; overflow: visible; }
+
 .editorTop {
   display: flex;
   gap: 8px;
   align-items: center;
   padding: 12px 14px 6px;
 }
+.editorActions { position: relative; display: flex; flex: none; align-items: center; gap: 6px; }
+.editorActions button { white-space: nowrap; }
+.editorMenuTrigger { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--foreground); cursor: pointer; }
+.editorMenu { position: absolute; z-index: 30; top: calc(100% + 5px); right: 0; display: grid; min-width: 170px; max-height: 260px; overflow: auto; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--popover); box-shadow: 0 8px 22px rgba(0,0,0,.15); }
+.editorMenu span { padding: 7px 8px 3px; color: var(--muted-foreground); font-size: 10px; text-transform: uppercase; }
+.editorMenu button { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; border-radius: 5px; padding: 7px 8px; background: transparent; color: var(--popover-foreground); text-align: left; cursor: pointer; }
+.editorMenu button:hover { background: var(--muted); }
+.editorMenu .deleteAction { color: var(--destructive); }
 
 .editorTop input {
   min-width: 0;
@@ -265,17 +340,67 @@
 }
 
 .status {
-  padding: 0 14px 8px;
+  flex: none;
+  padding: 4px 14px 8px;
+  text-align: right;
   color: var(--muted-foreground);
   font-size: 11px;
 }
+
+.formatBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 42px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.formatTools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.formatTools::-webkit-scrollbar { display: none; }
+
+.formatBar button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.formatBar button:hover:not(:disabled), .formatBar button[aria-pressed="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.formatBar button:disabled { opacity: .4; }
+.formatBar button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.previewToggle { border-left: 1px solid var(--border) !important; border-radius: 0 !important; padding-left: 12px !important; }
+.previewHint { padding-left: 5px; font-size: 12px; }
 
 .editor textarea {
   min-height: 0;
   flex: 1;
   resize: none;
   border: 0;
-  border-top: 1px solid var(--border);
   outline: 0;
   padding: 16px 18px;
   background: var(--background);
@@ -314,6 +439,49 @@
 .bodyWrap textarea {
   width: 100%;
 }
+
+.notePreview {
+  width: min(100%, calc(var(--reading-width, 720px) + 64px));
+  min-width: 0;
+  margin-inline: auto;
+  overflow: auto;
+  padding: 24px clamp(18px, 3vw, 32px) 80px;
+  color: var(--foreground);
+  font-size: var(--reading-size, 15px);
+  line-height: var(--reading-leading, 1.65);
+  overflow-wrap: anywhere;
+  cursor: text;
+  outline: 0;
+}
+.notePreview:empty::before { content: attr(data-placeholder); color: var(--muted-foreground); }
+.notePreview:focus-visible { outline: 0; }
+
+.notePreview > :first-child { margin-top: 0; }
+.notePreview h1, .notePreview h2, .notePreview h3 { line-height: var(--reading-heading-leading, 1.4); margin: 1.1em 0 .4em; font-weight: 600; }
+.notePreview h1, .notePreview h2 { font-size: var(--reading-heading-size, 1.14em); }
+.notePreview h3 { font-size: 1em; }
+.notePreview p, .notePreview ul, .notePreview ol, .notePreview blockquote { margin: .7em 0; }
+.notePreview ul, .notePreview ol { padding-left: 1.6em; }
+.notePreview ul { list-style: disc; }
+.notePreview ol { list-style: decimal; }
+.notePreview li { padding-left: .2em; }
+.notePreview li > p { margin: .2em 0; }
+.notePreview input[type="checkbox"] { margin-right: .5em; accent-color: var(--foreground); }
+.notePreview blockquote { border-left: 2px solid var(--border); padding-left: 1em; color: var(--muted-foreground); }
+.notePreview a { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
+.notePreview :not(pre) > code { padding: .1em .3em; border-radius: 4px; background: var(--muted); font-size: .9em; }
+.notePreview pre { overflow-x: auto; padding: 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); font-size: 13px; }
+.notePreview :global(.katex-display) { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.notePreview table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.notePreview th, .notePreview td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+.notePreview hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
+
+.recordingPlayer { display: grid; gap: 8px; margin: 8px 14px 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.recordingPlayer > div { display: flex; align-items: center; gap: 8px; }
+.recordingPlayer strong { font-size: 12px; }
+.recordingPlayer small { margin-left: auto; color: var(--muted-foreground); font-size: 11px; }
+.recordingPlayer audio { width: 100%; height: 35px; }
+.recordingPlayer p { margin: 0; color: var(--muted-foreground); font-size: 11px; }
 
 .excerptFloat {
   position: absolute;
@@ -489,6 +657,10 @@
   margin: 0;
   border: 0;
 }
+.notesDestination { position: relative; display: flex; height: 100%; width: 100%; min-height: 0; min-width: 0; }
+.notesDestination > .notes { flex: 1; min-width: 0; }
+.unifiedNotes { grid-template-columns: minmax(0, 1fr) !important; }
+.unifiedNotes .editor { min-height: 0; }
 
 .notesHome .noteList,
 .notesHome .editor {
