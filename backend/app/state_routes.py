@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from .local_identity import local_identity_enabled
 from datetime import datetime
 from typing import Any
 
@@ -54,7 +55,7 @@ def build_state_router(store_provider: Any) -> APIRouter:
         auth-derived learner ID.
         """
 
-        if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
+        if not local_identity_enabled():
             raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
         effective = claimed or "local"
         if effective != learner_id:

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import os
+from .local_identity import local_identity_enabled
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path as FilePath
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path, Header
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, text, MetaData
 
 from .lecture_storage import LectureObjectStore
 
@@ -29,11 +30,30 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def require_single_profile(connection, learner_id):
+    """Legacy export/delete operate on a whole local database, not an account.
+
+    Refuse mixed-profile databases until the account-package migration exists;
+    never expose or erase a second profile through a learner-scoped route.
+    Caller must hold the same snapshot/write lock for validation and operation.
+    """
+    inspector = inspect(connection)
+    for table in inspector.get_table_names():
+        columns = {column["name"] for column in inspector.get_columns(table)}
+        owner_column = next((name for name in ("owner_id", "learner_id", "owner_learner_id") if name in columns), None)
+        if table == "learners":
+            owner_column = "id"
+        if owner_column:
+            other = connection.execute(text(f"SELECT 1 FROM {_identifier(table)} WHERE {_identifier(owner_column)} IS NOT NULL AND {_identifier(owner_column)}<>:owner LIMIT 1"), {"owner": learner_id}).first()
+            if other:
+                raise HTTPException(409, detail={"code": "profile_scope_conflict", "message": "This local database contains multiple profiles. Account-scoped export and deletion are required."})
+
+
 def build_privacy_router(store_provider: Any) -> APIRouter:
     router = APIRouter(prefix="/v1", tags=["privacy"])
 
     def authorize(learner_id: str, claimed: str | None) -> None:
-        if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
+        if not local_identity_enabled():
             raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
         if (claimed or "local") != learner_id:
             raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})
@@ -53,7 +73,9 @@ def build_privacy_router(store_provider: Any) -> APIRouter:
         store = local_store()
         tables = [name for name in inspect(store.engine).get_table_names() if name != "alembic_version"]
         records: dict[str, list[dict[str, Any]]] = {}
-        with store.engine.connect() as connection:
+        with store.engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            require_single_profile(connection, learner_id)
             for table in tables:
                 columns = [column["name"] for column in inspect(store.engine).get_columns(table)]
                 rows = connection.execute(text(f"SELECT * FROM {_identifier(table)}")).mappings().all()
@@ -71,17 +93,22 @@ def build_privacy_router(store_provider: Any) -> APIRouter:
         deleted: dict[str, int] = {}
         lecture_objects: list[tuple[str, str, str]] = []
         with store.engine.begin() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            require_single_profile(connection, learner_id)
             object_keys = [row[0] for row in connection.execute(text("SELECT object_key FROM material_versions WHERE object_key IS NOT NULL"))]
             if {"lecture_recordings", "lecture_audio_chunks"}.issubset(tables):
                 lecture_objects = [tuple(row) for row in connection.execute(text("""
                     SELECT r.learner_id,c.recording_id,c.storage_key FROM lecture_audio_chunks c
                     JOIN lecture_recordings r ON r.id=c.recording_id
                 """))]
-            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
-            for table in tables:
+            metadata = MetaData()
+            metadata.reflect(bind=connection)
+            # Keep foreign keys enabled. SQLite ignores foreign_keys=OFF inside
+            # an active transaction; delete dependent tables before parents.
+            ordered_tables = [table.name for table in reversed(metadata.sorted_tables) if table.name != "alembic_version"]
+            for table in ordered_tables:
                 result = connection.execute(text(f"DELETE FROM {_identifier(table)}"))
                 deleted[table] = int(result.rowcount or 0)
-            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         material_root = FilePath(os.getenv("AI_TUTOR_MATERIAL_DIR", str(FilePath(__file__).resolve().parents[1] / "data" / "materials"))).resolve()
         for key in object_keys:
             if isinstance(key, str) and key.isidentifier():

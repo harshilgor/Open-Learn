@@ -1,0 +1,219 @@
+{
+  "starting_revision": "508494ab0557fa0275431d58e196103726796a61",
+  "handoff_imported": false,
+  "recorded_at": "2026-10-02T01:32:25.162559+00:00",
+  "python": "3.12.14",
+  "baseline": {
+    "summary": "14 failed, 349 passed, 2 skipped, 2225 warnings in 63.69s (0:01:03)",
+    "failing_test_ids": [
+      "backend/tests/test_assessment_quality.py::test_timed_pause_resume_persists_remaining_duration",
+      "backend/tests/test_course_learning.py::test_course_context_in_prompt_and_inherited_notes",
+      "backend/tests/test_course_roadmap.py::test_evaluate_roadmap_progression",
+      "backend/tests/test_courses.py::test_create_course",
+      "backend/tests/test_courses.py::test_update_roadmap_node",
+      "backend/tests/test_generation_web_search_events.py::test_generation_streams_tool_lifecycle_events",
+      "backend/tests/test_learning_workflows.py::test_journey_sends_only_explicit_note_context_as_untrusted_data",
+      "backend/tests/test_learning_workflows.py::test_learn_ask_resume_and_no_exposure_mastery",
+      "backend/tests/test_learning_workflows.py::test_private_key_hint_evidence_and_idempotency",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_parses_structured_lesson",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_rejects_invalid_blocks",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_uses_explanation_for_unknown_presentation_kind",
+      "backend/tests/test_nonstreaming_context_planning.py::test_typed_lesson_prompt_retains_branch_anchor_and_bounds_notes",
+      "backend/tests/test_provider_settings.py::test_save_key_writes_env_and_never_returns_value"
+    ]
+  },
+  "cloud_foundation": {
+    "summary": "14 failed, 374 passed, 2 skipped, 2227 warnings in 67.57s (0:01:07)",
+    "failing_test_ids": [
+      "backend/tests/test_assessment_quality.py::test_timed_pause_resume_persists_remaining_duration",
+      "backend/tests/test_course_learning.py::test_course_context_in_prompt_and_inherited_notes",
+      "backend/tests/test_course_roadmap.py::test_evaluate_roadmap_progression",
+      "backend/tests/test_courses.py::test_create_course",
+      "backend/tests/test_courses.py::test_update_roadmap_node",
+      "backend/tests/test_generation_web_search_events.py::test_generation_streams_tool_lifecycle_events",
+      "backend/tests/test_learning_workflows.py::test_journey_sends_only_explicit_note_context_as_untrusted_data",
+      "backend/tests/test_learning_workflows.py::test_learn_ask_resume_and_no_exposure_mastery",
+      "backend/tests/test_learning_workflows.py::test_private_key_hint_evidence_and_idempotency",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_parses_structured_lesson",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_rejects_invalid_blocks",
+      "backend/tests/test_model_provider.py::test_openrouter_provider_uses_explanation_for_unknown_presentation_kind",
+      "backend/tests/test_nonstreaming_context_planning.py::test_typed_lesson_prompt_retains_branch_anchor_and_bounds_notes",
+      "backend/tests/test_provider_settings.py::test_save_key_writes_env_and_never_returns_value"
+    ]
+  },
+  "introduced_failing_test_ids": [],
+  "frontend": {
+    "recording_recovery": "2 passed",
+    "tutor_components": "5 passed",
+    "npm_ci": "passed after lock repair; no existing package versions changed"
+  },
+  "provider_mode": "synthetic/offline tests; no live-provider acceptance",
+  "dependencies_used_for_validation": [
+    {
+      "name": "alembic",
+      "version": "1.20.0"
+    },
+    {
+      "name": "altgraph",
+      "version": "0.17.5"
+    },
+    {
+      "name": "annotated-doc",
+      "version": "0.0.5"
+    },
+    {
+      "name": "annotated-types",
+      "version": "0.8.0"
+    },
+    {
+      "name": "anyio",
+      "version": "4.15.1"
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22"
+    },
+    {
+      "name": "click",
+      "version": "8.5.0"
+    },
+    {
+      "name": "fastapi",
+      "version": "0.142.2"
+    },
+    {
+      "name": "h11",
+      "version": "0.16.0"
+    },
+    {
+      "name": "httpcore",
+      "version": "1.0.9"
+    },
+    {
+      "name": "httptools",
+      "version": "0.8.0"
+    },
+    {
+      "name": "httpx",
+      "version": "0.28.1"
+    },
+    {
+      "name": "idna",
+      "version": "3.20"
+    },
+    {
+      "name": "iniconfig",
+      "version": "2.3.0"
+    },
+    {
+      "name": "Mako",
+      "version": "1.4.3"
+    },
+    {
+      "name": "MarkupSafe",
+      "version": "3.0.3"
+    },
+    {
+      "name": "opentelemetry-api",
+      "version": "1.45.0"
+    },
+    {
+      "name": "packaging",
+      "version": "26.3"
+    },
+    {
+      "name": "pip",
+      "version": "25.0.1"
+    },
+    {
+      "name": "pluggy",
+      "version": "1.6.0"
+    },
+    {
+      "name": "psycopg",
+      "version": "3.3.6"
+    },
+    {
+      "name": "psycopg-binary",
+      "version": "3.3.6"
+    },
+    {
+      "name": "pydantic",
+      "version": "2.13.5"
+    },
+    {
+      "name": "pydantic_core",
+      "version": "2.46.5"
+    },
+    {
+      "name": "Pygments",
+      "version": "2.21.0"
+    },
+    {
+      "name": "pyinstaller",
+      "version": "6.22.3"
+    },
+    {
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.8"
+    },
+    {
+      "name": "pypdf",
+      "version": "6.19.0"
+    },
+    {
+      "name": "pytest",
+      "version": "8.4.2"
+    },
+    {
+      "name": "python-dotenv",
+      "version": "1.2.4"
+    },
+    {
+      "name": "PyYAML",
+      "version": "6.0.3"
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0"
+    },
+    {
+      "name": "SQLAlchemy",
+      "version": "2.1.1"
+    },
+    {
+      "name": "starlette",
+      "version": "1.7.0"
+    },
+    {
+      "name": "typing_extensions",
+      "version": "4.16.0"
+    },
+    {
+      "name": "typing-inspection",
+      "version": "0.4.4"
+    },
+    {
+      "name": "uvicorn",
+      "version": "0.54.0"
+    },
+    {
+      "name": "uvloop",
+      "version": "0.23.0"
+    },
+    {
+      "name": "watchfiles",
+      "version": "1.3.0"
+    },
+    {
+      "name": "websockets",
+      "version": "17.1"
+    }
+  ],
+  "release_complete": false,
+  "focused_final_validation": {
+    "command": "python -m pytest backend/tests/test_execution_foundation.py backend/tests/test_decision_contracts.py backend/tests/test_local_identity_boundary.py backend/tests/test_object_storage.py backend/tests/test_lecture_pipeline.py backend/tests/test_review_api.py backend/tests/test_migrations.py -q --disable-warnings",
+    "result": "51 passed",
+    "scope": "SQLite and synthetic providers; no live platform acceptance"
+  }
+}

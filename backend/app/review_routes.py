@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from .local_identity import local_identity_enabled
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path
@@ -28,7 +29,7 @@ log = logging.getLogger(__name__)
 
 
 def _authorize(learner_id: str, claimed: str | None) -> None:
-    if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
+    if not local_identity_enabled():
         raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
     if (claimed or "local") != learner_id:
         raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})
@@ -43,17 +44,26 @@ def run_review_job(store, provider, job_id: str) -> None:
     service = ReviewSessionService(store, provider)
     sync = ConceptSyncService(store, provider)
     try:
+        # Model grading and extraction happen before the short commit. Never
+        # retain a database transaction while awaiting an external provider.
+        graded = None
+        prepared_result = None
+        if kind == "review_answer":
+            graded = service.grade(owner, target, payload["itemId"], ReviewAnswerCommand.model_validate(payload["command"]))
+        elif kind == "concept_sync":
+            prepared_result = sync.sync_from_text(owner, **payload)
+        elif kind == "review_backfill":
+            prepared_result = sync.backfill(owner)
         with store.transaction() as conn:
             if kind == "review_create":
                 # Creation is sync in the route; job reserved for heavy prep if needed.
                 result = {"sessionId": target}
             elif kind == "review_answer":
-                graded = service.grade(owner, target, payload["itemId"], ReviewAnswerCommand.model_validate(payload["command"]))
                 result = service.commit_grade(conn, owner, graded)
             elif kind == "concept_sync":
-                result = sync.sync_from_text(owner, **payload)
+                result = prepared_result
             elif kind == "review_backfill":
-                result = sync.backfill(owner)
+                result = prepared_result
             else:
                 raise ValueError("Unsupported review job")
             records.finish(conn, job, result)
