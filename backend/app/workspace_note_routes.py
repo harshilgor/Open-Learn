@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from .local_identity import local_identity_enabled
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Path, Query, Response, status
@@ -32,7 +33,7 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
         return Path(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
 
     def authorize(learner_id: str, claimed: str | None) -> None:
-        if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
+        if not local_identity_enabled():
             raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
         if (claimed or "local") != learner_id:
             raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})

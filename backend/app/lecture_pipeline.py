@@ -393,8 +393,9 @@ class LectureWorker:
             LectureService(self.store).maybe_enqueue_finalize(owner, recording_id)
 
     def _pending_id(self):
-        with self.store.engine.connect() as conn:
-            return conn.execute(text("""SELECT id FROM learning_jobs WHERE kind LIKE 'lecture_%' AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY id LIMIT 1"""), {"now": time.time()}).scalar_one_or_none()
+        from .execution_worker import LECTURE_KINDS
+        ready = self.jobs.ready_ids("batch", LECTURE_KINDS, 1)
+        return ready[0] if ready else None
 
     def drain(self, limit: int = 10000):
         if not _worker_lock.acquire(blocking=False):

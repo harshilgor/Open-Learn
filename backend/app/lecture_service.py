@@ -145,6 +145,8 @@ class LectureService:
                     "end": end_ms, "mime": media_type, "size": len(content), "hash": stored_hash,
                     "key": key, "now": now,
                 })
+                job = self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence},
+                                        f"lecture:chunk:{recording_id}:{sequence}", connection=conn)
         except IntegrityError:
             self.objects.delete(owner, recording_id, key)
             with self.store.engine.connect() as conn:
@@ -152,7 +154,9 @@ class LectureService:
             if existing:
                 return self._duplicate(owner, recording_id, existing, digest, len(content), start_ms, end_ms, media_type)
             raise
-        job = self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, f"lecture:chunk:{recording_id}:{sequence}")
+        except Exception:
+            self.objects.delete(owner, recording_id, key)
+            raise
         log.info("lecture.chunk.accepted recording_id=%s sequence=%s bytes=%s", recording_id, sequence, len(content))
         self.maybe_enqueue_finalize(owner, recording_id)
         return {"recordingId": recording_id, "sequenceNumber": sequence, "sha256": digest, "byteCount": len(content), "transcriptionStatus": "pending", "duplicate": False, "jobId": job["id"]}

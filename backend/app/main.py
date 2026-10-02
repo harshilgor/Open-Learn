@@ -68,6 +68,7 @@ from .class_recording_routes import build_class_recording_router
 from .lecture_routes import build_lecture_router
 from .lecture_pipeline import LectureWorker
 from threading import Thread
+from threading import Event
 
 app = FastAPI(title="AI Tutor Harness API", version="0.1.0")
 local_web_origin = os.getenv("FORMA_WEB_ORIGIN", "http://127.0.0.1:3000")
@@ -87,6 +88,16 @@ async def local_desktop_auth(request, call_next):
     if token and request.method != "OPTIONS" and request.url.path not in {"/health", "/health/web-evidence"}:
         if request.headers.get("X-Forma-Desktop-Token") != token:
             return JSONResponse(status_code=401, content={"code": "desktop_auth_required", "message": "The local desktop session is not authorized."})
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def hosted_authentication_gate(request, call_next):
+    # The baseline has globally readable legacy graph/action routes in addition
+    # to owner-filtered routes. Do not expose them on a hosted deployment before
+    # the complete verified-principal migration is implemented and audited.
+    if os.getenv("AI_TUTOR_ENV", "development").lower() not in {"development", "local", "test"} and request.url.path not in {"/health", "/health/web-evidence"}:
+        return JSONResponse(status_code=503, content={"code": "authentication_required", "message": "Hosted identity integration is not available in this build."})
     return await call_next(request)
 store = Store(database_url())
 generator = GraphGenerator()
@@ -130,6 +141,37 @@ app.include_router(build_lecture_router(get_store, lambda: lesson_provider))
 
 
 @app.on_event("startup")
+def start_execution_workers() -> None:
+    """Polling closes the crash gap left by in-process BackgroundTasks.
+
+Hosted operators can disable these threads and run the same worker CLI.
+Existing immediate request execution remains compatible and claims are fenced.
+"""
+    mode = os.getenv("OPENLEARN_WORKER_MODE", "local")
+    if mode not in {"local", "external"}:
+        raise RuntimeError("OPENLEARN_WORKER_MODE must be local or external")
+    if mode != "local":
+        return
+    from .execution_worker import ExecutionWorker
+    app.state.execution_stop = Event()
+    app.state.execution_threads = []
+    for queue in ("interactive", "batch"):
+        worker = ExecutionWorker(store, lambda: lesson_provider, queue)
+        thread = Thread(target=worker.run, args=(app.state.execution_stop,), daemon=True, name=f"openlearn-{queue}")
+        thread.start()
+        app.state.execution_threads.append(thread)
+
+
+@app.on_event("shutdown")
+def stop_execution_workers() -> None:
+    stopped = getattr(app.state, "execution_stop", None)
+    if stopped:
+        stopped.set()
+        for thread in app.state.execution_threads:
+            thread.join(timeout=1)
+
+
+@app.on_event("startup")
 def resume_interrupted_class_recordings() -> None:
     """Resume recordings left queued or running when the local app restarts."""
     from sqlalchemy import text
@@ -146,7 +188,8 @@ def resume_interrupted_class_recordings() -> None:
 def resume_lecture_pipeline() -> None:
     worker = LectureWorker(store, lambda: lesson_provider)
     worker.reconcile()
-    Thread(target=worker.drain, daemon=True).start()
+    # The shared local poller or explicitly configured external batch worker
+    # drains the queue. Reconciliation is still safe in either profile.
 app.include_router(build_course_router(get_store, lambda: lesson_provider))
 
 
