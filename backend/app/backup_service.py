@@ -13,6 +13,7 @@ import os
 import shutil
 import tempfile
 import zipfile
+from uuid import uuid4
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,7 +146,11 @@ class BackupService:
         exported = json.loads(files["data/export.json"].decode("utf-8"))
         # Stage filesystem content before touching live paths. Database changes
         # use one transaction; a failure leaves existing data untouched.
-        stage = Path(tempfile.mkdtemp(prefix="forma-restore-", dir=self.data_root))
+        # Avoid tempfile.mkdtemp's restrictive Windows ACL on the private
+        # staging directory; nested archive folders must inherit the local
+        # data-root permissions so they can be populated and later cleaned.
+        stage = self.data_root / ("forma-restore-" + uuid4().hex)
+        stage.mkdir(parents=True, exist_ok=False)
         try:
             for name, content in files.items():
                 if name == "data/export.json":

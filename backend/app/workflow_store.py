@@ -45,18 +45,20 @@ class WorkflowStore:
             rows = conn.execute(text("SELECT id FROM practice_records WHERE owner_id=:owner AND kind=:kind ORDER BY id"), {"owner": owner, "kind": kind}).all()
             return [self.read(owner, row[0], kind, conn) for row in rows]
 
-    def enqueue(self, owner, target, kind, payload, key, connection=None):
+    def enqueue(self, owner, target, kind, payload, key, connection=None, *, input_revision=None, queue=None, max_attempts=5):
         if connection is not None:
-            return self._enqueue(connection, owner, target, kind, payload, key)
+            return self._enqueue(connection, owner, target, kind, payload, key, input_revision=input_revision, queue=queue, max_attempts=max_attempts)
         with self.store.transaction() as conn:
-            return self._enqueue(conn, owner, target, kind, payload, key)
+            return self._enqueue(conn, owner, target, kind, payload, key, input_revision=input_revision, queue=queue, max_attempts=max_attempts)
 
-    def _enqueue(self, conn, owner, target, kind, payload, key):
+    def _enqueue(self, conn, owner, target, kind, payload, key, *, input_revision=None, queue=None, max_attempts=5):
         request_hash = hashlib.sha256(encoded([target, kind, payload]).encode()).hexdigest()
         values = {"id": uid("job"), "owner": owner, "target": target, "kind": kind, "key": key,
-                  "hash": request_hash, "payload": encoded(payload)}
-        values["revision"] = payload.get("expected_revision")
-        inserted = conn.execute(text("INSERT INTO learning_jobs(id,owner_id,target_id,kind,command_key,request_hash,status,payload,input_revision) VALUES(:id,:owner,:target,:kind,:key,:hash,'queued',:payload,:revision) ON CONFLICT(owner_id,command_key) DO NOTHING"), values)
+                  "hash": request_hash, "payload": encoded(payload),
+                  "revision": input_revision if input_revision is not None else payload.get("expected_revision"),
+                  "queue": queue or ("batch" if kind.startswith("lecture_") else "interactive"),
+                  "max_attempts": max(1, min(20, int(max_attempts)))}
+        inserted = conn.execute(text("INSERT INTO learning_jobs(id,owner_id,target_id,kind,command_key,request_hash,status,payload,input_revision,queue,max_attempts) VALUES(:id,:owner,:target,:kind,:key,:hash,'queued',:payload,:revision,:queue,:max_attempts) ON CONFLICT(owner_id,command_key) DO NOTHING"), values)
         if inserted.rowcount != 1:
             row = conn.execute(text("SELECT id,request_hash FROM learning_jobs WHERE owner_id=:owner AND command_key=:key"), values).first()
             if not row or row[1] != request_hash:
@@ -65,60 +67,87 @@ class WorkflowStore:
         row = conn.execute(text("SELECT id,status,result FROM learning_jobs WHERE id=:id"), values).mappings().one()
         return {"id": row["id"], "status": row["status"], "result": json.loads(row["result"]) if row["result"] else None}
 
-    def job(self, owner, job_id):
-        with self.store.engine.connect() as conn:
-            row = conn.execute(text("SELECT id,status,result,attempt_count,next_retry_at,progress,error_code FROM learning_jobs WHERE id=:id AND owner_id=:owner"), {"id": job_id, "owner": owner}).mappings().first()
+    def job(self, owner, job_id, connection=None):
+        if connection is not None:
+            row = connection.execute(text("SELECT id,owner_id,status,result,attempt_count,next_retry_at,progress,error_code,safe_error_code,queue,input_revision FROM learning_jobs WHERE id=:id AND owner_id=:owner"), {"id": job_id, "owner": owner}).mappings().first()
+        else:
+            with self.store.engine.connect() as conn:
+                return self.job(owner, job_id, conn)
         if not row:
             problem("not_found", "This operation is not available.", 404)
-        return {**row, "result": json.loads(row["result"]) if row["result"] else None}
+        result = dict(row)
+        result["safe_error_code"] = result.get("safe_error_code") or result.get("error_code")
+        return {**result, "result": json.loads(row["result"]) if row["result"] else None}
 
-    def claim(self, job_id):
+    def claim(self, job_id, *, lease_seconds=900):
         lease = uid("lease")
         with self.store.transaction() as conn:
-            conn.execute(text("""UPDATE learning_jobs SET status='failed',error_code='attempts_exhausted',lease=NULL,expires=NULL
-                WHERE id=:id AND attempt_count>=max_attempts AND (status='queued' OR (status='running' AND expires<:now))"""), {"id": job_id, "now": time.time()})
-            changed = conn.execute(text("UPDATE learning_jobs SET status='running',lease=:lease,expires=:expires,attempt_count=attempt_count+1 WHERE id=:id AND cancellation_requested=false AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now))"),
-                                   {"id": job_id, "lease": lease, "expires": time.time() + 900, "now": time.time()})
+            conn.execute(text("""UPDATE learning_jobs SET status='failed',error_code='attempts_exhausted',safe_error_code='attempts_exhausted',lease=NULL,expires=NULL
+                WHERE id=:id AND attempt_count>=max_attempts AND (status IN ('queued','retry_wait') OR (status='running' AND expires<:now))"""), {"id": job_id, "now": time.time()})
+            changed = conn.execute(text("UPDATE learning_jobs SET status='running',lease=:lease,expires=:expires,attempt_count=attempt_count+1 WHERE id=:id AND cancellation_requested=false AND cancel_requested=false AND next_retry_at<=:now AND (status IN ('queued','retry_wait') OR (status='running' AND expires<:now))"),
+                                   {"id": job_id, "lease": lease, "expires": time.time() + lease_seconds, "now": time.time()})
             if changed.rowcount != 1:
                 return None
             row = conn.execute(text("SELECT * FROM learning_jobs WHERE id=:id"), {"id": job_id}).mappings().one()
             return {**row, "payload": json.loads(row["payload"])}
 
     def finish(self, conn, job, result, status="completed"):
-        changed = conn.execute(text("UPDATE learning_jobs SET status=:status,result=:result,lease=NULL,expires=NULL,progress=1 WHERE id=:id AND lease=:lease AND status='running' AND expires>:now AND cancellation_requested=false"),
-                               {"id": job["id"], "lease": job["lease"], "status": status, "result": encoded(result), "now": time.time()})
+        if status not in {"completed", "failed"}:
+            raise ValueError("Invalid terminal state")
+        changed = conn.execute(text("UPDATE learning_jobs SET status=:status,result=:result,lease=NULL,expires=NULL,progress=1 WHERE id=:id AND owner_id=:owner AND lease=:lease AND status='running' AND expires>:now AND cancellation_requested=false AND cancel_requested=false AND (input_revision=:revision OR (input_revision IS NULL AND :revision IS NULL))"),
+                               {"id": job["id"], "owner": job["owner_id"], "revision": job.get("input_revision"), "lease": job["lease"], "status": status, "result": encoded(result), "now": time.time()})
         if changed.rowcount != 1:
             problem("lease_lost", "This operation was resumed elsewhere.", 409)
 
     def cancel(self, owner, job_id):
         self.job(owner, job_id)
         with self.store.transaction() as conn:
-            conn.execute(text("UPDATE learning_jobs SET status='cancelled',cancellation_requested=true,lease=NULL,expires=NULL WHERE id=:id AND owner_id=:owner AND status IN ('queued','running')"), {"id": job_id, "owner": owner})
+            conn.execute(text("UPDATE learning_jobs SET status='cancelled',cancellation_requested=true,cancel_requested=true,lease=NULL,expires=NULL WHERE id=:id AND owner_id=:owner AND status IN ('queued','retry_wait','running')"), {"id": job_id, "owner": owner})
         return self.job(owner, job_id)
 
-    def fail(self, job, error_code, *, retryable=False):
-        retry = retryable and job["attempt_count"] < job["max_attempts"]
+    def fail(self, job, error_code, *, retryable=False, transient=None):
+        if transient is not None:
+            retryable = transient
+        allowed = {"provider_unavailable", "provider_transport", "provider_temporarily_unavailable", "needs_authentication", "provider_authorization_required", "unsupported_file", "permission_denied", "invalid_input", "worker_failed", "operation_failed"}
+        if error_code not in allowed:
+            error_code = "worker_failed"
+        retry = retryable and error_code in {"provider_unavailable", "provider_transport", "provider_temporarily_unavailable", "worker_failed"} and job["attempt_count"] < job["max_attempts"]
         delay = min(300, 2 ** min(job["attempt_count"], 8)) * random.uniform(.75, 1.25)
         with self.store.transaction() as conn:
-            conn.execute(text("""UPDATE learning_jobs SET status=:status,error_code=:error,
+            changed = conn.execute(text("""UPDATE learning_jobs SET status=:status,error_code=:error,safe_error_code=:error,
                 result=:result,next_retry_at=:retry,lease=NULL,expires=NULL
-                WHERE id=:id AND lease=:lease AND status='running' AND expires>:now"""),
-                {"status": "queued" if retry else "failed", "error": error_code,
+                WHERE id=:id AND owner_id=:owner AND lease=:lease AND status='running' AND expires>:now AND cancellation_requested=false AND cancel_requested=false"""),
+                {"status": "retry_wait" if retry else "failed", "error": error_code,
                  "result": encoded({"message": "Temporary failure; retry scheduled." if retry else "This operation needs attention before retrying.", "code": error_code}),
-                 "retry": time.time() + delay if retry else 0, "id": job["id"], "lease": job["lease"], "now": time.time()})
+                 "retry": time.time() + delay if retry else 0, "id": job["id"], "owner": job["owner_id"], "lease": job["lease"], "now": time.time()})
+            return changed.rowcount == 1
 
     def validate_lease(self, conn, job):
         changed = conn.execute(text("""UPDATE learning_jobs SET progress=progress WHERE id=:id AND owner_id=:owner
-            AND lease=:lease AND status='running' AND expires>:now AND cancellation_requested=false"""),
+            AND lease=:lease AND status='running' AND expires>:now AND cancellation_requested=false AND cancel_requested=false"""),
             {"id": job["id"], "owner": job["owner_id"], "lease": job["lease"], "now": time.time()})
         if changed.rowcount != 1:
             problem("lease_lost", "This operation was resumed elsewhere.", 409)
 
-    def heartbeat(self, job, progress=0):
+    def heartbeat(self, job, progress=0, *, lease_seconds=900):
+        if progress > 1:
+            progress = progress / 100
         with self.store.transaction() as conn:
-            self.validate_lease(conn, job)
-            conn.execute(text("UPDATE learning_jobs SET expires=:expires,progress=:progress WHERE id=:id"),
-                         {"id": job["id"], "expires": time.time() + 900, "progress": max(0, min(1, progress))})
+            try:
+                self.validate_lease(conn, job)
+            except Exception:
+                return False
+            conn.execute(text("UPDATE learning_jobs SET expires=:expires,progress=:progress WHERE id=:id AND owner_id=:owner"),
+                         {"id": job["id"], "owner": job["owner_id"], "expires": time.time() + lease_seconds, "progress": max(0, min(1, progress))})
+        return True
+
+    def ready_ids(self, queue, kinds, limit=20):
+        if queue not in {"interactive", "batch"} or not kinds or not 1 <= limit <= 100:
+            raise ValueError("Invalid ready-job scope")
+        from sqlalchemy import bindparam
+        query = text("SELECT id FROM learning_jobs WHERE queue=:queue AND kind IN :kinds AND cancellation_requested=false AND cancel_requested=false AND next_retry_at<=:now AND (status IN ('queued','retry_wait') OR (status='running' AND expires<=:now)) ORDER BY id LIMIT :limit").bindparams(bindparam("kinds", expanding=True))
+        with self.store.engine.connect() as conn:
+            return list(conn.execute(query, {"queue": queue, "kinds": list(kinds), "now": time.time(), "limit": limit}).scalars())
 
     def validate_input(self, conn, job):
         if job["input_revision"] is None:

@@ -147,6 +147,20 @@ app.include_router(build_canvas_router(get_store))
 
 
 @app.on_event("startup")
+def resume_interrupted_class_recordings() -> None:
+    """Recover legacy class recordings after an API process restart."""
+    from sqlalchemy import text
+    with store.engine.connect() as connection:
+        pending = connection.execute(text("SELECT id, learner_id FROM class_recordings WHERE status IN ('queued','processing')")).all()
+    with store.transaction() as connection:
+        connection.execute(text("UPDATE class_recordings SET status='queued',error=NULL WHERE status='processing'"))
+    from .class_recording_service import ClassRecordingService
+    for recording_id, learner_id in pending:
+        Thread(target=ClassRecordingService(store, lesson_provider).process,
+               args=(recording_id, learner_id), daemon=True).start()
+
+
+@app.on_event("startup")
 def resume_lecture_pipeline() -> None:
     # Local installs retain automatic execution. Hosted API processes use an
     # independently supervised worker from this same application package.

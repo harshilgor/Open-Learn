@@ -157,6 +157,12 @@ class LectureService:
             if existing:
                 return self._duplicate(owner, recording_id, existing, digest, len(content), start_ms, end_ms, media_type)
             raise
+        except Exception:
+            # The immutable object was written before the SQL transaction. If
+            # any other database error aborts that transaction, remove the
+            # unreferenced object before propagating the failure.
+            self.objects.delete(owner, recording_id, key)
+            raise
         log.info("lecture.chunk.accepted recording_id=%s sequence=%s bytes=%s", recording_id, sequence, len(content))
         self.maybe_enqueue_finalize(owner, recording_id)
         return {"recordingId": recording_id, "sequenceNumber": sequence, "sha256": digest, "byteCount": len(content), "transcriptionStatus": "pending", "duplicate": False, "jobId": job["id"]}

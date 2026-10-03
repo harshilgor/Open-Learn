@@ -60,6 +60,19 @@ def upload(service, sequence, start=0, end=8000):
     return service.put_chunk("alice", "rec_" + "a" * 32, sequence, audio, start_ms=start, end_ms=end, media_type="audio/webm", checksum=hashlib.sha256(audio).hexdigest())
 
 
+def test_audio_manifest_and_followup_job_rollback_together(lecture, monkeypatch):
+    store, service, created = lecture
+    def fail_enqueue(*args, **kwargs):
+        raise RuntimeError("simulated database failure before job insert")
+    monkeypatch.setattr(service.jobs, "enqueue", fail_enqueue)
+    with pytest.raises(RuntimeError):
+        upload(service, 0)
+    with store.engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM lecture_audio_chunks WHERE recording_id=:id"), {"id": created["id"]}).scalar_one() == 0
+        assert conn.execute(text("SELECT count(*) FROM learning_jobs WHERE target_id=:id"), {"id": created["id"]}).scalar_one() == 0
+    assert not list(service.objects.root.rglob("chunk_*"))
+
+
 def test_chunk_idempotency_scope_gaps_and_final_notes(lecture):
     store, service, created = lecture
     rid = created["id"]

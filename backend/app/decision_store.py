@@ -143,3 +143,81 @@ class DecisionStore:
         conn.execute(text("DELETE FROM decision_dependencies WHERE owner_id=:owner"), params)
         conn.execute(text("DELETE FROM decision_snapshots WHERE owner_id=:owner"), params)
         conn.execute(text("DELETE FROM contract_invalidations WHERE owner_id=:owner"), params)
+
+
+class LearningDecisionStore:
+    """Compatibility adapter for the original cloud decision contract.
+
+    New workflow integrations should use the revision-addressed DecisionStore
+    above. This adapter keeps old immutable decision records readable while
+    both migrations coexist.
+    """
+
+    def __init__(self, store):
+        self.store = store
+
+    def save(self, owner, command_key, decision, connection=None):
+        import hashlib
+        from .shared_contracts import LearningDecision
+        from .material_service import problem
+        if connection is None:
+            with self.store.transaction() as conn:
+                return self.save(owner, command_key, decision, conn)
+        decision = LearningDecision.model_validate(decision.model_dump())
+        payload = json.dumps(decision.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(payload.encode()).hexdigest()
+        connection.execute(text("""INSERT INTO learning_decisions(id,owner_id,command_key,request_hash,workflow,schema_revision,payload,created_at)
+            VALUES(:id,:owner,:key,:hash,:workflow,:schema,:payload,:created) ON CONFLICT DO NOTHING"""), {
+            "id": decision.id, "owner": owner, "key": command_key, "hash": digest,
+            "workflow": decision.workflow, "schema": decision.schema_revision,
+            "payload": payload, "created": __import__("time").time(),
+        })
+        row = connection.execute(text("SELECT id,request_hash FROM learning_decisions WHERE owner_id=:owner AND command_key=:key"),
+                                 {"owner": owner, "key": command_key}).first()
+        if row is None or row[0] != decision.id or row[1] != digest:
+            problem("idempotency_conflict", "The decision key already has different input.", 409)
+        for dependency in decision.snapshot.dependencies:
+            connection.execute(text("""INSERT INTO learning_decision_dependencies(decision_id,owner_id,kind,entity_id,revision)
+                VALUES(:id,:owner,:kind,:entity,:revision) ON CONFLICT DO NOTHING"""), {
+                "id": decision.id, "owner": owner, "kind": dependency.kind,
+                "entity": dependency.entity_id, "revision": dependency.revision,
+            })
+        return self.get(owner, decision.id, connection)
+
+    def get(self, owner, decision_id, connection=None):
+        if connection is None:
+            with self.store.engine.connect() as conn:
+                return self.get(owner, decision_id, conn)
+        row = connection.execute(text("SELECT payload FROM learning_decisions WHERE id=:id AND owner_id=:owner"),
+                                 {"id": decision_id, "owner": owner}).scalar_one_or_none()
+        if row is None:
+            from .material_service import problem
+            problem("not_found", "This decision is not available.", 404)
+        from .shared_contracts import LearningDecision
+        decision = LearningDecision.model_validate_json(row)
+        invalidations = connection.execute(text("""SELECT correction_id,reason,created_at FROM learning_decision_invalidations
+            WHERE owner_id=:owner AND decision_id=:id ORDER BY created_at,correction_id"""),
+            {"owner": owner, "id": decision_id}).mappings().all()
+        return {"decision": decision, "valid": not invalidations, "invalidations": [dict(item) for item in invalidations]}
+
+    def invalidate(self, conn, owner, dependency, correction_id, reason):
+        rows = conn.execute(text("""SELECT d.id FROM learning_decisions d JOIN learning_decision_dependencies x
+            ON x.decision_id=d.id AND x.owner_id=d.owner_id
+            WHERE d.owner_id=:owner AND x.kind=:kind AND x.entity_id=:entity AND x.revision=:revision ORDER BY d.id"""), {
+            "owner": owner, "kind": dependency.kind, "entity": dependency.entity_id, "revision": dependency.revision,
+        }).scalars().all()
+        now = __import__("time").time()
+        for decision_id in rows:
+            result = conn.execute(text("""INSERT INTO learning_decision_invalidations(decision_id,owner_id,correction_id,reason,created_at)
+                VALUES(:id,:owner,:correction,:reason,:now) ON CONFLICT DO NOTHING"""), {
+                "id": decision_id, "owner": owner, "correction": correction_id, "reason": reason, "now": now,
+            })
+            existing = conn.execute(text("SELECT reason FROM learning_decision_invalidations WHERE decision_id=:id AND owner_id=:owner AND correction_id=:correction"), {
+                "id": decision_id, "owner": owner, "correction": correction_id,
+            }).scalar_one()
+            if existing != reason:
+                from .material_service import problem
+                problem("idempotency_conflict", "The correction key was already used for another invalidation.", 409)
+            if result.rowcount == 0:
+                continue
+        return list(rows)
