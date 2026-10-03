@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { learningApi, request, type ModeTransitionSuggestion } from '@/lib/api';
 import { cancelWorkflow, getQuiz, workflow, waitForJob, type Quiz } from '@/lib/learning-workflows';
 import { AssessmentCard } from './assessment-card';
+import { HypothesisPanel } from './hypothesis-panel';
 import { openWorkspaceSource } from '@/lib/workspace-events';
 import { ModeTransitionCard } from './mode-transition-card';
 import styles from './quiz.module.css';
@@ -177,6 +178,11 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     </div> : <>
       <div className={styles.progress}><strong>{quiz.title}</strong><span>{quiz.summary.attempted} of {quiz.count} answered</span><div className={styles.progressTrack} aria-hidden="true"><motion.span initial={false} animate={{ width: `${(quiz.summary.attempted / quiz.count) * 100}%` }} transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: 'easeOut' }} /></div>{quiz.mode === 'timed_short_quiz' && <span aria-live="polite">Time left {secondsLeft} seconds</span>}</div>
       {quiz.contextSource ? <p className={styles.meta}>This quiz uses your study context, which has not been independently verified.</p> : null}
+      {quiz.challenges?.map(challenge => <div key={challenge.id} role="status" className={styles.card}>
+        <strong>{challenge.status === 'resolved' ? 'Question review complete' : 'Question review pending'}</strong>
+        <p>{challenge.explanation || 'Your response is saved and excluded while this question is reviewed.'}</p>
+        {challenge.status !== 'resolved' && <Button variant="outline" disabled={busy} onClick={() => void act(`/challenges/${challenge.id}/review`, {})}>Review question</Button>}
+      </div>)}
       {timeExpired && <div className={styles.card} role="status"><h2>Time is up</h2><p>Your saved work is still available, but this timed quiz no longer accepts answers.</p></div>}
       <AnimatePresence mode="wait">{quiz.current && quiz.status !== 'paused' && !timeExpired && <motion.div key={quiz.current.id} initial={reduceMotion ? false : { opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={reduceMotion ? undefined : { opacity: 0, x: -10 }} transition={{ duration: 0.2, ease: 'easeOut' }}><AssessmentCard item={quiz.current} busy={busy} attempt={quiz.attempts.find(a => a.id === quiz.current?.attemptId)}
         onAnswer={answer => void act(`/quizzes/${quiz.id}/attempts`, { ...answer, presentationId: quiz.current!.id, expectedRevision: quiz.revision })}
@@ -211,6 +217,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
         {onReturn && <Button variant="outline" onClick={onReturn}>Return to Learn</Button>}
       </div>}
     </>}
+    {quiz?.current?.attemptId && <HypothesisPanel conceptId={quiz.current.concept_id} refreshKey={quiz.current.attemptId} />}
     {busy && <div><p role="status">Saving and checking this activity… You can return to it later.</p><Button variant="ghost" onClick={() => void cancelWorkflow(scope).catch(cause => setError(cause.message))}>Stop</Button></div>}
     {notice && <p role="status">{notice}</p>}
     {error && <p role="alert" className={styles.error}>{error}</p>}

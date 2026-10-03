@@ -1,4 +1,5 @@
 """Local authorized workflow endpoints; jobs survive process and page restarts."""
+from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 import logging
 from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, RevisionCommand
@@ -21,6 +22,8 @@ def run_job(store, provider, job_id):
     job = records.claim(job_id)
     if not job:
         return
+    from .execution import LeaseHeartbeat
+    heartbeat = LeaseHeartbeat(store, job)
     owner, target, payload, kind = job["owner_id"], job["target_id"], job["payload"], job["kind"]
     quiz, journey, drafts = QuizService(store, provider), JourneyService(store, provider), NoteDraftService(store, provider)
     synthesis = StudyNoteService(store, provider)
@@ -36,7 +39,12 @@ def run_job(store, provider, job_id):
             prepared = quiz.prepare(owner, target, payload["expected_revision"])
         elif kind == "answer":
             prepared = quiz.grade(owner, target, AnswerCommand.model_validate(payload))
+        elif kind == "adjudicate":
+            from .assessment_adjudication import ChallengeService
+            prepared = ChallengeService(store, provider).prepare(owner, target)
         with store.transaction() as conn:
+            records.validate_lease(conn, job)
+            records.validate_input(conn, job)
             if kind == "create":
                 created = quiz.create(owner, QuizCreate.model_validate(payload), conn, uid("quiz"))
                 result = {"quizId": created["id"]}
@@ -63,18 +71,28 @@ def run_job(store, provider, job_id):
                 result = quiz.challenge(conn, owner, attempt["presentationId"], payload["reason"])
             elif kind == "flag":
                 result = quiz.challenge(conn, owner, target, payload["reason"])
+            elif kind == "adjudicate":
+                from .assessment_adjudication import ChallengeService
+                result = ChallengeService(store, provider).commit(conn, owner, prepared)
             else:
                 raise ValueError("Unsupported job")
             records.finish(conn, job, result)
+            from .execution import Outbox
+            Outbox.emit(conn, owner, "learning.command.completed", target, job["id"],
+                        {"jobId": job["id"], "kind": kind, "result": result})
     except Exception as exc:
         # Do not log learner answers, source passages, or provider payloads.
-        logging.getLogger(__name__).warning("Learning job %s failed (%s)", job["id"], type(exc).__name__)
+        safe_code = exc.detail.get("code", "http_error") if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else type(exc).__name__
+        logging.getLogger(__name__).warning("Learning job %s failed (%s)", job["id"], safe_code)
         message = str(exc) if isinstance(exc, ModelProviderError) else (exc.detail.get("message", "Please reload and try again.") if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) else "This operation could not be completed. Reload and retry; your previous work is saved.")
         try:
-            with store.transaction() as conn:
-                records.finish(conn, job, {"message": message}, "failed")
+            from .execution import failure_policy
+            code, retryable = failure_policy(exc)
+            records.fail(job, code, retryable=retryable)
         except HTTPException:
             pass  # Cancellation or a replacement worker already owns the outcome.
+    finally:
+        heartbeat.close()
 
 
 def build_learning_router(store_provider, provider_getter):
@@ -82,14 +100,14 @@ def build_learning_router(store_provider, provider_getter):
 
     def enqueue(tasks, db, owner, target, kind, payload, key):
         job = WorkflowStore(db).enqueue(owner, target, kind, payload, key)
-        tasks.add_task(run_job, db, provider_getter(), job["id"])
+        schedule_local(tasks, run_job, db, provider_getter(), job["id"])
         return job
 
     @router.get("/learning-jobs/{job_id}")
     def get_job(job_id: str, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider)):
         job = WorkflowStore(db).job(owner, job_id)
         if job["status"] in {"queued", "running"}:
-            tasks.add_task(run_job, db, provider_getter(), job_id)
+            schedule_local(tasks, run_job, db, provider_getter(), job_id)
         return job
 
     @router.post("/learning-jobs/{job_id}/cancel")
@@ -246,5 +264,14 @@ def build_learning_router(store_provider, provider_getter):
     def flag(pid: str, command: ChallengeCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
         WorkflowStore(db).read(owner, pid, "presentation")
         return enqueue(tasks, db, owner, pid, "flag", command.model_dump(), key)
+
+    @router.get("/challenges/{cid}")
+    def read_challenge(cid: str, owner=Depends(material_owner), db=Depends(store_provider)):
+        return WorkflowStore(db).read(owner, cid, "challenge")
+
+    @router.post("/challenges/{cid}/review", status_code=202)
+    def adjudicate(cid: str, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
+        WorkflowStore(db).read(owner, cid, "challenge")
+        return enqueue(tasks, db, owner, cid, "adjudicate", {}, key)
 
     return router

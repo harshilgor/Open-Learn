@@ -81,6 +81,12 @@ class JourneyService:
                 if turn.get("status") != "pending":
                     return
                 turn["status"] = status
+                from sqlalchemy import text
+                partial = connection.execute(text("SELECT 1 FROM generation_events WHERE generation_id=:id AND event_type='text.delta' LIMIT 1"), {"id": generation_id}).first()
+                if partial and status in {"failed", "cancelled", "interrupted"}:
+                    from .evidence_ledger import EvidenceLedger
+                    EvidenceLedger(self.store).emit(connection, owner, "interrupted:" + generation_id,
+                        "INTERRUPTED_EXPOSURE", activity_id=sid, detail=status)
                 if error_code:
                     turn["errorCode"] = error_code
                 self.commit(connection, owner, journey)
@@ -123,6 +129,11 @@ class JourneyService:
         sources = retrieve(self.store, owner, sid, f"{journey['goal']} {command.message}")
         manifest = save_manifest(self.store, owner, sid, command.message, sources)
         evidence = canonical_evidence(self.store, owner, graph)
+        from .learning_control_plane import LearningControlPlane
+        control = LearningControlPlane(self.store).prepare(owner, sid, command.mode, command.gear.value,
+            command.message or journey["goal"], getattr(session, "current_concept_id", None),
+            required_source_ids=tuple(getattr(command, "selected_span_ids", []) or []), token_budget=6000)
+        journey["_controlPlane"] = control
         if command.mode == "learn":
             # A Lesson in Notes exists before teaching begins; chat then deepens it.
             try:
@@ -183,6 +194,8 @@ class JourneyService:
         )
         from .context_engine import ContextBlock, ContextEngine
         candidates = [
+            ContextBlock("controlDecision", LearningControlPlane.prompt_constraints(control), "control_plane", 0, bool(control)),
+            ContextBlock("sharedContext", (control or {}).get("context", {}).get("text"), "shared_context_compiler", 0, bool(control)),
             ContextBlock("goal", journey["goal"], "journey", 0, True),
             ContextBlock("step", step, "journey", 0, bool(step)),
             ContextBlock("gear", command.gear.value, "teaching_profile", 0, True),
@@ -222,6 +235,11 @@ class JourneyService:
         return journey
 
     def commit(self, conn, owner, journey):
+        control = journey.pop("_controlPlane", None)
+        if control:
+            from .learning_control_plane import LearningControlPlane
+            LearningControlPlane(self.store).validate_commit(conn, owner, control)
+            journey["lastDecision"] = control["decision"]
         self.records.put(conn, owner, "journey", {**journey, "persisted": True}, journey["sessionId"],
                          expected=journey["revision"] if journey.get("persisted", True) else None)
         turns = journey.get("turns") or []
@@ -229,6 +247,8 @@ class JourneyService:
         self.store.touch_session_in(conn, journey["sessionId"], owner, first_question=first_question)
         latest = turns[-1] if turns else None
         lesson = (latest or {}).get("lesson") or {}
+        if control:
+            LearningControlPlane(self.store).record_delivery(conn, owner, control, lesson.get("id"), lesson.get("conceptId"))
         SessionSnapshotService.advance_authority(
             conn,
             session_id=journey["sessionId"],
@@ -307,6 +327,11 @@ class JourneyService:
         images = MaterialService(self.store).image_context(owner, sid)
         manifest = save_manifest(self.store, owner, sid, command.message, sources)
         evidence = canonical_evidence(self.store, owner, graph)
+        from .learning_control_plane import LearningControlPlane
+        control = LearningControlPlane(self.store).prepare(owner, sid, command.mode, command.gear.value,
+            command.message or journey["goal"], getattr(session, "current_concept_id", None),
+            required_source_ids=tuple(getattr(command, "selected_span_ids", []) or []), token_budget=6000)
+        journey["_controlPlane"] = control
         # Bounded evidence tool loop (feature-flagged). Retrieval success is
         # determined by durable tool state, never by model prose alone.
         web_bundle = None
@@ -406,6 +431,8 @@ class JourneyService:
             selected_passage=bool(selection), evidence_instruction=evidence_section["instruction"],
         )
         context_data = {
+            "controlDecision": LearningControlPlane.prompt_constraints(control),
+            "sharedContext": (control or {}).get("context", {}).get("text"),
             "selectedPassage": selection, "selectedLessonId": getattr(command, "selected_lesson_id", None),
             "selectedBlockId": getattr(command, "selected_block_id", None), "goal": journey["goal"],
             "step": step, "gear": command.gear.value, "plan": plan.model_dump(mode="json"),
@@ -418,7 +445,7 @@ class JourneyService:
         priorities = {"goal": 1, "step": 1, "gear": 1, "plan": 1, "lessonState": 1, "selectedPassage": 1,
                       "evidence": 2, "course": 3, "assessments": 4, "sources": 5,
                       "learnerNotes": 5, "evidenceTools": 5, "attachedImages": 5}
-        required_keys = {"goal", "step", "gear", "plan", "selectedPassage", "learnerNotes"}
+        required_keys = {"controlDecision", "sharedContext", "goal", "step", "gear", "plan", "selectedPassage", "learnerNotes"}
         if command.mode == "learn":
             required_keys.add("lessonState")
         def relevance_score(value):
@@ -524,11 +551,14 @@ class JourneyService:
             "compactionTriggered": conversation_state["version"] > previous_state["version"],
             "webEvidenceBundleId": web_bundle.response_bundle_id if web_bundle else None,
             "webRetrievalOccurred": bool(web_bundle and web_bundle.retrieval_occurred),
-            "transitionSuggestion": transition_suggestion}
+            "transitionSuggestion": transition_suggestion, "decision": (control or {}).get("decision")}
 
     def commit_stream(self, conn, owner, prepared, command: JourneyCommand, body: str, visualizations=None):
         """Persist the authoritative artifact and Journey within the caller transaction."""
         from sqlalchemy import text
+        if prepared["journey"].get("_controlPlane"):
+            from .learning_control_plane import LearningControlPlane
+            LearningControlPlane(self.store).validate_commit(conn, owner, prepared["journey"]["_controlPlane"])
         from .streaming_lesson import semantic_blocks
         from .visualization_parts import make_visual_parts
         from .visualization_service import VisualizationService, replace_in_journey

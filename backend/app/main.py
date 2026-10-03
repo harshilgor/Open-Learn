@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .database import database_url
+from .stable_concept_routes import build_stable_concept_router
+from .hypothesis_routes import build_hypothesis_router
 from .graph_generator import GraphGenerator
 from .learner_graph import LearnerGraphRepository, build_learner_graph_router
 from .learning_kernel import build_lesson, classify_intent, resolve_concept
@@ -71,13 +73,7 @@ from threading import Thread
 
 app = FastAPI(title="AI Tutor Harness API", version="0.1.0")
 local_web_origin = os.getenv("FORMA_WEB_ORIGIN", "http://127.0.0.1:3000")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[local_web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_credentials=True,
-)
+
 
 
 @app.middleware("http")
@@ -88,7 +84,18 @@ async def local_desktop_auth(request, call_next):
         if request.headers.get("X-Forma-Desktop-Token") != token:
             return JSONResponse(status_code=401, content={"code": "desktop_auth_required", "message": "The local desktop session is not authorized."})
     return await call_next(request)
+from .identity import validate_identity_configuration
+validate_identity_configuration()
 store = Store(database_url())
+from .identity_middleware import IdentityMiddleware
+app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[local_web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=True,
+)
 generator = GraphGenerator()
 lesson_provider = configured_lesson_provider()
 
@@ -112,7 +119,13 @@ def get_store() -> Store:
 # same persistence connection, while its schema and projection logic remain
 # isolated from the topic graph API above.
 app.include_router(build_learner_graph_router(get_store))
+app.include_router(build_stable_concept_router(get_store, lambda: lesson_provider))
+app.include_router(build_hypothesis_router(get_store, lambda: lesson_provider))
 app.include_router(build_state_router(get_store))
+from .identity_routes import build_identity_router
+app.include_router(build_identity_router(get_store))
+from .memory_routes import build_memory_router
+app.include_router(build_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
@@ -130,23 +143,22 @@ app.include_router(build_lecture_router(get_store, lambda: lesson_provider))
 
 
 @app.on_event("startup")
-def resume_interrupted_class_recordings() -> None:
-    """Resume recordings left queued or running when the local app restarts."""
-    from sqlalchemy import text
-    with store.engine.connect() as connection:
-        pending = connection.execute(text("SELECT id, learner_id FROM class_recordings WHERE status IN ('queued','processing')")).all()
-    with store.transaction() as connection:
-        connection.execute(text("UPDATE class_recordings SET status='queued',error=NULL WHERE status='processing'"))
-    from .class_recording_service import ClassRecordingService
-    for recording_id, learner_id in pending:
-        Thread(target=ClassRecordingService(store, lesson_provider).process, args=(recording_id, learner_id), daemon=True).start()
-
-
-@app.on_event("startup")
 def resume_lecture_pipeline() -> None:
-    worker = LectureWorker(store, lambda: lesson_provider)
-    worker.reconcile()
-    Thread(target=worker.drain, daemon=True).start()
+    # Local installs retain automatic execution. Hosted API processes use an
+    # independently supervised worker from this same application package.
+    if os.getenv("OPENLEARN_WORKER_MODE", "external" if os.getenv("AI_TUTOR_ENV", "development").lower() in {"production", "deployed"} else "embedded") == "embedded":
+        from threading import Event
+        from .worker import run
+        app.state.worker_stop = Event()
+        app.state.worker_thread = Thread(target=run, args=(store, lambda: lesson_provider, app.state.worker_stop), daemon=True)
+        app.state.worker_thread.start()
+
+
+@app.on_event("shutdown")
+def stop_execution_worker() -> None:
+    if hasattr(app.state, "worker_stop"):
+        app.state.worker_stop.set()
+        app.state.worker_thread.join(timeout=5)
 app.include_router(build_course_router(get_store, lambda: lesson_provider))
 
 
@@ -276,6 +288,9 @@ def create_learning_session(
         from .domain_pack import get_pack, graph_for_pack
         pack = get_pack(request.domain_pack_id, request.domain_pack_version)
         graph = graph_for_pack(pack)
+        from .identity import grant_resource
+        with db.transaction() as connection:
+            grant_resource(connection, "graph_versions", graph.id, owner)
         if db.get_graph(graph.id) is None:
             db.save_graph(graph)
         graph_id = graph.id
@@ -297,7 +312,7 @@ def create_learning_session(
     graph = db.get_graph(graph_id)
     if graph is None:
         raise HTTPException(status_code=404, detail={"code": "graph_not_found", "message": "Graph does not exist."})
-    effective_learner_id = request.learner_id if request.learner_id != "local" else owner
+    effective_learner_id = owner
     session = LearningSession(
         id=f"session_{uuid4().hex}",
         learner_id=effective_learner_id,
@@ -453,7 +468,7 @@ def create_teaching_action(
         raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
     # A missing development identity represents the local single-user shell.
     # When an identity is supplied, preserve strict learner ownership.
-    if owner != "local" and session.learner_id != owner:
+    if session.learner_id != owner:
         raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "Learning session does not exist."})
     if request.expected_state_version is not None and request.expected_state_version != session.state_version:
         raise HTTPException(status_code=409, detail={"code": "stale_session", "message": "The session changed; reload it before sending this action."})

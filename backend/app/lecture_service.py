@@ -114,8 +114,11 @@ class LectureService:
             return content.startswith(b"fLaC")
         return bool(content)
 
-    def put_chunk(self, owner: str, recording_id: str, sequence: int, content: bytes, *, start_ms: int, end_ms: int, media_type: str, checksum: str):
+    def put_chunk(self, owner: str, recording_id: str, sequence: int, content: bytes, *, start_ms: int, end_ms: int, media_type: str, checksum: str, capture_epoch: int | None = None, epoch_sequence: int = 0, independent_media: bool = True):
         row = self._row(owner, recording_id)
+        capture_epoch = sequence if capture_epoch is None else capture_epoch
+        if capture_epoch < 0 or epoch_sequence != 0 or not independent_media:
+            raise LectureError('unsupported_capture_adapter', 'This adapter requires complete initialized audio segments. Continuous container fragments need an assembly adapter.', 415)
         if sequence < 0 or sequence >= 10000 or start_ms < 0 or end_ms <= start_ms or end_ms - start_ms > 60_000 or end_ms > 24 * 60 * 60 * 1000:
             raise LectureError("invalid_chunk_time", "The audio slice has invalid timing or sequence.")
         if row["expected_chunk_count"] is not None and sequence >= row["expected_chunk_count"]:
@@ -145,6 +148,8 @@ class LectureService:
                     "end": end_ms, "mime": media_type, "size": len(content), "hash": stored_hash,
                     "key": key, "now": now,
                 })
+                job = self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, f"lecture:chunk:{recording_id}:{sequence}", connection=conn)
+                conn.execute(text('UPDATE lecture_audio_chunks SET capture_epoch=:epoch,epoch_sequence=:epoch_sequence,independent_media=:independent WHERE recording_id=:recording AND sequence_number=:sequence'), {'epoch': capture_epoch, 'epoch_sequence': epoch_sequence, 'independent': independent_media, 'recording': recording_id, 'sequence': sequence})
         except IntegrityError:
             self.objects.delete(owner, recording_id, key)
             with self.store.engine.connect() as conn:
@@ -152,7 +157,6 @@ class LectureService:
             if existing:
                 return self._duplicate(owner, recording_id, existing, digest, len(content), start_ms, end_ms, media_type)
             raise
-        job = self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, f"lecture:chunk:{recording_id}:{sequence}")
         log.info("lecture.chunk.accepted recording_id=%s sequence=%s bytes=%s", recording_id, sequence, len(content))
         self.maybe_enqueue_finalize(owner, recording_id)
         return {"recordingId": recording_id, "sequenceNumber": sequence, "sha256": digest, "byteCount": len(content), "transcriptionStatus": "pending", "duplicate": False, "jobId": job["id"]}
@@ -289,7 +293,7 @@ class LectureService:
         else:
             raise LectureError("invalid_stage", "Choose a failed lecture stage to retry.")
         with self.store.transaction() as conn:
-            conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL WHERE owner_id=:owner AND command_key=:key AND status='failed'"), {"owner": owner, "key": key})
+            conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL,attempt_count=0,next_retry_at=0,error_code=NULL,cancellation_requested=false WHERE owner_id=:owner AND command_key=:key AND status='failed'"), {"owner": owner, "key": key})
             if stage == "section_analysis":
                 conn.execute(text("UPDATE lecture_sections SET analysis_status='pending' WHERE id=:id AND analysis_status='failed'"), {"id": section_id})
             conn.execute(text("UPDATE lecture_recordings SET status='processing',error=NULL,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='failed'"), {"now": time.time(), "id": recording_id, "owner": owner})
@@ -306,7 +310,7 @@ class LectureService:
                     conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='pending',transcription_error=NULL WHERE recording_id=:id AND sequence_number=:seq AND transcription_status='failed'"), {"id": recording_id, "seq": payload["sequence"]})
                 if job["kind"] == "lecture_section":
                     conn.execute(text("UPDATE lecture_sections SET analysis_status='pending' WHERE id=:id AND analysis_status='failed'"), {"id": payload["section_id"]})
-                conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL WHERE id=:id AND status='failed'"), {"id": job["id"]})
+                conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL,attempt_count=0,next_retry_at=0,error_code=NULL,cancellation_requested=false WHERE id=:id AND status='failed'"), {"id": job["id"]})
             if failed:
                 conn.execute(text("UPDATE lecture_recordings SET status='processing',error=NULL,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='failed'"), {"id": recording_id, "owner": owner, "now": time.time()})
         return self.status(owner, recording_id)
@@ -321,7 +325,7 @@ class LectureService:
             if row[1] == "completed":
                 return self.status(owner, recording_id)
             conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='pending',transcription_error=NULL,updated_at=:now WHERE id=:id"), {"now": time.time(), "id": row[0]})
-            conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL WHERE owner_id=:owner AND command_key=:key AND status='failed'"), {"owner": owner, "key": key})
+            conn.execute(text("UPDATE learning_jobs SET status='queued',lease=NULL,expires=NULL,result=NULL,attempt_count=0,next_retry_at=0,error_code=NULL,cancellation_requested=false WHERE owner_id=:owner AND command_key=:key AND status='failed'"), {"owner": owner, "key": key})
         self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, key)
         return self.status(owner, recording_id)
 
@@ -337,7 +341,9 @@ class LectureService:
             changed = conn.execute(text("UPDATE lecture_recordings SET status='processing',preferences_json=:prefs,stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='completed' AND generation_version=:version"), {"prefs": encoded(preferences.model_dump(mode="json")), "stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner, "version": row["generation_version"]})
             if changed.rowcount != 1:
                 raise LectureError("recording_changed", "Recording changed; reload and try again.", 409)
-        self.jobs.enqueue(owner, recording_id, "lecture_generate", {"recording_id": recording_id, "version": version}, f"lecture:generate:{recording_id}:{version}")
+            from .execution import Outbox
+            Outbox.emit(conn, owner, "execution.job.requested", recording_id, f"lecture:generate:{recording_id}:{version}",
+                        {"kind": "lecture_generate", "input": {"recording_id": recording_id, "version": version}, "key": f"lecture:generate:{recording_id}:{version}"})
         return self.status(owner, recording_id)
 
     def delete(self, owner: str, note_id: str):
@@ -345,6 +351,7 @@ class LectureService:
             rows = conn.execute(text("SELECT id FROM lecture_recordings WHERE learner_id=:owner AND note_id=:note"), {"owner": owner, "note": note_id}).all()
             for (rid,) in rows:
                 conn.execute(text("UPDATE learning_jobs SET status='cancelled',lease=NULL,expires=NULL WHERE owner_id=:owner AND target_id=:id AND kind LIKE 'lecture_%'"), {"owner": owner, "id": rid})
+                conn.execute(text("DELETE FROM execution_outbox WHERE owner_id=:owner AND target_id=:id"), {"owner": owner, "id": rid})
             chunks = conn.execute(text("SELECT c.storage_key,c.recording_id FROM lecture_audio_chunks c JOIN lecture_recordings r ON r.id=c.recording_id WHERE r.learner_id=:owner AND r.note_id=:note"), {"owner": owner, "note": note_id}).all()
             conn.execute(text("DELETE FROM lecture_recordings WHERE learner_id=:owner AND note_id=:note"), {"owner": owner, "note": note_id})
         for key, rid in chunks:

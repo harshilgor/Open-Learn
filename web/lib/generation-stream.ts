@@ -1,3 +1,4 @@
+import { authenticatedFetch } from './account-session';
 import { apiBaseUrl, request, type Gear } from './api';
 import type { VisualType } from './visualization-spec';
 
@@ -56,7 +57,7 @@ export class GenerationStream {
     while (!this.stopped) {
       this.controller = new AbortController();
       try {
-        const response = await fetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(this.descriptor.id)}/events?after=${this.sequence}`, {
+        const response = await authenticatedFetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(this.descriptor.id)}/events?after=${this.sequence}`, {
           headers: headers(this.sequence ? { 'Last-Event-ID': String(this.sequence) } : {}), signal: this.controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`Could not reconnect to generation (${response.status}).`);

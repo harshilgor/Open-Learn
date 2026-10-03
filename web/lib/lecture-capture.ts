@@ -21,6 +21,8 @@ class LectureCaptureController {
   private markers: number[] = [];
   private phaseValue: CapturePhase = 'idle';
   private errorValue = '';
+  private watchdog: ReturnType<typeof setInterval> | null = null;
+  private wakeLock: WakeLockSentinel | null = null;
 
   get phase() { return this.phaseValue; }
   get recordingId() { return this.id; }
@@ -36,6 +38,10 @@ class LectureCaptureController {
   }
 
   private release() {
+    if (this.watchdog) clearInterval(this.watchdog);
+    this.watchdog = null;
+    void this.wakeLock?.release();
+    this.wakeLock = null;
     if (this.sliceTimer) clearTimeout(this.sliceTimer);
     this.sliceTimer = null;
     this.recorder = null;
@@ -49,6 +55,8 @@ class LectureCaptureController {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     this.stream = stream;
     try {
+      const storage = await navigator.storage?.estimate?.();
+      if (storage?.quota && storage.usage !== undefined && storage.quota - storage.usage < 20 * 1024 * 1024) throw new Error('Local storage is nearly full. Export saved recordings before recording.');
       await navigator.storage?.persist?.().catch(() => false);
       const id = `rec_${crypto.randomUUID().replaceAll('-', '')}`;
       await createLocalLecture({ id, title: input.title, courseId: input.courseId || null, noteFolder: input.noteFolder || null, startedAtMs: Date.now(), preferences: input.preferences || defaultLecturePreferences });
@@ -60,6 +68,14 @@ class LectureCaptureController {
       this.finishing = false;
       this.captureFailure = null;
       this.saving = Promise.resolve();
+      stream.getAudioTracks().forEach(track => {
+        track.addEventListener('ended', () => {this.captureFailure = 'The microphone disconnected. Recover the saved recording.'; void this.stop();});
+        track.addEventListener('mute', () => this.emit(this.phaseValue, 'The microphone is muted. Check capture before continuing.'));
+      });
+      this.wakeLock = await navigator.wakeLock?.request('screen').catch(() => null) || null;
+      this.watchdog = setInterval(() => {
+        if (this.phaseValue === 'recording' && performance.now() - this.sliceStartedAt > 20000) this.emit('recording', 'Audio delivery has stalled. Stop and recover the saved portion.');
+      }, 5000);
       this.startSlice();
       this.emit('recording');
       return id;
@@ -109,7 +125,7 @@ class LectureCaptureController {
       else if (this.pauseRequested) this.emit('paused');
     };
     recorder.start();
-    this.sliceTimer = setTimeout(() => this.stopCurrent(), 8000);
+    this.sliceTimer = setTimeout(() => this.stopCurrent(), 5000);
   }
 
   private stopCurrent() {

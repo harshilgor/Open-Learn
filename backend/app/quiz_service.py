@@ -21,6 +21,19 @@ class QuizService:
         self.records = WorkflowStore(store)
         self.lifecycle = AssessmentLifecycle(store, provider)
 
+    def _effective_attempt(self, owner, attempt):
+        try:
+            resolution = self.records.read(owner, "attempt_resolution_" + attempt["id"], "attempt_resolution")
+            return {**attempt, **{k: v for k, v in resolution.items() if k in {"score", "status", "feedback", "criteria", "resolutionId", "solution"}}}
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        if self.records.listing(owner, "challenge"):
+            pending = any(c.get("presentationId") == attempt.get("presentationId") and c.get("status") == "excluded_pending_review" for c in self.records.listing(owner, "challenge"))
+            if pending:
+                return {**attempt, "score": None, "status": "contested", "feedback": "This question is awaiting review and excluded from your score."}
+        return attempt
+
     def _save_quiz(self, conn, owner, quiz, expected):
         quiz["updatedAt"] = utc_now().isoformat()
         self.records.put(conn, owner, "quiz", quiz, expected=expected)
@@ -37,7 +50,7 @@ class QuizService:
             quizzes = [quiz for quiz in quizzes if quiz.get("lessonNoteId") == lesson_note_id]
         result = []
         for quiz in quizzes:
-            attempts = [self.records.read(owner, aid, "attempt") for aid in quiz.get("attempts", [])]
+            attempts = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt")) for aid in quiz.get("attempts", [])]
             first = [attempt for attempt in attempts if not attempt.get("retryOf")]
             evaluated = [attempt for attempt in first if attempt.get("score") is not None and attempt.get("status") != "contested"]
             result.append({
@@ -131,7 +144,9 @@ class QuizService:
         quiz = self.records.read(owner, quiz_id, "quiz")
         MaterialService(self.store).session(owner, quiz["sessionId"])
         current = self.records.read(owner, quiz["current"], "presentation") if quiz["current"] else None
-        history = [self.records.read(owner, aid, "attempt") for aid in quiz["attempts"]]
+        if current and current.get("questionPlan"):
+            current["questionPlan"] = {key: current["questionPlan"][key] for key in ("objective", "capability", "reason_codes")}
+        history = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt")) for aid in quiz["attempts"]]
         first = [a for a in history if not a.get("retryOf")]
         evaluated = [a for a in first if a["score"] is not None and a["status"] != "contested"]
         quiz["summary"] = {"score": round(100 * sum(a["score"] for a in evaluated) / len(evaluated)) if evaluated else None,
@@ -143,7 +158,8 @@ class QuizService:
                            "contested": sum(a["status"] == "contested" for a in first)}
         if quiz.get("mode") == "timed_short_quiz" and quiz.get("deadlineAt"):
             quiz["remainingSeconds"] = max(0, int((datetime.fromisoformat(quiz["deadlineAt"]) - utc_now()).total_seconds()))
-        return {**{key: value for key, value in quiz.items() if key not in {"lessonSnapshot", "conversationSnapshot"}}, "current": current, "attempts": history, "quality": {"approvedOnly": True}}
+        challenges = [c for c in self.records.listing(owner, "challenge") if c.get("presentationId") in quiz.get("presentations", [])]
+        return {**{key: value for key, value in quiz.items() if key not in {"lessonSnapshot", "conversationSnapshot"}}, "current": current, "attempts": history, "challenges": challenges, "quality": {"approvedOnly": True}}
 
     def _ensure_active_time(self, quiz):
         if quiz.get("mode") != "timed_short_quiz" or not quiz.get("deadlineAt"):
@@ -182,8 +198,20 @@ class QuizService:
         if graph.version != quiz["graphVersion"]:
             problem("curriculum_changed", "The source graph changed. Start a new quiz.", 409)
         recent = next((a for a in reversed(first) if a["status"] != "contested"), None)
-        index = len([a for a in first if not a.get("retryOf")]) % len(quiz["conceptIds"])
-        concept_id = recent["conceptId"] if recent and recent["score"] is not None and recent["score"] < .5 else quiz["conceptIds"][index]
+        from .adaptive_question_planner import choose_question_plan
+        from .unified_learner_state import UnifiedLearnerState
+        previous = self.records.listing(owner, "item")
+        with self.store.engine.connect() as conn:
+            all_states = UnifiedLearnerState(self.store).read(conn, owner)["states"]
+            from .stable_concept_service import StableConceptService
+            stable = StableConceptService(self.store)
+            states = []
+            for scoped_id in quiz["conceptIds"]:
+                resolved = stable.resolve_legacy(owner, graph.id, graph.version, scoped_id, connection=conn)
+                stable_id = resolved.get("concept_id") or scoped_id
+                states.extend({**state, "stableConceptId": stable_id, "conceptId": scoped_id} for state in all_states if state["conceptId"] == stable_id)
+        plan = choose_question_plan(quiz, first, states, previous, quiz.get("diagnosticSpec"))
+        concept_id = plan.concept_id
         concept = next(c for c in graph.concepts if c.id == concept_id)
         sources = retrieve(self.store, owner, session.id, f"{quiz.get('requestedTopic') or session.goal} {concept.title} {concept.summary}",
                            selected_span_ids=quiz.get("selectedSpanIds"),
@@ -194,12 +222,25 @@ class QuizService:
         manifest = save_manifest(self.store, owner, session.id, concept.title, sources, selected_span_ids=quiz.get("selectedSpanIds"))
         difficulty = quiz["difficulty"]
         if difficulty == "adaptive":
-            difficulty = "stretch" if recent and recent["score"] == 1 and not recent["assisted"] else "foundational" if recent and recent["score"] != 1 else "standard"
-        previous = self.records.listing(owner, "item")
+            difficulty = "stretch" if plan.objective == "transfer_check" else "standard"
+        plan.source_revisions = [{"spanId": s.get("spanId"), "versionId": s.get("versionId")} for s in sources]
         context = {"conceptIds": [concept_id], "concept": concept.title, "objective": quiz.get("requestedTopic") or session.goal,
+                   "questionPlan": plan.model_dump(),
                    "lessonSnapshot": quiz.get("lessonSnapshot"), "conversationSnapshot": quiz.get("conversationSnapshot"),
                    "difficulty": difficulty, "sources": sources, "manifestId": manifest["id"], "evidence": canonical_evidence(self.store, owner, graph).model_dump(mode="json"),
                    "recentFeedback": recent["feedback"] if recent else None, "questionNumber": len(first) + 1}
+        from .learning_control_plane import LearningControlPlane
+        control = LearningControlPlane(self.store).prepare(owner, session.id, "quiz", "quick",
+            quiz.get("requestedTopic") or session.goal or concept.title, target_id=concept_id,
+            quiz_scope={"conceptIds": quiz["conceptIds"], "selectedSpanIds": quiz.get("selectedSpanIds", []), "graphVersion": quiz["graphVersion"]})
+        if control:
+            context["sharedContext"] = control["context"]
+            context["controlDecision"] = LearningControlPlane.prompt_constraints(control)
+            quiz["_controlPlane"] = control
+        if plan.diagnostic_distinction:
+            context["diagnosticSpec"] = quiz["diagnosticSpec"]
+            context["objective"] = quiz["diagnosticSpec"]["objective"]
+            context["diagnosticConstraints"] = "Measure only the distinguishing objective. Do not disclose the proposed explanation or teach the answer before the independent check. Reject questions that require unrelated capabilities."
         item, item_record, presentation = self.lifecycle.prepare_item(
             owner,
             context=context,
@@ -209,10 +250,19 @@ class QuizService:
             parent_kind="quiz",
         )
         presentation["lessonNoteId"] = quiz.get("lessonNoteId")
+        item_record["questionPlan"] = plan.model_dump()
+        presentation["questionPlan"] = plan.model_dump()
+        interventions = [r for r in self.records.listing(owner, "teaching_intervention") if r.get("conceptId") == concept_id]
+        if interventions:
+            last = max(interventions, key=lambda r: r.get("createdAt", ""))
+            presentation["interventionId"] = last["id"]
+            presentation["interveningActivities"] = [a["id"] for a in first]
         return quiz, item, item_record, presentation
 
     def commit_prepared(self, conn, owner, prepared):
         quiz, item, item_record, presentation = prepared
+        from .learning_control_plane import LearningControlPlane
+        LearningControlPlane(self.store).validate_commit(conn, owner, quiz.pop("_controlPlane", None))
         if item is None:
             quiz["status"] = "completed"
         else:
@@ -254,6 +304,9 @@ class QuizService:
     def commit_grade(self, conn, owner, graded):
         quiz, presentation, item, attempt = graded
         attempt["lessonNoteId"] = quiz.get("lessonNoteId")
+        attempt["questionPlan"] = presentation.get("questionPlan")
+        attempt["interventionId"] = presentation.get("interventionId")
+        attempt["interveningActivities"] = presentation.get("interveningActivities", [])
         self.lifecycle.commit_attempt(
             conn, owner,
             presentation=presentation,

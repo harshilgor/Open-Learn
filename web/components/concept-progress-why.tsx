@@ -8,6 +8,8 @@ import styles from './learn-chat.module.css';
 export function ConceptProgressWhy({ conceptId, enabled = true }: { conceptId?: string | null; enabled?: boolean }) {
   const [explanation, setExplanation] = useState<ConceptStateExplanation | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+  const [capabilities, setCapabilities] = useState<Awaited<ReturnType<typeof learningApi.getCapabilityState>> | null>(null);
+  const [history, setHistory] = useState<Awaited<ReturnType<typeof learningApi.getEvidenceHistory>> | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -15,12 +17,16 @@ export function ConceptProgressWhy({ conceptId, enabled = true }: { conceptId?: 
     let active = true;
     void (async () => {
       try {
-        const [why, page] = await Promise.all([
+        const [why, page, ledger, shared] = await Promise.all([
           learningApi.getConceptExplanation(conceptId),
           learningApi.getLearnerTimeline({ limit: 8 }),
+          learningApi.getEvidenceHistory(conceptId),
+          learningApi.getCapabilityState(conceptId),
         ]);
         if (!active) return;
         setExplanation(why);
+        setHistory(ledger);
+        setCapabilities(shared);
         setTimeline(page.entries.filter(entry => !entry.conceptId || entry.conceptId === conceptId).slice(0, 5));
         setError('');
       } catch (cause) {
@@ -43,7 +49,13 @@ export function ConceptProgressWhy({ conceptId, enabled = true }: { conceptId?: 
         Current standing: <strong>{status}</strong>
         {dueReason ? ` · Next review: ${dueReason}` : null}
       </p>
-      <p className={styles.hint}>{explanation.rationale}</p>
+      {capabilities?.states.length ? <section aria-label="Measured capabilities">
+        <h4>What you have practiced</h4>
+        <ul className={styles.hint}>{capabilities.states.map(state => <li key={state.capability}>
+          <strong>{state.capability}</strong>: {state.state.replaceAll('_', ' ')} · {state.evidenceStrength.replaceAll('_', ' ')} evidence · {state.retention.replaceAll('_', ' ')}
+          <p>{state.reasonCodes.map(reason => reason.replaceAll('_', ' ')).join(' · ')}</p>
+        </li>)}</ul>
+      </section> : <p className={styles.hint}>A fresh independent check will establish capability evidence.</p>}
       {explanation.admittedEvidence.length ? (
         <ul className={styles.hint}>
           {explanation.admittedEvidence.slice(0, 4).map(item => (
@@ -51,6 +63,14 @@ export function ConceptProgressWhy({ conceptId, enabled = true }: { conceptId?: 
           ))}
         </ul>
       ) : <p className={styles.hint}>No admitted evidence yet for this concept.</p>}
+      {history?.entries.length ? <section aria-label="Evidence history">
+        <h4>What this is based on</h4>
+        <ul className={styles.hint}>{history.entries.slice(-20).reverse().map(entry => <li key={entry.id}>
+          {entry.category.replaceAll('_', ' ')} · {entry.eventType.toLowerCase().replaceAll('_', ' ')} · {new Date(entry.occurredAt).toLocaleDateString()}
+          {entry.reasons.length ? ` · ${entry.reasons.join(', ').replaceAll('_', ' ')}` : null}
+          {entry.question ? <details><summary>View question</summary><p>{entry.question.stem}</p></details> : null}
+        </li>)}</ul>
+      </section> : null}
       {timeline.length ? (
         <>
           <p className={styles.hint}>Recent activity</p>

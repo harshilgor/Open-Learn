@@ -1,8 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { FileText, FolderClosed, Loader2, MessageSquare, MoreHorizontal, Plus, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { CourseStudyPlanner } from '@/components/course-study-planner';
+import { CanvasConnection } from '@/components/canvas-connection';
 import { learningApi, type ChatSessionSummary, type CoursePublic, type WorkspaceNoteSummary } from '@/lib/api';
 
 interface CourseHomeProps {
@@ -129,9 +132,13 @@ export function CourseHome({ courseId, onOpenSession, onNewSession, onOpenNote, 
         <div className="course-folder-title"><span className="course-folder-icon"><FolderClosed size={24} /></span><div>
           {editing ? <form onSubmit={event => { event.preventDefault(); void renameCourse(); }} className="course-folder-rename"><input aria-label="Course name" autoFocus value={name} maxLength={300} onChange={event => setName(event.target.value)} /><Button size="sm" type="submit" disabled={!name.trim() || !!busyId}>Save</Button><Button size="sm" type="button" variant="ghost" onClick={() => { setEditing(false); setName(course.name); }}>Cancel</Button></form> : <h1>{course.name}</h1>}
           <p>{sessions.length} {sessions.length === 1 ? 'chat' : 'chats'} · {notes.length} {notes.length === 1 ? 'note' : 'notes'}</p>
+          <Link href="/concepts" className="text-sm underline">Review course concepts</Link>
         </div></div>
         <div className="course-folder-actions"><Button onClick={onNewSession}><Plus size={17} />New chat</Button><div className="course-folder-menu-wrap"><Button type="button" variant="ghost" size="icon" aria-label="Course options" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={19} /></Button>{menuOpen ? <div className="course-folder-menu"><button onClick={() => { setEditing(true); setMenuOpen(false); }}>Rename course</button><button className="danger" onClick={() => { setMenuOpen(false); void deleteCourse(); }}><Trash2 size={15} />Delete course</button></div> : null}</div></div>
       </header>
+
+      <CourseStudyPlanner courseId={courseId} onNewSession={onNewSession} />
+      <CanvasConnection courseId={courseId} />
 
       <div className="course-folder-section"><div className="course-folder-section-head"><div><h2>Chats</h2><p>Conversations in this course</p></div><Button variant="outline" size="sm" onClick={() => { setSearch(''); setPicker(picker === 'chats' ? null : 'chats'); }}><Plus size={15} />Add chats</Button></div>
         {sessions.length ? <div className="course-folder-list">{sessions.map(item => <div className="course-folder-row" key={item.id}><button className="course-folder-row-title" onClick={() => onOpenSession(item.id)}><MessageSquare size={18} /><span>{item.title}</span></button><Button variant="ghost" size="sm" onClick={() => onQuizSession(item.id)}>Create quiz</Button><button className="course-folder-remove" aria-label={`Remove ${item.title} from course`} disabled={busyId === item.id} onClick={() => void removeChat(item.id)}>Remove</button></div>)}</div> : <p className="course-folder-empty">Start a chat here, or add one you already have.</p>}

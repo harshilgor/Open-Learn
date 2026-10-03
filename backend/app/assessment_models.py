@@ -34,6 +34,7 @@ class QuizCreate(ApiModel):
 
 class AnswerCommand(ApiModel):
     presentation_id: str
+    external_help: bool = False
     expected_revision: int = Field(ge=1)
     response: str = Field(default="", max_length=6000)
     selected_ids: list[str] = Field(default_factory=list, max_length=8)

@@ -73,6 +73,9 @@ class EntityProposal(ApiModel):
     confidence: float | None = Field(default=None, ge=0, le=1)
     source_kind: Literal["professor", "student", "unknown", "ai_enrichment"] = "unknown"
     corrected_by_segment_ids: list[str] = Field(default_factory=list, max_length=20)
+    assertion: Literal['direct', 'inferred', 'tentative', 'negated'] = 'tentative'
+    support_quote: str | None = Field(default=None, max_length=4000)
+    applies_to_learner: bool = False
 
     @model_validator(mode="after")
     def cautious_math(self):

@@ -3,15 +3,15 @@ import os
 import json
 from .reading_format import READING_FORMAT
 from pydantic import BaseModel, Field
+from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from .material_models import UploadRequest, TextMaterial, AttachMaterial
 from .material_service import MaterialService, problem
 
 
 def material_owner(x_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")):
-    if os.getenv("AI_TUTOR_ENV", "development").lower() in {"production", "deployed"} or os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() != "true":
-        problem("authentication_required", "Verified identity is required", 503)
-    return x_learner_id or "local"
+    from .identity import current_principal
+    return current_principal().owner_id
 
 
 class MaterialQuestion(BaseModel):
@@ -63,7 +63,7 @@ def build_material_router(store_provider, provider_getter=lambda: None):
         content = request.text.encode("utf-8")
         item = svc.create(owner, UploadRequest(title=request.title, media_type="text/plain", byte_count=len(content), role=request.role, course_id=request.course_id))
         result = svc.upload(owner, item["materialId"], item["versionId"], content)
-        tasks.add_task(svc.process_one)
+        schedule_local(tasks, svc.process_one)
         return result
 
     @router.post("/sessions/{sid}/url-materials", status_code=201)
@@ -90,7 +90,7 @@ def build_material_router(store_provider, provider_getter=lambda: None):
             if len(content) > version["byte_count"]:
                 problem("upload_too_large", "Upload exceeds declared size", 413)
         result = svc.upload(owner, mid, vid, bytes(content))
-        tasks.add_task(svc.process_one)
+        schedule_local(tasks, svc.process_one)
         return result
 
     @router.get("/materials")
@@ -120,7 +120,7 @@ def build_material_router(store_provider, provider_getter=lambda: None):
     @router.post("/material-jobs/{jid}/retry")
     def retry(jid: str, tasks: BackgroundTasks, owner=Depends(material_owner), svc=Depends(service)):
         result = svc.retry(owner, jid)
-        tasks.add_task(svc.process_one)
+        schedule_local(tasks, svc.process_one)
         return result
 
     @router.post("/sessions/{sid}/materials")

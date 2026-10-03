@@ -222,7 +222,7 @@ class MaterialService:
         except Exception as exc:
             detail = exc.detail if isinstance(exc, HTTPException) else {"code": "processing_failed", "message": "Could not process this material. Check its format or retry."}
             with self.store.transaction() as c:
-                changed = c.execute(text("UPDATE material_jobs SET status='failed',payload=:payload WHERE id=:id AND lease=:lease AND status='running'"), {"id": job["id"], "lease": job["lease"], "payload": encoded({"error": detail})}).rowcount
+                changed = c.execute(text("UPDATE material_jobs SET status='failed',payload=:payload WHERE id=:id AND lease=:lease AND status='running' AND expires>:now"), {"now": time.time(), "id": job["id"], "lease": job["lease"], "payload": encoded({"error": detail})}).rowcount
                 if changed and job["kind"] == "ingest":
                     c.execute(text("UPDATE material_versions SET status='failed',payload=:payload WHERE id=:id AND status NOT IN ('ready','deleted')"), {"id": job["target_id"], "payload": encoded({"issues": [detail]})})
         return True
@@ -273,7 +273,7 @@ class MaterialService:
         status = "ready" if v["media_type"].startswith("image/") else "partially_ready" if issues and blocks else "needs_attention" if not blocks else "ready"
         with self.store.transaction() as c:
             self.version(job["owner_id"], v["id"], c)
-            changed = c.execute(text("UPDATE material_jobs SET status='completed',payload=:payload WHERE id=:id AND lease=:lease AND status='running'"), {"id": job["id"], "lease": job["lease"], "payload": encoded({"blockCount": len(blocks), "issues": issues})}).rowcount
+            changed = c.execute(text("UPDATE material_jobs SET status='completed',payload=:payload WHERE id=:id AND lease=:lease AND status='running' AND expires>:now"), {"now": time.time(), "id": job["id"], "lease": job["lease"], "payload": encoded({"blockCount": len(blocks), "issues": issues})}).rowcount
             if not changed:
                 return
             c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})

@@ -1,6 +1,7 @@
 """Owner-scoped API for durable, chunked lecture recordings."""
 from __future__ import annotations
 
+from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path, Request
 from fastapi.responses import FileResponse
 
@@ -8,6 +9,22 @@ from .lecture_models import LectureCreate, LectureFinalize, LecturePreferences
 from .lecture_pipeline import LectureWorker
 from .lecture_service import LectureError, LectureService, MAX_CHUNK_BYTES
 from .material_routes import material_owner
+from .lecture_observations import LectureObservationService
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class TranscriptEdit(BaseModel):
+    wording: str = Field(min_length=1, max_length=4000)
+    revision: int = Field(ge=1)
+
+class ObservationEdit(BaseModel):
+    id: str | None = None
+    kind: Literal['coverage','definition','example','emphasis','assignment','exam_statement','common_error','equation']
+    segmentIds: list[str] = Field(min_length=1, max_length=30)
+    quote: str = Field(min_length=1, max_length=4000)
+    assertion: Literal['direct','inferred','tentative','negated']
+    conceptId: str | None = None
+    entityId: str | None = None
 
 
 def build_lecture_router(store_provider, provider_getter, transcriber=None):
@@ -64,7 +81,7 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                 raise HTTPException(status_code=413, detail={"code": "chunk_too_large", "message": "An audio slice must be smaller than 4 MB."})
         result = translate(lambda: svc.put_chunk(owner, recording_id, sequence, bytes(content), start_ms=x_chunk_start_ms,
                                                    end_ms=x_chunk_end_ms, media_type=request.headers.get("content-type", ""), checksum=x_chunk_sha256))
-        tasks.add_task(runner.drain)
+        schedule_local(tasks, runner.drain)
         return result
 
     @router.post("/{recording_id}/finalize")
@@ -72,7 +89,7 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                  owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
         result = translate(lambda: svc.finalize(owner, recording_id, command))
-        tasks.add_task(runner.drain)
+        schedule_local(tasks, runner.drain)
         return result
 
     @router.get("/{recording_id}/chunks")
@@ -96,6 +113,23 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
         authorize(learner_id, owner)
         return {"sections": translate(lambda: svc.sections(owner, recording_id))}
 
+    @router.patch('/{recording_id}/transcript/{segment_id}')
+    def edit(recording_id: str, segment_id: str, command: TranscriptEdit, learner_id: str, tasks: BackgroundTasks, owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
+        authorize(learner_id, owner)
+        result = translate(lambda: LectureObservationService(svc.store).correct_transcript(owner, recording_id, segment_id, command.wording, command.revision))
+        schedule_local(tasks, runner.drain)
+        return result
+
+    @router.get('/{recording_id}/observations')
+    def observations(recording_id: str, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
+        authorize(learner_id, owner)
+        return translate(lambda: LectureObservationService(svc.store).listing(owner, recording_id))
+
+    @router.post('/{recording_id}/observations')
+    def observation(recording_id: str, command: ObservationEdit, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
+        authorize(learner_id, owner)
+        return translate(lambda: LectureObservationService(svc.store).observe(owner, recording_id, command.model_dump(exclude_none=True)))
+
     @router.get("/{recording_id}/representation")
     def representation(recording_id: str, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
         authorize(learner_id, owner)
@@ -111,7 +145,7 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                     owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
         result = translate(lambda: svc.retry_chunk(owner, recording_id, sequence))
-        tasks.add_task(runner.drain)
+        schedule_local(tasks, runner.drain)
         return result
 
     @router.post("/{recording_id}/retry", status_code=202)
@@ -119,7 +153,7 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                      owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
         result = translate(lambda: svc.retry_failed(owner, recording_id))
-        tasks.add_task(runner.drain)
+        schedule_local(tasks, runner.drain)
         return result
 
     @router.post("/{recording_id}/regenerate", status_code=202)
@@ -127,7 +161,7 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                    owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
         result = translate(lambda: svc.regenerate(owner, recording_id, preferences))
-        tasks.add_task(runner.drain)
+        schedule_local(tasks, runner.drain)
         return result
 
     return router

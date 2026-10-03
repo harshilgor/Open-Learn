@@ -69,7 +69,7 @@ def test_timed_pause_resume_persists_remaining_duration():
     store = make_store()
     try:
         records, service = WorkflowStore(store), QuizService(store, None)
-        quiz = {"id": "timed-x", "mode": "timed_short_quiz", "modeConfig": {"duration_seconds": 300}, "remainingSeconds": 300, "deadlineAt": None, "status": "ready", "current": "presentation-x"}
+        quiz = {"id": "timed-x", "mode": "timed_short_quiz", "modeConfig": {"duration_seconds": 300}, "remainingSeconds": 300, "deadlineAt": None, "status": "paused", "current": "presentation-x"}
         with store.transaction() as conn:
             records.put(conn, "local", "quiz", quiz)
         with store.transaction() as conn:

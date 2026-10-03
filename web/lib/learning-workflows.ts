@@ -11,6 +11,7 @@ export type Presentation = {
   id: string; quizId: string; concept_id: string; kind: 'single' | 'multiple' | 'short'; stem: string;
   options: { id: string; label: string }[]; hints: string[]; attemptId: string | null; difficulty: string;
   hintCount?: number; sources?: Source[]; retryOf?: string;
+  questionPlan?: { objective: string; reason_codes: string[]; capability: string };
 };
 export type Attempt = {
   id: string; presentationId: string; conceptId: string; response: string; selectedIds: string[];
@@ -23,6 +24,7 @@ export type Quiz = {
   contextSource?: boolean;
   mode: 'topic_drill' | 'timed_short_quiz'; modeConfig: { duration_seconds?: number }; deadlineAt: string | null; remainingSeconds: number | null;
   current: Presentation | null; attempts: Attempt[];
+  challenges?: { id: string; presentationId: string; status: string; explanation?: string; outcome?: string }[];
   summary: { score: number | null; evaluated: number; attempted: number; total: number; assisted: number; skipped: number; dontKnow: number; independentCorrect: number; retries: number; contested: number };
 };
 type Job = { id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; result: { quizId?: string; sessionId?: string; itemId?: string; attemptId?: string; noteDraftId?: string; noteId?: string; proposalId?: string; status?: string; heading?: string; applyKind?: string; skipped?: string; message?: string } | null };

@@ -58,6 +58,11 @@ def apply_timing(
     source: Literal["memory", "evidence"] = "memory",
 ) -> ScheduleDecision:
     """Write memory next_review_at and mirror review_schedules in one authority path."""
+    # Once the concept has canonical observations, confidence and same-session
+    # retries must not independently extend another scheduler's intervals.
+    canonical = connection.execute(text("SELECT 1 FROM capability_projections WHERE owner_id=:owner AND concept_id=:concept"), {"owner": learner_id, "concept": concept_id}).first()
+    if canonical:
+        return decision
     moment = now or utc_now()
     interval = max(1, int(round(decision.interval_days)))
     if apply_memory and memory_store.get_memory(connection, learner_id, concept_id):

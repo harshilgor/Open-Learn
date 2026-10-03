@@ -5,6 +5,7 @@ from sqlalchemy import text
 
 from .class_recording_service import ClassRecordingError, ClassRecordingService, MAX_AUDIO_BYTES
 from .material_routes import material_owner
+from .workflow_store import WorkflowStore
 
 
 def build_class_recording_router(store_provider, provider_getter):
@@ -50,7 +51,7 @@ def build_class_recording_router(store_provider, provider_getter):
         except ValueError:
             markers = []
         record = translate(lambda: svc.upload(owner, note_id, bytes(data), media_type, min(max(duration, 0), 24 * 60 * 60 * 1000), markers))
-        tasks.add_task(svc.process, record["id"], owner)
+        WorkflowStore(svc.store).enqueue(owner, record["id"], "class_recording", {}, "class-recording:" + record["id"])
         return record
 
     @router.get("/learners/{learner_id}/workspace-notes/{note_id}/class-recording")
@@ -81,7 +82,10 @@ def build_class_recording_router(store_provider, provider_getter):
             raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "Learner scope mismatch."})
         record, should_run = translate(lambda: svc.retry(owner, note_id))
         if should_run:
-            tasks.add_task(svc.process, record["id"], owner)
+            jobs = WorkflowStore(svc.store)
+            job = jobs.enqueue(owner, record["id"], "class_recording", {}, "class-recording:" + record["id"])
+            with svc.store.transaction() as conn:
+                conn.execute(text("UPDATE learning_jobs SET status='queued',attempt_count=0,next_retry_at=0,error_code=NULL WHERE id=:id AND status='failed'"), {"id": job["id"]})
         return record
 
     @router.delete("/learners/{learner_id}/workspace-notes/{note_id}/class-recording", status_code=204)

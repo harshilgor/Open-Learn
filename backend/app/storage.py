@@ -36,7 +36,22 @@ class Store:
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
         with self.engine.begin() as connection:
+            from .execution import active_job
+            from .workflow_store import WorkflowStore
+            job = active_job.get()
+            if job is not None:
+                WorkflowStore(self).validate_lease(connection, job)
+            from .identity import principal_context, assert_principal_active
+            principal = principal_context.get()
+            if principal:
+                assert_principal_active(connection, principal)
             yield connection
+            if principal:
+                assert_principal_active(connection, principal)
+            if job is not None:
+                status = connection.execute(text("SELECT status FROM learning_jobs WHERE id=:id"), {"id": job["id"]}).scalar_one_or_none()
+                if status == "running":
+                    WorkflowStore(self).validate_lease(connection, job)
 
     def close(self) -> None:
         self.engine.dispose()
@@ -60,28 +75,40 @@ class Store:
 
     def save_scope(self, scope: TopicScope) -> None:
         with self.transaction() as connection:
+            from .identity import grant_resource
+            grant_resource(connection, "topic_scopes", scope.id)
             self._put(connection, "topic_scopes", "id", scope.id, {"payload": scope.model_dump_json()})
 
     def get_scope(self, scope_id: str) -> TopicScope | None:
         with self.engine.connect() as connection:
+            from .identity import authorize_resource
+            authorize_resource(connection, "topic_scopes", scope_id)
             row = connection.execute(text("SELECT payload FROM topic_scopes WHERE id = :id"), {"id": scope_id}).mappings().first()
         return TopicScope.model_validate_json(row["payload"]) if row else None
 
     def save_job(self, job: GraphJob) -> None:
         with self.transaction() as connection:
+            from .identity import grant_resource
+            grant_resource(connection, "graph_jobs", job.id)
             self._put(connection, "graph_jobs", "id", job.id, {"scope_id": job.scope_id, "payload": job.model_dump_json()})
 
     def get_job(self, job_id: str) -> GraphJob | None:
         with self.engine.connect() as connection:
+            from .identity import authorize_resource
+            authorize_resource(connection, "graph_jobs", job_id)
             row = connection.execute(text("SELECT payload FROM graph_jobs WHERE id = :id"), {"id": job_id}).mappings().first()
         return GraphJob.model_validate_json(row["payload"]) if row else None
 
     def save_graph(self, graph: GraphVersion) -> None:
         with self.transaction() as connection:
+            from .identity import grant_resource
+            grant_resource(connection, "graph_versions", graph.id)
             self._put(connection, "graph_versions", "id", graph.id, {"scope_id": graph.scope_id, "payload": graph.model_dump_json()})
 
     def get_graph(self, graph_id: str) -> GraphVersion | None:
         with self.engine.connect() as connection:
+            from .identity import authorize_resource
+            authorize_resource(connection, "graph_versions", graph_id)
             row = connection.execute(text("SELECT payload FROM graph_versions WHERE id = :id"), {"id": graph_id}).mappings().first()
         return GraphVersion.model_validate_json(row["payload"]) if row else None
 
@@ -107,6 +134,10 @@ class Store:
     def get_session(self, session_id: str) -> LearningSession | None:
         with self.engine.connect() as connection:
             row = connection.execute(text("SELECT payload FROM learning_sessions WHERE id = :id"), {"id": session_id}).mappings().first()
+        from .identity import principal_context, fail
+        principal = principal_context.get()
+        if row and principal and LearningSession.model_validate_json(row["payload"]).learner_id != principal.owner_id:
+            fail('session_not_found', 'Session not found.', 404)
         return LearningSession.model_validate_json(row["payload"]) if row else None
 
     def list_sessions(self, owner: str, limit: int = 50, offset: int = 0) -> tuple[list[LearningSession], int]:
@@ -235,6 +266,8 @@ class Store:
     def get_action(self, action_id: str) -> RunStatus | None:
         with self.engine.connect() as connection:
             row = connection.execute(text("SELECT payload FROM learning_actions WHERE id = :id"), {"id": action_id}).mappings().first()
+        if row:
+            self.get_session(RunStatus.model_validate_json(row["payload"]).session_id)
         return RunStatus.model_validate_json(row["payload"]) if row else None
 
     def get_action_by_idempotency(self, session_id: str, idempotency_key: str) -> RunStatus | None:
@@ -257,6 +290,8 @@ class Store:
             row = connection.execute(
                 text("SELECT payload FROM teaching_plans WHERE id = :id"), {"id": plan_id}
             ).mappings().first()
+        if row:
+            self.get_action(TeachingPlan.model_validate_json(row["payload"]).action_id)
         return TeachingPlan.model_validate_json(row["payload"]) if row else None
 
     def save_policy_validation(self, result: PolicyValidationResult) -> None:
@@ -293,6 +328,8 @@ class Store:
     def get_artifact(self, artifact_id: str) -> LessonArtifact | None:
         with self.engine.connect() as connection:
             row = connection.execute(text("SELECT payload FROM lesson_artifacts WHERE id = :id"), {"id": artifact_id}).mappings().first()
+        if row:
+            self.get_session(LessonArtifact.model_validate_json(row["payload"]).session_id)
         return LessonArtifact.model_validate_json(row["payload"]) if row else None
 
     def save_event(self, event: ActionEvent) -> None:

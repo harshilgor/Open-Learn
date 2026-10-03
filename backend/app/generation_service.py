@@ -223,7 +223,7 @@ class GenerationManager:
                 await asyncio.wrap_future(future)
             context_ready_at = time.time()
             self.records.update_metrics(generation_id, {"contextReadyAt": context_ready_at, "contextBuildSeconds": context_ready_at - started_at})
-            await self.buffer.append(generation_id, "generation.context_ready", {"sourceCount": len(prepared["sources"]), "actionId": prepared["actionId"]})
+            await self.buffer.append(generation_id, "generation.context_ready", {"sourceCount": len(prepared["sources"]), "actionId": prepared["actionId"], "decision": prepared.get("decision")})
             for source in prepared["sources"]:
                 await self.buffer.append(generation_id, "source.added", {"spanId": source.get("spanId"), "title": source.get("title")})
             if self.records.cancelled(generation_id):
@@ -325,6 +325,10 @@ class GenerationManager:
                 if visual_reserved and not visualizations:
                     await self.buffer.append(generation_id, "visualization.skipped")
             with self.store.transaction() as connection:
+                from sqlalchemy import text
+                cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
+                if cancelled:
+                    raise asyncio.CancelledError()
                 artifact, journey = JourneyService(self.store, provider).commit_stream(connection, owner, prepared, request, body, visualizations)
                 result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
                 completed_at = time.time(); elapsed = max(completed_at - (first_delta_at or provider_started_at), .001)

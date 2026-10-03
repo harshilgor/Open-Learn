@@ -1,4 +1,5 @@
 "use client";
+import { authenticatedFetch } from '@/lib/account-session';
 
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -10,7 +11,7 @@ type Source = { spanId?: string; id?: string; title?: string; pageIndex: number;
 type Answer = { blocks: { heading: string; body: string }[]; sources: Source[]; message: string };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl()}/v1${path}`, init);
+  const response = await authenticatedFetch(`${apiBaseUrl()}/v1${path}`, init);
   const body: unknown = await response.json();
   if (!response.ok) {
     const error = body as { detail?: { message?: string } };

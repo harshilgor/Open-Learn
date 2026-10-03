@@ -28,10 +28,9 @@ log = logging.getLogger(__name__)
 
 
 def _authorize(learner_id: str, claimed: str | None) -> None:
-    if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
-        raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
-    if (claimed or "local") != learner_id:
-        raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})
+    from .identity import authorize_owner
+    authorize_owner(learner_id)
+
 
 
 def run_review_job(store, provider, job_id: str) -> None:

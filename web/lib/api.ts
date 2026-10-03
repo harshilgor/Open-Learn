@@ -1,3 +1,4 @@
+import { authenticatedFetch } from './account-session';
 /**
  * Browser client for the learning-kernel API.
  *
@@ -390,7 +391,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 
   let response: Response;
   try {
-    response = await fetch(url(path), { ...init, headers });
+    response = await authenticatedFetch(url(path), { ...init, headers });
   } catch (cause) {
     if (init.signal?.aborted) throw cause;
     throw new Error('Cannot connect to the tutor service. Your message is still here. Start the local app with start-local.ps1, then try again.');
@@ -1043,6 +1044,12 @@ export const learningApi = {
       method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId, 'Idempotency-Key': crypto.randomUUID() },
     });
   },
+  getCapabilityState(conceptId: string, learnerId = 'local'): Promise<{eventWatermark: number; states: Array<{conceptId: string; capability: string; state: string; evidenceStrength: string; retention: string; reasonCodes: string[]; dueAt: string | null}>}> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/capability-state?conceptId=${encodeURIComponent(conceptId)}`, {headers: {'X-Dev-Learner-Id': learnerId}});
+  },
+  getEvidenceHistory(conceptId: string, learnerId = 'local'): Promise<{watermark: number; entries: Array<{id: string; eventType: string; category: string; occurredAt: string; reasons: string[]; activityId: string | null; question: {id: string; stem: string} | null}>}> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/evidence-history?conceptId=${encodeURIComponent(conceptId)}`, {headers: {'X-Dev-Learner-Id': learnerId}});
+  },
   getConceptExplanation(conceptId: string, learnerId = 'local'): Promise<ConceptStateExplanation> {
     return request<ConceptStateExplanation>(`/v1/learners/${encodeURIComponent(learnerId)}/state/${encodeURIComponent(conceptId)}/explanation`, {
       headers: { 'X-Dev-Learner-Id': learnerId },
@@ -1120,7 +1127,7 @@ export const learningApi = {
     const headers = new Headers({ Accept: 'audio/*', 'X-Dev-Learner-Id': learnerId });
     const token = desktopToken();
     if (token) headers.set('X-Forma-Desktop-Token', token);
-    const response = await fetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/class-recordings/${encodeURIComponent(recordingId)}/audio`), { headers });
+    const response = await authenticatedFetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/class-recordings/${encodeURIComponent(recordingId)}/audio`), { headers });
     if (!response.ok) throw new Error('Class recording audio is unavailable.');
     return response.blob();
   },
@@ -1181,7 +1188,7 @@ export const learningApi = {
     const headers = new Headers({ Accept: 'audio/*', 'X-Dev-Learner-Id': learnerId });
     const token = desktopToken();
     if (token) headers.set('X-Forma-Desktop-Token', token);
-    const response = await fetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks/${sequence}/audio`), { headers });
+    const response = await authenticatedFetch(url(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks/${sequence}/audio`), { headers });
     if (!response.ok) throw new Error('Lecture audio is unavailable.');
     return response.blob();
   },
@@ -1279,7 +1286,7 @@ export const learningApi = {
         body: JSON.stringify({ title: file.name, mediaType, byteCount: file.size, role, courseId }),
       }
     );
-    await fetch(`${apiBaseUrl()}${item.uploadPath}`, {
+    await authenticatedFetch(`${apiBaseUrl()}${item.uploadPath}`, {
       method: 'PUT',
       headers: { 'Content-Type': mediaType },
       body: file,

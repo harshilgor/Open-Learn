@@ -92,6 +92,8 @@ class ClassRecordingService:
     def delete(self, owner: str, note_id: str):
         with self.store.transaction() as conn:
             rows = conn.execute(text("SELECT id FROM class_recordings WHERE learner_id=:owner AND note_id=:note"), {"owner": owner, "note": note_id}).all()
+            for (recording_id,) in rows:
+                conn.execute(text("UPDATE learning_jobs SET status='cancelled',cancellation_requested=true,lease=NULL,expires=NULL WHERE owner_id=:owner AND target_id=:id AND kind='class_recording'"), {"owner": owner, "id": recording_id})
             conn.execute(text("DELETE FROM class_recordings WHERE learner_id=:owner AND note_id=:note"), {"owner": owner, "note": note_id})
         for row in rows:
             self._path(owner, row[0]).unlink(missing_ok=True)

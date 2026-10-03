@@ -6,6 +6,7 @@ import { RichContent } from './rich-content';
 import { learningApi, type LectureNoteBlock, type LectureSection, type LectureStatus, type LectureTranscriptSegment } from '@/lib/api';
 import { getLocalLecture, listLocalChunks, updateLocalLecture, type LocalLecture } from '@/lib/lecture-local-store';
 import { syncLecture } from '@/lib/lecture-upload-queue';
+import { LectureTranscriptEditor } from '@/components/lecture-transcript-editor';
 
 function timestamp(ms: number) { return `${Math.floor(ms / 60000).toString().padStart(2, '0')}:${Math.floor(ms % 60000 / 1000).toString().padStart(2, '0')}`; }
 type AudioChunk = { sequenceNumber: number; startMs: number; endMs: number; mediaType: string };
@@ -104,6 +105,7 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
       return <div key={block.id}>{showHeading ? <h3 className="mt-4 font-semibold">{section.title}</h3> : null}<article className="mt-2"><h4 className="text-sm font-medium">{block.title}</h4><RichContent body={block.content} /><div className="flex flex-wrap gap-2 text-xs">{block.evidence.map((ref, index) => audioRetained ? <button type="button" className="text-primary underline" key={`${ref.segmentId}-${index}`} onClick={() => void seek(ref.startMs)} title="Play cited audio">▶ {timestamp(ref.startMs)}</button> : <span key={`${ref.segmentId}-${index}`}>{timestamp(ref.startMs)}</span>)}{block.sourceKind === 'ai_enrichment' ? <span>AI explanation</span> : null}{block.verificationStatus === 'uncertain' ? <span>Audio unclear</span> : null}</div></article></div>;
     })}
     {!ordered.length && transcript.length ? <details><summary>{status?.recordingStatus === 'completed' ? 'No verified note blocks; view the transcript' : 'Transcript available while notes process'}</summary>{transcript.map(segment => <p key={segment.id} className="my-2 text-sm">{audioRetained ? <button type="button" className="text-primary underline" onClick={() => void seek(segment.startMs)}>{timestamp(segment.startMs)}</button> : <span>{timestamp(segment.startMs)}</span>} {segment.normalizedText || segment.rawText}</p>)}</details> : null}
+    <LectureTranscriptEditor recordingId={recordingId} segments={transcript} onChanged={refresh} />
     {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
   </section>;
 }

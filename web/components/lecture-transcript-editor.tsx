@@ -1,0 +1,9 @@
+'use client';
+import {useState} from 'react';
+import {request,type LectureTranscriptSegment} from '@/lib/api';
+import {Button} from '@/components/ui/button';
+export function LectureTranscriptEditor({recordingId,segments,onChanged}:{recordingId:string;segments:LectureTranscriptSegment[];onChanged:()=>Promise<void>}) {
+ const [selected,setSelected]=useState(''),[wording,setWording]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const segment=segments.find(s=>s.id===selected) as (LectureTranscriptSegment & {normalizationVersion?:number})|undefined;
+ return <details><summary>Inspect and correct transcript</summary><p>Edits preserve the raw transcript and audio. Affected observations are reprocessed.</p><label>Transcript moment<select value={selected} onChange={e=>{setSelected(e.target.value);setWording(segments.find(s=>s.id===e.target.value)?.normalizedText||segments.find(s=>s.id===e.target.value)?.rawText||'');}}><option value="">Choose a moment</option>{segments.map(s=><option key={s.id} value={s.id}>{Math.floor(s.startMs/60000)}:{String(Math.floor(s.startMs/1000)%60).padStart(2,'0')} · {(s.normalizedText||s.rawText).slice(0,70)}</option>)}</select></label>{segment?<form onSubmit={e=>{e.preventDefault();setBusy(true);setError('');void request(`/v1/learners/local/lecture-recordings/${encodeURIComponent(recordingId)}/transcript/${encodeURIComponent(segment.id)}`,{method:'PATCH',headers:{'X-Dev-Learner-Id':'local'},body:JSON.stringify({wording,revision:segment.normalizationVersion||1})}).then(onChanged).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><label>Corrected wording<textarea required maxLength={4000} value={wording} onChange={e=>setWording(e.target.value)}/></label><Button disabled={busy}>Save correction</Button></form>:null}{error?<p role="alert">{error}</p>:null}</details>;
+}

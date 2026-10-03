@@ -14,16 +14,22 @@ from .semantic_retrieval import configured_model, similarity_scores
 
 
 def canonical_evidence(store, owner, graph):
-    states = [s for s in LearnerStateService(store).get_state(owner).states if s.graph_id == graph.id and s.graph_version == graph.version]
-    by_id = {s.concept_id: s for s in states}
-    concepts = []
-    for concept in graph.concepts:
-        state = by_id.get(concept.id)
-        status = state.status.value if state else "unexplored"
-        concepts.append(ConceptEvidence(concept_id=concept.id, state="explored" if status == "exposed" else status,
-            evidence_count=int(bool(state and state.last_evidence_id)), demonstrated=status == "demonstrated",
-            evidence_ids=[state.last_evidence_id] if state and state.last_evidence_id else []))
-    return LearnerEvidenceProjection(learner_id=owner, state_version=max((s.version for s in states), default=0), concepts=concepts)
+    from .unified_learner_state import UnifiedLearnerState
+    from .stable_concept_service import StableConceptService
+    with store.engine.connect() as conn:
+        shared = UnifiedLearnerState(store).read(conn, owner)
+        concepts = []
+        for concept in graph.concepts:
+            mapping = StableConceptService(store).resolve_legacy(owner, graph.id, graph.version, concept.id, connection=conn)
+            identifier = mapping.get("concept_id") or concept.id
+            rows = [row for row in shared["states"] if row["conceptId"] == identifier]
+            evidence_ids = sorted({key for row in rows for key in row["effectiveEventIds"]})
+            statuses = {row["state"] for row in rows}
+            # A success on one measured capability cannot establish whole-concept mastery.
+            demonstrated = len(rows) == 4 and statuses == {"demonstrated"}
+            state = "demonstrated" if demonstrated else "developing" if statuses & {"developing", "demonstrated"} else "explored" if "exposed" in statuses else "unexplored"
+            concepts.append(ConceptEvidence(concept_id=concept.id, state=state, evidence_count=len(evidence_ids), demonstrated=demonstrated, evidence_ids=evidence_ids))
+    return LearnerEvidenceProjection(learner_id=owner, state_version=shared["eventWatermark"], concepts=concepts)
 
 
 def retrieve(store, owner, sid, query, byte_budget=16000, selected_span_ids=None, metadata_scope=None):

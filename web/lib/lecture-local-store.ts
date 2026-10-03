@@ -16,6 +16,7 @@ export type LocalAudioChunk = {
   recordingId: string; sequenceNumber: number; startMs: number; endMs: number; mimeType: string;
   blob: Blob; byteSize: number; sha256: string; state: LocalChunkState;
   uploadAttempts: number; lastError: string | null; createdAt: string;
+  captureEpoch?: number; epochSequence?: number; independentMedia?: boolean;
 };
 
 const DB_NAME = 'open-learn-lecture-recordings';
@@ -90,6 +91,12 @@ export async function persistAudioSlice(id: string, blob: Blob, startMs: number,
     if (!session) throw new Error('Local lecture manifest is missing.');
     const sequenceNumber = session.nextSequenceNumber;
     const chunk: LocalAudioChunk = { recordingId: id, sequenceNumber, startMs, endMs, mimeType: blob.type.split(';')[0] || 'audio/webm', blob, byteSize: blob.size, sha256, state: 'persisted', uploadAttempts: 0, lastError: null, createdAt: new Date().toISOString() };
+    // Each stop/start slice is a complete capture epoch with initialization
+    // bytes. Timeslice blobs from a continuous recorder are never treated as
+    // standalone files by this adapter.
+    chunk.captureEpoch = sequenceNumber;
+    chunk.epochSequence = 0;
+    chunk.independentMedia = true;
     tx.objectStore('chunks').add(chunk);
     sessionStore.put({ ...session, nextSequenceNumber: sequenceNumber + 1, durationMs: endMs, updatedAt: new Date().toISOString() });
     await finished(tx);
@@ -150,4 +157,26 @@ export async function clearAllLocalLectures(): Promise<void> {
     tx.objectStore('chunks').clear();
     await finished(tx);
   } finally { db.close(); }
+}
+
+/** Preserve initialized media files separately; concatenating containers can
+ * silently corrupt audio. TAR uses Blob parts without reading all audio into
+ * one JavaScript byte array, and includes offsets and integrity hashes. */
+export async function exportLocalLecture(id: string): Promise<void> {
+  const session = await getLocalLecture(id);
+  if (!session) throw new Error('The saved recording manifest is unavailable.');
+  const chunks = await listLocalChunks(id);
+  const entries = [{name: 'manifest.json', blob: new Blob([JSON.stringify({session, chunks: chunks.map(({blob: _blob, ...metadata}) => metadata)}, null, 2)], {type: 'application/json'})}, ...chunks.map(c => ({name: `audio/${String(c.sequenceNumber).padStart(6,'0')}.${c.mimeType === 'audio/mp4' ? 'm4a' : c.mimeType === 'audio/ogg' ? 'ogg' : 'webm'}`, blob: c.blob}))];
+  const parts: BlobPart[] = [];
+  for (const entry of entries) {
+    const header = new Uint8Array(512);
+    const write = (offset:number, value:string) => header.set(new TextEncoder().encode(value), offset);
+    write(0,entry.name); write(100,'0000600\0'); write(108,'0000000\0'); write(116,'0000000\0'); write(124,entry.blob.size.toString(8).padStart(11,'0')+'\0'); write(136,Math.floor(Date.now()/1000).toString(8).padStart(11,'0')+'\0'); header.fill(32,148,156); write(156,'0'); write(257,'ustar\0'); write(263,'00');
+    const checksum = header.reduce((sum,byte) => sum+byte,0); write(148,checksum.toString(8).padStart(6,'0')+'\0 ');
+    parts.push(header,entry.blob,new Uint8Array((512-entry.blob.size%512)%512));
+  }
+  parts.push(new Uint8Array(1024));
+  const url=URL.createObjectURL(new Blob(parts,{type:'application/x-tar'}));
+  const link=document.createElement('a'); link.href=url; link.download=`${id}.tar`; link.click();
+  window.setTimeout(()=>URL.revokeObjectURL(url),60000);
 }

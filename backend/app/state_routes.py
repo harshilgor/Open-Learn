@@ -47,18 +47,8 @@ def build_state_router(store_provider: Any) -> APIRouter:
         return Path(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
 
     def authorize(learner_id: str, claimed: str | None) -> None:
-        """Prevent accidental cross-learner access in local development.
-
-        This is intentionally not presented as authentication. A hosted service
-        must disable development identity and replace this check with a trusted
-        auth-derived learner ID.
-        """
-
-        if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
-            raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
-        effective = claimed or "local"
-        if effective != learner_id:
-            raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})
+        from .identity import authorize_owner
+        authorize_owner(learner_id)
 
     def service() -> LearnerStateService:
         return LearnerStateService(store_provider())
@@ -71,6 +61,34 @@ def build_state_router(store_provider: Any) -> APIRouter:
             return operation()
         except (StateServiceError, AdaptiveObservabilityError) as exc:
             raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+
+    @router.get("/learners/{learner_id}/capability-state")
+    def capability_state(concept_id: str | None = Query(default=None, alias="conceptId", max_length=160), learner_id: str = learner_path(), x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")):
+        authorize(learner_id, x_dev_learner_id)
+        from .unified_learner_state import UnifiedLearnerState
+        with store_provider().engine.connect() as connection:
+            return UnifiedLearnerState(store_provider()).read(connection, learner_id, concept_id)
+
+    @router.post("/learners/{learner_id}/capability-state/rebuild")
+    def rebuild_capability_state(learner_id: str = learner_path(), x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")):
+        authorize(learner_id, x_dev_learner_id)
+        from .unified_learner_state import UnifiedLearnerState
+        with store_provider().transaction() as connection:
+            return UnifiedLearnerState(store_provider()).rebuild(connection, learner_id)
+
+    @router.get("/learners/{learner_id}/evidence-history")
+    def evidence_history(concept_id: str | None = Query(default=None, alias="conceptId", max_length=160), learner_id: str = learner_path(), x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")):
+        authorize(learner_id, x_dev_learner_id)
+        from .evidence_ledger import EvidenceLedger
+        with store_provider().engine.connect() as connection:
+            return EvidenceLedger(store_provider()).history(connection, learner_id, concept_id)
+
+    @router.post("/learners/{learner_id}/evidence-history/backfill")
+    def backfill_evidence(learner_id: str = learner_path(), x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")):
+        authorize(learner_id, x_dev_learner_id)
+        from .evidence_ledger import EvidenceLedger
+        with store_provider().transaction() as connection:
+            return EvidenceLedger(store_provider()).backfill(connection, learner_id)
 
     @router.get("/learners/{learner_id}/state", response_model=LearnerStateResponse)
     def get_state(learner_id: str = learner_path(), x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> LearnerStateResponse:

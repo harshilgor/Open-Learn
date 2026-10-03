@@ -135,6 +135,35 @@ class LearnerStateService:
             occurred_at=row["occurred_at"], created_at=row["created_at"],
         )
 
+    def mirror_capability_projections(self, connection, learner_id):
+        """Compatibility labels/schedules are views of the capability authority."""
+        from .unified_learner_state import UnifiedLearnerState
+        from hashlib import sha256
+        result = UnifiedLearnerState(self.store).read(connection, learner_id)
+        grouped = {}
+        for row in result["states"]:
+            grouped.setdefault(row["conceptId"], []).append(row)
+        now = utc_now()
+        for concept, rows in grouped.items():
+            statuses = {row["state"] for row in rows}
+            status = "demonstrated" if len(rows) == 4 and statuses == {"demonstrated"} else "developing" if statuses & {"developing", "demonstrated"} else "exposed" if "exposed" in statuses else "unexplored"
+            connection.execute(text("UPDATE learner_concept_states SET status=:status,policy_version=:policy,version=:revision,updated_at=:now WHERE learner_id=:owner AND concept_id=:concept"), {
+                "status": status, "policy": result["policyRevision"], "revision": max(1, result["eventWatermark"]), "now": now, "owner": learner_id, "concept": concept})
+            connection.execute(text("UPDATE review_schedules SET status='superseded',updated_at=:now WHERE learner_id=:owner AND concept_id=:concept AND status IN ('scheduled','due')"), {"now": now, "owner": learner_id, "concept": concept})
+            due_rows = [row for row in rows if row["dueAt"]]
+            for row in due_rows:
+                identifier = "capability_review_" + sha256((learner_id + ":" + concept + ":" + row["capability"]).encode()).hexdigest()[:32]
+                connection.execute(text("""INSERT INTO review_schedules(id,learner_id,concept_id,originating_evidence_id,due_at,status,interval_days,created_at,updated_at,due_reason,activity_type,scheduler_version)
+                    VALUES(:id,:owner,:concept,NULL,:due,'scheduled',:interval,:now,:now,:reason,:activity,:policy)
+                    ON CONFLICT(id) DO UPDATE SET due_at=excluded.due_at,status='scheduled',interval_days=excluded.interval_days,updated_at=excluded.updated_at,due_reason=excluded.due_reason,scheduler_version=excluded.scheduler_version"""), {
+                        "id": identifier, "owner": learner_id, "concept": concept, "due": datetime.fromisoformat(row["dueAt"]),
+                        "interval": row["intervalDays"], "now": now, "reason": "Independent " + row["capability"] + " check",
+                        "activity": row["capability"], "policy": result["policyRevision"]})
+            if due_rows:
+                earliest = min(due_rows, key=lambda row: row["dueAt"])
+                connection.execute(text("UPDATE concept_memory_states SET next_review_at=:due,mastery_estimate=:state,updated_at=:now WHERE learner_id=:owner AND concept_id=:concept"), {
+                    "due": datetime.fromisoformat(earliest["dueAt"]), "state": "strong" if status == "demonstrated" else "developing", "now": now, "owner": learner_id, "concept": concept})
+
     def get_state(self, learner_id: str) -> LearnerStateResponse:
         with self.store.engine.connect() as connection:
             rows = connection.execute(text(
@@ -246,6 +275,14 @@ class LearnerStateService:
                 VALUES (:id, :learner_id, :kind, :concept_id, :session_id, :action_id, :correlation_id, :causation_id,
                         :idempotency_key, :schema_version, :payload_json, :provenance_json, :occurred_at, :recorded_at)
             """), values)
+            from .evidence_ledger import EvidenceLedger
+            category = {"concept.taught": "CONCEPT_TAUGHT", "lesson.completed": "CONCEPT_TAUGHT",
+                "lesson.viewed": "LESSON_VIEWED", "confidence.reported": "SELF_REPORT",
+                "hint.requested": "HINT_REQUESTED", "answer.exposed": "ANSWER_EXPOSED"}.get(request.kind)
+            if category:
+                EvidenceLedger(self.store).emit(connection, learner_id, "state:" + event_id, category,
+                    concept_id=request.concept_id, activity_id=request.session_id, occurred_at=occurred_at,
+                    detail=str(request.payload)[:2000] if category == "SELF_REPORT" else None)
             row = connection.execute(text("SELECT * FROM state_events WHERE id = :id"), {"id": event_id}).mappings().one()
             return self._event_from_row(row), False
 

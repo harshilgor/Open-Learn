@@ -17,6 +17,10 @@ def build_backup_router(store_provider: Any) -> APIRouter:
         store = store_provider()
         if os.getenv("AI_TUTOR_ENV", "development").lower() not in {"development", "local", "test"} or store.engine.dialect.name != "sqlite":
             raise HTTPException(404, detail={"code":"local_only", "message":"Backup is available in local Forma only."})
+        from sqlalchemy import text
+        with store.engine.connect() as connection:
+            if connection.execute(text('SELECT 1 FROM identity_accounts LIMIT 1')).first():
+                raise HTTPException(409, detail={'code': 'account_backup_restricted', 'message': 'Whole-installation backup and restore are disabled after account linking. Use account export; restores must preserve deletion tombstones.'})
         return BackupService(store)
     def authorize(claimed: str | None) -> None:
         if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1","true","yes"} or (claimed or "local") != "local":

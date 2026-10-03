@@ -404,6 +404,14 @@ class ReviewSessionService:
             "sessionId": session["id"], "itemId": item["id"],
             "result": attempt.get("correctness"), "evaluationFailed": evaluation is None,
         })
+        from ..evidence_ledger import EvidenceLedger
+        from ..shared_contracts import RevisionRef
+        EvidenceLedger(self.store).emit(conn, owner, "attempt:" + attempt["id"], "REVIEW_RESPONSE",
+            concept_id=item["conceptId"], attempt_id=attempt["id"], activity_id=session["id"],
+            session_id=session["id"], graph=RevisionRef(kind="graph", id=item["graphId"], revision=item["graphVersion"]),
+            admission="excluded", exclusion_reasons=("review_rubric_admission_pending",),
+            assistance="assisted" if attempt.get("assisted") else "unknown",
+            outcome=attempt.get("correctness") or "ungraded")
         return {"sessionId": session["id"], "itemId": item["id"], "attemptId": attempt["id"]}
 
     def record_confidence(self, owner: str, session_id: str, item_id: str, command: ReviewConfidenceCommand) -> ReviewSessionPublic:
@@ -637,6 +645,11 @@ class ReviewSessionService:
 
     def _event(self, conn, owner: str, kind: str, concept_id: str | None, payload: dict[str, Any]) -> None:
         now = utc_now()
+        from ..evidence_ledger import EvidenceLedger
+        category = {"review_confidence_submitted": "SELF_REPORT", "review_item_skipped": "SKIP"}.get(kind)
+        if category:
+            EvidenceLedger(self.store).emit(conn, owner, kind + ":" + str(payload.get("itemId")), category,
+                concept_id=concept_id, activity_id=payload.get("sessionId"), detail=str(payload.get("confidence")) if category == "SELF_REPORT" else None)
         conn.execute(text("""
             INSERT INTO state_events
             (id, learner_id, kind, concept_id, session_id, action_id, correlation_id, causation_id,

@@ -32,10 +32,9 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
         return Path(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
 
     def authorize(learner_id: str, claimed: str | None) -> None:
-        if os.getenv("AI_TUTOR_DEV_IDENTITY", "true").lower() not in {"1", "true", "yes"}:
-            raise HTTPException(status_code=503, detail={"code": "authentication_required", "message": "Development identity is disabled; configure an authentication provider."})
-        if (claimed or "local") != learner_id:
-            raise HTTPException(status_code=403, detail={"code": "learner_scope_mismatch", "message": "X-Dev-Learner-Id must match the learner path."})
+        from .identity import authorize_owner
+        authorize_owner(learner_id)
+
 
     def service() -> WorkspaceNoteService:
         return WorkspaceNoteService(store_provider())
@@ -128,7 +127,19 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
     def update_note(request: WorkspaceNoteUpdate, note_id: str, learner_id: str = learner_path(),
                     x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> WorkspaceNoteRecord:
         authorize(learner_id, x_dev_learner_id)
-        return translate(lambda: service().update(learner_id, note_id, request))
+        svc = service()
+        try:
+            return svc.update(learner_id, note_id, request)
+        except WorkspaceNoteError as exc:
+            if exc.code == 'revision_conflict':
+                current = svc.get(learner_id, note_id)
+                # A lost response can be acknowledged without creating a second
+                # revision, but only when the exact intended edit already won.
+                same = (request.title is None or request.title.strip() == current.title) and (request.body is None or request.body == current.body) and all(current.frontmatter.get(key) == value for key, value in (request.frontmatter or {}).items())
+                if current.revision == request.expected_revision + 1 and same:
+                    return current
+                raise HTTPException(409, detail={'code': exc.code, 'message': exc.message, 'currentRevision': current.revision, 'current': current.model_dump(mode='json', by_alias=True)}) from exc
+            raise HTTPException(exc.status_code, detail={'code': exc.code, 'message': exc.message}) from exc
 
     @router.delete("/learners/{learner_id}/workspace-notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
     def delete_note(note_id: str, expected_revision: int = Query(alias="expectedRevision", ge=1), learner_id: str = learner_path(),

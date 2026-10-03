@@ -1,0 +1,8 @@
+{
+  "manifest_version": 3,
+  "name": "Open Learn Canvas Reader",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*", "http://127.0.0.1/*"],
+  "action": {"default_popup": "popup.html"}
+}

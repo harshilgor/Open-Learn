@@ -1,4 +1,5 @@
 "use client";
+import { AccountSettings } from './account-settings';
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTheme } from 'next-themes';
@@ -11,9 +12,10 @@ import { DataActionsSection, UpdateSection } from './local-data-settings';
 import styles from './settings-page.module.css';
 import { DEFAULT_SETTINGS, readSettingsPreferences, saveSettingsPreferences, SETTINGS_CHANGED_EVENT, type SettingsPreferences } from '@/lib/settings-preferences';
 
-export type SettingsCategory = 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about';
+export type SettingsCategory = 'account' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about';
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 }[] = [
+  { id: 'account', label: 'Account & devices', icon: Monitor },
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'learning', label: 'Learning', icon: BookOpen },
   { id: 'audio', label: 'Audio & recordings', icon: Headphones },
@@ -92,6 +94,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
       </nav>
       <div className={styles.content}>
         <div className={styles.inner} data-density={preferences.density} style={{ '--settings-scale': preferences.textSize === 'large' ? 1.08 : 1 } as CSSProperties}>
+          {category === 'account' && <AccountSettings />}
           {category === 'general' ? (
             <section aria-label="General settings">
               <h1>General</h1>

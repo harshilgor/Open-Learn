@@ -9,6 +9,8 @@ from sqlalchemy import text
 
 from .assessment_generation import QualityRejected, evaluate, fingerprint, generate_item
 from .assessment_models import Candidate
+from .evidence_ledger import EvidenceLedger, event_id
+from .shared_contracts import RevisionRef, EventConceptLink
 from .material_service import problem
 from .models import utc_now
 from .state_models import EvidenceCreate
@@ -221,6 +223,9 @@ class AssessmentLifecycle:
             review_item_id=review_item_id,
             item_version=int(presentation.get("itemVersion") or 1),
         )
+        if presentation.get("retryOf"):
+            EvidenceLedger(self.store).emit(conn, owner, "retry:" + presentation["id"], "RETRY_SUBMITTED",
+                concept_id=item.concept_id, family_id=item.family, activity_id=parent_id)
         return presentation
 
     def load_private(self, owner: str, presentation_id: str) -> tuple[dict[str, Any], Candidate]:
@@ -244,6 +249,9 @@ class AssessmentLifecycle:
                 problem("invalid_selection", "Select a valid answer.")
             if item.kind == "single" and len(selected_ids) != 1:
                 problem("invalid_selection", "Select one answer.")
+        from .assessment_assistance import assistance_for
+        with self.store.engine.connect() as conn:
+            assistance = assistance_for(conn, owner, presentation, item, bool(command.get("external_help") or command.get("externalHelp")))
         result = evaluate(self.provider, item, {"outcome": outcome, "response": response, "selected_ids": selected_ids})
         attempt = {
             **result,
@@ -255,7 +263,8 @@ class AssessmentLifecycle:
             "response": response,
             "selectedIds": selected_ids,
             "outcome": outcome,
-            "assisted": bool(presentation.get("hints") or presentation.get("retryOf")),
+            "assisted": assistance["condition"] == "assisted",
+            "assistanceLineage": assistance,
             "solution": item.solution,
             "retryOf": presentation.get("retryOf"),
             "correctIds": item.correct_ids,
@@ -319,15 +328,37 @@ class AssessmentLifecycle:
             attempt["conceptState"] = admitted.learner_state.status.value if admitted.learner_state else None
         parent = parent_id or presentation.get("quizId") or presentation.get("reviewSessionId") or presentation["id"]
         self.records.put(conn, owner, "attempt", attempt, parent)
+        evaluation_id = uid("evaluation")
         self.records.put(conn, owner, "assessment_evaluation", {
-            "id": uid("evaluation"),
+            "id": evaluation_id,
             "attemptId": attempt["id"],
             "itemId": presentation["itemId"],
             "role": "evaluator",
             "status": attempt["status"],
             "score": attempt["score"],
             "assisted": attempt["assisted"],
+            "criteria": attempt.get("criteria", []),
+            "uncertaintyReason": attempt.get("uncertaintyReason"),
         }, attempt["id"])
+        generated_basis = bool(presentation.get("sources")) and all(str(source.get("spanId", "")).startswith("quiz-context:") for source in presentation["sources"])
+        EvidenceLedger(self.store).emit(conn, owner, "attempt:" + attempt["id"],
+            "SKIP" if attempt["outcome"] == "skip" else "REVIEW_RESPONSE" if evidence_kind == "review" else "QUIZ_RESPONSE",
+            concept_id=item.concept_id, occurred_at=attempt["createdAt"], attempt_id=attempt["id"], activity_id=parent,
+            session_id=(provenance_extra or {}).get("sessionId"),
+            concepts=(EventConceptLink(owner_id=owner, id=event_id(owner, "attempt:" + attempt["id"]) + "_target",
+                revision=1, event_id=event_id(owner, "attempt:" + attempt["id"]), concept_id=item.concept_id,
+                capability=(presentation.get("questionPlan") or {}).get("capability", "explain"), role="target", attribution_basis="rubric", uncertainty="resolved"),),
+            family_id=item.family, graph=RevisionRef(kind="graph", id=graph_id, revision=graph_version),
+            presentation=RevisionRef(kind="presentation", id=presentation["id"], revision=presentation["revision"]),
+            evaluation=RevisionRef(kind="assessment_evaluation", id=evaluation_id, revision=1),
+            rubric=RevisionRef(kind="item", id=presentation["itemId"], revision=1),
+            assistance=attempt.get("assistanceLineage", {}).get("condition", "unknown"),
+            outcome="ungraded" if attempt["score"] is None else "correct" if attempt["score"] == 1 else "partial" if attempt["score"] > 0 else "incorrect",
+            admission="not_performance" if attempt["outcome"] == "skip" else "excluded" if attempt["score"] is None or generated_basis else "admitted",
+            exclusion_reasons=("unverified_generated_study_context",) if generated_basis and attempt["outcome"] != "skip" else ("contested_or_incomplete_evaluation",) if attempt["score"] is None and attempt["outcome"] != "skip" else ())
+        if attempt.get("solution") and attempt["outcome"] != "skip":
+            EvidenceLedger(self.store).emit(conn, owner, "solution:" + attempt["id"], "ANSWER_EXPOSED",
+                concept_id=item.concept_id, family_id=item.family, activity_id=parent, occurred_at=attempt["createdAt"])
         return attempt
 
     def record_hint(self, conn, owner: str, presentation_id: str) -> dict[str, Any]:
@@ -337,6 +368,8 @@ class AssessmentLifecycle:
         index = len(presentation["hints"])
         if index < len(item.hints):
             presentation["hints"].append(item.hints[index])
+            EvidenceLedger(self.store).emit(conn, owner, f"hint:{presentation_id}:{index}", "HINT_REQUESTED",
+                concept_id=item.concept_id, family_id=item.family, activity_id=presentation.get("quizId") or presentation.get("reviewSessionId"))
             self.records.put(conn, owner, "presentation", presentation, expected=presentation["revision"])
         return presentation
 
@@ -353,8 +386,14 @@ class AssessmentLifecycle:
             attempt = self.records.read(owner, presentation["attemptId"], "attempt", conn)
             if attempt.get("evidenceId"):
                 LearnerStateService(self.store).withdraw_evidence(owner, attempt["evidenceId"], "assessment_disputed", connection=conn)
-            attempt.update(status="contested", conceptState=None)
-            self.records.put(conn, owner, "attempt", attempt, expected=attempt["revision"])
+            EvidenceLedger(self.store).backfill(conn, owner)
+            EvidenceLedger(self.store).emit(conn, owner, "challenge:" + challenge["id"], "EVIDENCE_RETRACTED",
+                concept_id=attempt.get("conceptId"), attempt_id=attempt["id"],
+                target_event_id=event_id(owner, "attempt:" + attempt["id"]),
+                admission="excluded", exclusion_reasons=("learner_challenged",))
+            # Original response and grade remain immutable; the ledger carries validity.
         parent = presentation.get("quizId") or presentation.get("reviewSessionId") or presentation_id
         self.records.put(conn, owner, "challenge", challenge, parent)
+        # The review runs as a separate durable command after exclusion commits.
+        self.records.enqueue(owner, challenge["id"], "adjudicate", {}, "adjudicate:" + challenge["id"], connection=conn)
         return challenge
