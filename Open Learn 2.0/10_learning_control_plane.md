@@ -2,7 +2,7 @@
 
 Coordinate learner intent, shared context, policy decisions, generation, and resulting evidence across Ask, Learn, and Quiz.
 
-Status: planned. Source: section 12 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented and wired into Ask, Learn, and Quiz with purpose-scoped context and commit fences. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 12 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

@@ -2,7 +2,7 @@
 
 Preserve possible explanations for errors and use distinguishing checks to support, contradict, or resolve them.
 
-Status: planned. Source: section 9 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented in the workspace; provider-level diagnostic discrimination still needs labeled fixtures. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 9 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 Implementation: migration `0034`, hypothesis analysis/diagnostic service, durable worker integration and learner UI added. See [implementation notes](../docs/MISCONCEPTION_HYPOTHESES.md). Runtime acceptance checks remain pending.
 

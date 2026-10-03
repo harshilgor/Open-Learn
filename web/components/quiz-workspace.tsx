@@ -27,6 +27,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   const reduceMotion = useAppReducedMotion();
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const startedLaunch = useRef<string | null>(null);
+  const completedTask = useRef<string | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [saved, setSaved] = useState<QuizHistoryItem[]>([]);
   const settings = useSettingsPreferences();
@@ -98,7 +99,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
           ? (await learningApi.createStudyNote(launch.sessionId)).noteId
           : launch.lessonNoteId;
         const defaults = readSettingsPreferences();
-        const result = await workflow('/quizzes', { sessionId: launch.sessionId, conceptIds: launch.conceptId ? [launch.conceptId] : [], count: defaults.quizCount, difficulty: defaults.quizDifficulty, origin: launch.origin, lessonNoteId, requestedTopic: launch.requestedTopic, sourceTransitionId: launch.sourceTransitionId, mode: defaults.quizMode, modeConfig: defaults.quizMode === 'timed_short_quiz' ? { duration_seconds: defaults.quizDurationMinutes * 60 } : {} }, scope, launch.id);
+        const result = await workflow('/quizzes', { sessionId: launch.sessionId, conceptIds: launch.canonicalConceptIds?.length ? launch.canonicalConceptIds : launch.conceptId ? [launch.conceptId] : [], taskId: launch.taskId, count: defaults.quizCount, difficulty: defaults.quizDifficulty, origin: launch.origin, lessonNoteId, requestedTopic: launch.requestedTopic, sourceTransitionId: launch.sourceTransitionId, mode: defaults.quizMode, modeConfig: defaults.quizMode === 'timed_short_quiz' ? { duration_seconds: defaults.quizDurationMinutes * 60 } : {} }, scope, launch.id);
         if (!result?.quizId) throw new Error('The quiz was not created.');
         let current = await getQuiz(result.quizId);
         localStorage.setItem(`forma-${scope}`, current.id);
@@ -115,6 +116,17 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     void create();
     return () => { active = false; };
   }, [launch, scope, onQuizChange]);
+  useEffect(() => {
+    if (!quiz || quiz.status !== 'completed' || !launch?.taskId || !launch.taskCourseId || !launch.taskRevision) return;
+    const key = `${launch.taskCourseId}:${launch.taskId}:${quiz.id}`;
+    if (completedTask.current === key) return;
+    completedTask.current = key;
+    void request(`/v1/courses/${encodeURIComponent(launch.taskCourseId)}/academic/tasks/${encodeURIComponent(launch.taskId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed', workflowId: quiz.id, sessionId: quiz.sessionId, revision: launch.taskRevision }),
+    }).then(() => { setNotice('Study activity completed. Your answers remain separate learning evidence.'); onQuizChange?.(); })
+      .catch(cause => { completedTask.current = null; setError(cause instanceof Error ? cause.message : 'The quiz is complete, but the study task could not be closed.'); });
+  }, [quiz, launch, onQuizChange]);
   useEffect(() => { const tick = () => setNow(Date.now()); const timer = window.setInterval(tick, 1000); const first = window.setTimeout(tick, 0); return () => { window.clearInterval(timer); window.clearTimeout(first); }; }, []);
   async function act(path: string, body: unknown) {
     if (busy) return;
@@ -139,7 +151,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     }
     setBusy(true); setError('');
     try {
-      const result = await workflow('/quizzes', { sessionId: sid, conceptIds: conceptId ? [conceptId] : [], count, difficulty, origin: lessonNoteId ? 'learn' : 'ask', lessonNoteId, requestedTopic: launch?.requestedTopic, mode, modeConfig: mode === 'timed_short_quiz' ? { duration_seconds: duration } : {} }, scope);
+      const result = await workflow('/quizzes', { sessionId: sid, conceptIds: launch?.canonicalConceptIds?.length ? launch.canonicalConceptIds : conceptId ? [conceptId] : [], taskId: launch?.taskId, count, difficulty, origin: lessonNoteId ? 'learn' : 'ask', lessonNoteId, requestedTopic: launch?.requestedTopic, mode, modeConfig: mode === 'timed_short_quiz' ? { duration_seconds: duration } : {} }, scope);
       if (!result?.quizId) throw new Error('The quiz was not created.');
       let current = await getQuiz(result.quizId);
       localStorage.setItem(`forma-${scope}`, current.id);

@@ -2,7 +2,9 @@
 
 Bring existing learners and activities into the shared architecture without losing history or inventing stronger evidence.
 
-Status: planned. Source: section 25 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: read-only migration inventory and cutover runbook added. Migration mapping, semantic reconciliation, shadow comparison, and production cutover remain pending. Source: section 25 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+Implementation: run `python -m backend.app.migration_inventory` for content-free table and object-store aggregates without applying migrations. The migration head currently resolves to `0039_recording_revisions`; see [the operations and cutover runbook](../docs/OPENLEARN_2_OPERATIONS_AND_CUTOVER.md). Do not apply this chain to production until cloud/local duplicate revisions and semantic mappings are reconciled and representative upgrade/restore checks pass.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

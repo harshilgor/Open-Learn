@@ -4,7 +4,8 @@ export type ChatMode = 'ask' | 'learn' | 'quiz';
 export type Source = { spanId: string; title: string; text: string; pageIndex: number };
 export type Journey = {
   id: string; sessionId: string; revision: number; modeRevision?: number; mode: ChatMode; gear: Gear; goal: string;
-  status: string; position: number; steps: { conceptId: string; title: string; objective: string }[];
+  status: string; position: number; canonicalConceptIds?: string[]; taughtCanonicalConceptIds?: string[]; taskId?: string;
+  steps: { conceptId: string; title: string; objective: string }[];
   turns: { question: string; lesson?: LessonArtifact; sessionId: string; generationId?: string; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; submittedAt?: number; sources?: Source[]; noteContext?: { label: string; totalCharacters: number; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[] }; transitionSuggestion?: ModeTransitionSuggestion | null }[];
 };
 export type Presentation = {

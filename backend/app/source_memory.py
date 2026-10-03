@@ -47,14 +47,26 @@ class SourceMemory:
             self.invalidate(conn,owner,source_id)
         return {'status':'removed','historicalRevisionsPreserved':True}
 
-    def retrieve(self,conn,owner,query='',course_id=None,required_ids=()):
+    def retrieve(self,conn,owner,query='',course_id=None,required_ids=(),purpose='teaching'):
         assert_owner_active(conn,owner)
+        # A quiz may use notes, assigned material, and lecture sources to
+        # establish scope. Conversation transcripts can contain prior answers
+        # or worked solutions, so they are not admitted to assessment context.
+        if purpose not in {'teaching','assessment','readiness','planning'}:
+            fail('invalid_context_purpose','Unknown context purpose.',422)
         sql='SELECT s.*,r.payload FROM memory_sources s JOIN memory_revisions r ON r.owner_id=s.owner_id AND r.source_id=s.id AND r.revision=s.revision WHERE s.owner_id=:owner AND s.deleted=false'
         params={'owner':owner}
         if course_id: sql+=' AND s.course_id=:course'; params['course']=course_id
         terms=set(re.findall(r'\w+',query.lower()))
         candidates=[]
         for row in conn.execute(text(sql),params).mappings():
+            # Legacy content-addressed snapshots are retained for provenance;
+            # active retrieval comes from their authoritative note/material/
+            # transcript tables, which can enforce current access and deletion.
+            if row['kind'].startswith('legacy_'):
+                continue
+            if purpose == 'assessment' and row['kind'] not in {'note','document','transcript'}:
+                continue
             for block in json.loads(row['payload'])['blocks']:
                 score=len(terms & set(re.findall(r'\w+',block['text'].lower())))
                 if score or not terms or row['id'] in required_ids:

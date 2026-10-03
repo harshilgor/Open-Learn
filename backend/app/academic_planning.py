@@ -174,7 +174,15 @@ class AcademicPlanningService:
                 raise AcademicError('assignment_not_found', 'Select an assignment from this course.', 404)
             known_tasks = {t['id'] for t in self.rows(conn, 'study_tasks', owner, course)}
             if set(command.get('prerequisites', [])) - known_tasks: raise AcademicError('prerequisite_not_found', 'Prerequisite activities must belong to this course.')
-            task = dict(command, id=command.get('id') or uuid4().hex, courseId=course, status='proposed', duration=duration, launch={'workflow': actions[action], 'courseId': course, 'conceptIds': command.get('conceptIds', []), 'capability': command.get('capability', 'recall'), 'entityId': command.get('entityId')}, completionCriterion='explicit_assignment_completion' if action == 'assignment' else 'workflow_finished_with_followup_evidence', policyRevision='task-v1', pinned=False)
+            topic = (command.get('topic') or '').strip()
+            if not topic and command.get('conceptIds'):
+                titles = []
+                for concept_id in command['conceptIds']:
+                    raw = conn.execute(text('SELECT payload FROM stable_concepts WHERE owner_id=:owner AND id=:id'), {'owner': owner, 'id': concept_id}).scalar_one_or_none()
+                    if raw:
+                        titles.append(json.loads(raw).get('title'))
+                topic = ', '.join(title for title in titles if title)[:500]
+            task = dict(command, id=command.get('id') or uuid4().hex, courseId=course, status='proposed', duration=duration, launch={'workflow': actions[action], 'courseId': course, 'conceptIds': command.get('conceptIds', []), 'capability': command.get('capability', 'recall'), 'entityId': command.get('entityId'), 'requestedTopic': topic or command.get('reason', '')[:500]}, completionCriterion='explicit_assignment_completion' if action == 'assignment' else 'workflow_finished_with_followup_evidence', policyRevision='task-v1', pinned=False)
             existing = next((t for t in self.rows(conn, 'study_tasks', owner, course) if t['id'] == task['id']), None)
             if existing: return existing
             return self.put(conn, 'study_tasks', owner, task)
@@ -188,16 +196,42 @@ class AcademicPlanningService:
             allowed = {'proposed': {'accepted', 'skipped', 'cancelled'}, 'accepted': {'scheduled', 'active', 'skipped', 'cancelled'}, 'scheduled': {'active', 'skipped', 'cancelled'}, 'active': {'completed', 'skipped'}, 'blocked': {'accepted', 'cancelled'}}
             if status != task['status'] and status not in allowed.get(task['status'], set()): raise AcademicError('invalid_transition', 'This task cannot enter that state.', 409)
             if status == 'completed' and task['action'] != 'assignment' and not command.get('workflowId'): raise AcademicError('outcome_required', 'Provide the completed workflow reference.')
+            if status == 'active' and task['action'] != 'assignment':
+                session_id = command.get('sessionId')
+                if not session_id: raise AcademicError('session_required', 'Start the activity in its learning session.')
+                row = conn.execute(text('SELECT payload FROM learning_sessions WHERE id=:id AND learner_id=:owner'), {'id': session_id, 'owner': owner}).first()
+                session = json.loads(row[0]) if row else None
+                if not session or session.get('course_id') != course: raise AcademicError('session_not_found', 'Learning session unavailable for this course.', 404)
+                task['launch'] = dict(task.get('launch') or {}, sessionId=session_id)
             if status == 'completed' and task['action'] != 'assignment':
                 workflow = conn.execute(text('SELECT kind,payload FROM practice_records WHERE owner_id=:owner AND id=:id'), {'owner': owner, 'id': command['workflowId']}).first()
                 if not workflow: raise AcademicError('workflow_not_found', 'Completed workflow unavailable.', 404)
                 result = json.loads(workflow[1])
+                session_id = task.get('launch', {}).get('sessionId')
+                if not session_id or result.get('sessionId') != session_id or (command.get('sessionId') and command['sessionId'] != session_id):
+                    raise AcademicError('workflow_scope_mismatch', 'This activity belongs to a different learning session.', 409)
                 if workflow[0] == 'quiz':
-                    if result.get('status') != 'completed' or not set(task.get('conceptIds', [])) <= set(result.get('conceptIds', [])):
+                    if result.get('status') != 'completed' or not set(task.get('conceptIds', [])) <= set(result.get('canonicalConceptIds', [])):
                         raise AcademicError('workflow_incomplete', 'Finish a quiz covering this activity scope.', 409)
+                    # The browser only knows attempt-record IDs. Resolve the
+                    # authoritative, currently accepted ledger events here so
+                    # skipped, disputed, or withdrawn answers never become task
+                    # evidence merely because the quiz UI says it is complete.
+                    from .evidence_ledger import EvidenceLedger
+                    attempt_ids = set(result.get('attempts', []))
+                    history = EvidenceLedger(self.store).history(conn, owner)
+                    accepted_ids = [entry['id'] for entry in history['entries']
+                                    if entry.get('activityId') == command['workflowId']
+                                    and entry.get('sessionId') == session_id
+                                    and entry.get('attemptId') in attempt_ids
+                                    and entry.get('eventType') in {'QUIZ_RESPONSE', 'EVALUATION_CORRECTED'}
+                                    and entry.get('category') not in {'excluded', 'skip'}]
+                    command = {**command, 'evidenceIds': accepted_ids}
                 elif workflow[0] == 'journey':
                     if not result.get('turns') or any(t.get('status') != 'completed' for t in result['turns']):
                         raise AcademicError('workflow_incomplete', 'Finish this learning journey.', 409)
+                    if not set(task.get('conceptIds', [])) <= set(result.get('canonicalConceptIds', [])):
+                        raise AcademicError('workflow_incomplete', 'Finish the lesson for this activity scope.', 409)
                 else: raise AcademicError('workflow_incomplete', 'Unsupported activity outcome.', 409)
                 for identifier in command.get('evidenceIds', []):
                     if not conn.execute(text('SELECT 1 FROM learning_event_ledger WHERE owner_id=:owner AND id=:id'), {'owner': owner, 'id': identifier}).first():

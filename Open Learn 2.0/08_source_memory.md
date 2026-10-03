@@ -2,7 +2,13 @@
 
 Manage revisioned sources, exact evidence, and derived summaries with shared retrieval, correction, and deletion rules.
 
-Status: planned. Source: section 10 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: implemented locally for source revisions, retrieval, provenance, correction, deletion, and extractive continuity summaries; model-based summary regeneration and deployed acceptance remain gated. Source: section 10 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+## Current implementation and verification
+
+`SourceMemory` stores owner-scoped immutable revisions with exact text ranges, hashes, and extraction metadata; lexical retrieval filters ownership, course scope, deletion, and current revision. Derived preferences and summaries retain explicit scope and source basis. Source edits/removal invalidate dependent facts. Existing notes, lecture intervals, and material blocks are snapshotted into content-addressed memory revisions when selected for context, while their original stores remain authoritative and their source-specific commit fences are preserved. Summary generation is deterministic and extractive with exact source ranges; it does not claim to be a provider-generated summary. The Source & remembered facts settings view supports inspection, correction, removal, dismissal, and explicit refresh.
+
+Focused local tests cover source correction/removal during generation, account isolation, stale material extraction, portable export/import, and source provenance snapshots. Remaining work is provider-backed summary generation with durable regeneration jobs, systematic background backfill independent of context requests, and live PostgreSQL/vector-index acceptance. Current lexical retrieval works without embedding credentials; embeddings remain optional and unconfigured.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

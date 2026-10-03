@@ -23,6 +23,7 @@ from backend.app.workspace_note_service import WorkspaceNoteService
 from backend.app.workspace_note_models import WorkspaceNoteCreate, WorkspaceNoteUpdate
 from backend.app.automatic_note_context import retrieve_relevant_notes
 from backend.app.lecture_routes import build_lecture_router
+from backend.app.identity_middleware import IdentityMiddleware
 
 
 class FakeTranscriber:
@@ -230,6 +231,7 @@ def test_http_ownership_and_upload_ack(lecture, monkeypatch):
     monkeypatch.setenv("AI_TUTOR_DEV_IDENTITY", "true")
     app = FastAPI()
     app.include_router(build_lecture_router(lambda: store, lambda: FakeTextProvider(), FakeTranscriber()))
+    app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
     rid = created["id"]
     audio = b"\x1a\x45\xdf\xa3test"
     headers = {"X-Dev-Learner-Id": "alice", "X-Chunk-Start-Ms": "0", "X-Chunk-End-Ms": "8000", "X-Chunk-Sha256": hashlib.sha256(audio).hexdigest(), "Content-Type": "audio/webm"}

@@ -7,7 +7,7 @@ from pydantic import BaseModel,Field,ConfigDict
 from sqlalchemy import text
 from .identity import current_principal,assert_owner_active,fail
 from .source_memory import SourceMemory
-from .context_compiler import ContextCompiler
+from .context_compiler import ContextCompiler,ContextCompileRequest
 
 class RevisionInput(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -16,14 +16,6 @@ class RevisionInput(BaseModel):
     kind:Literal['note','document','transcript','conversation']='note'
     course_id:str|None=None
     metadata:dict=Field(default_factory=dict)
-
-class CompileInput(BaseModel):
-    purpose:Literal['teaching','assessment','readiness','planning']
-    request:str=Field(max_length=100000)
-    session_id:str|None=None
-    course_id:str|None=None
-    required_source_ids:list[str]=Field(default_factory=list,max_length=100)
-    token_budget:int=Field(default=12000,ge=1024,le=128000)
 
 class PreferenceInput(BaseModel):
     statement:str=Field(min_length=1,max_length=2000)
@@ -54,8 +46,8 @@ def build_memory_router(store_provider):
             if not row: fail('source_not_found','This source revision is unavailable.',404)
         return {**json.loads(row['payload']),'sha256':row['sha256'],'createdAt':row['created_at']}
     @router.post('/compile')
-    def compile_context(body:CompileInput):
-        return ContextCompiler(store_provider()).compile(current_principal().owner_id,body.session_id,body.purpose,body.request,course_id=body.course_id,required_source_ids=body.required_source_ids,token_budget=body.token_budget)
+    def compile_context(body:ContextCompileRequest):
+        return ContextCompiler(store_provider()).compile(current_principal().owner_id,body.session_id,body.purpose,body.request,course_id=body.course_id,required_source_ids=body.required_source_ids,token_budget=body.token_budget,quiz_scope=body.quiz_scope,target_concept_ids=body.target_concept_ids,reserve_output_tokens=body.reserve_output_tokens,expected_revisions=body.expected_revisions)
     @router.post('/sources/{source_id}/summary')
     def summary(source_id:str,expected_revision:int):
         return SourceMemory(store_provider()).summarize(current_principal().owner_id,source_id,expected_revision)

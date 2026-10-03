@@ -2,7 +2,13 @@
 
 Make every resource belong to a verified account and let linked devices synchronize without losing local history.
 
-Status: planned. Source: section 5 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: implemented in the local checkpoint; hosted identity and deployed acceptance remain gated. Source: section 5 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+## Current implementation and verification
+
+The service derives hosted ownership from OIDC JWT claims and stores only a hash of the issuer/subject. Hosted startup rejects development identity and requires issuer, audience, and JWKS settings. Device grants are revocable and expire; desktop sync is ordered, idempotent, and keeps transport checkpoints distinct from accepted learning evidence. Same-installation and portable profile copies preserve the source and use a checksum plus resumable deterministic ID mapping. Export includes owned rows and source objects; deletion tombstones the account, revokes devices, cancels jobs, deletes personal rows, and queues object cleanup. The Account & devices screen exposes those operations and offline recovery.
+
+The local focused suite exercises owner isolation, package validation/remapping, device-grant revocation, account deletion fencing, and stale-revision recovery. Dedicated tests for sync sequence gaps, idempotent duplicate uploads, and multi-device merge behavior remain necessary before claiming sync acceptance. External acceptance also requires configuring a real OIDC client/provider, applying migrations against PostgreSQL, exercising concurrent device revocation/sync there, checking object cleanup with deployed storage, and proving backup restoration reapplies deletion markers. No live provider credentials or hosted environment were available for this implementation.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

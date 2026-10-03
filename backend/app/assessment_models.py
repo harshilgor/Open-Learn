@@ -6,6 +6,8 @@ from .session_models import ApiModel, NoteContextInput, TeachingGear
 
 class QuizCreate(ApiModel):
     session_id: str
+    task_id: str | None = Field(default=None, max_length=160)
+    canonical_concept_ids: list[str] = Field(default_factory=list, max_length=10)
     requested_topic: str | None = Field(default=None, max_length=500)
     lesson_note_id: str | None = Field(default=None, max_length=120)
     source_transition_id: str | None = Field(default=None, max_length=120)
@@ -100,6 +102,8 @@ class JourneyCommand(ApiModel):
     gear: TeachingGear = TeachingGear.quick
     message: str = Field(default="", max_length=4000)
     note_context: NoteContextInput | None = None
+    task_id: str | None = Field(default=None, max_length=160)
+    canonical_concept_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 class RouteStep(ApiModel):

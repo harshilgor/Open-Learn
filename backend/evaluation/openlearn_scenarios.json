@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "provenance": "Synthetic, hand-labeled deterministic cases. These cases measure contract behavior only; they do not establish educational benefit or policy calibration.",
+  "teachingPolicy": [
+    {"id": "learner-direct-request", "intent": "Please explain this directly", "workflow": "learn", "expected": "direct_explanation"},
+    {"id": "learner-declines-check", "intent": "Explain this; don't quiz me", "workflow": "learn", "hypothesis": {"action": "prerequisite_repair"}, "expected": "direct_explanation"},
+    {"id": "supported-misconception", "intent": "", "workflow": "learn", "hypothesis": {"action": "contrastive_explanation"}, "expected": "contrastive_explanation"},
+    {"id": "bounded-unproductive-loop", "intent": "", "workflow": "learn", "history": [{"productive": false}, {"productive": false}, {"productive": false}], "expected": "worked_example"}
+  ],
+  "questionPlanning": [
+    {"id": "independent-evidence-gap", "quiz": {"conceptIds": ["concept-a"], "count": 3}, "expected": "missing_capability_evidence"},
+    {"id": "assisted-success-needs-independent-check", "quiz": {"conceptIds": ["concept-a"], "count": 3}, "attempts": [{"conceptId": "concept-a", "score": 1, "assisted": true}], "expected": "independent_verification"},
+    {"id": "retention-due", "quiz": {"conceptIds": ["concept-a"], "count": 3}, "states": [{"conceptId": "concept-a", "retention": "review_due"}], "expected": "due_retrieval"},
+    {"id": "diagnostic-loop-bounded", "quiz": {"conceptIds": ["concept-a"], "count": 3}, "attempts": [{"conceptId": "concept-a", "questionPlan": {"objective": "distinguishing_check"}}, {"conceptId": "concept-a", "questionPlan": {"objective": "distinguishing_check"}}], "diagnostic": {"conceptId": "concept-a", "hypothesisId": "hypothesis-1"}, "expected": "missing_capability_evidence"}
+  ],
+  "learnerState": [
+    {"id": "exposure-does-not-demonstrate", "events": [{"id": "e1", "occurredAt": "2026-09-01T10:00:00+00:00", "category": "exposure", "outcome": "correct", "assistance": "independent", "familyId": "f1", "sessionId": "s1", "attributionResolved": true}], "expected": {"state": "exposed", "independentSuccessCount": 0, "delayedRetrievalCount": 0}},
+    {"id": "assisted-success-does-not-demonstrate", "events": [{"id": "e1", "occurredAt": "2026-09-01T10:00:00+00:00", "category": "assisted_correct", "outcome": "correct", "assistance": "assisted", "familyId": "f1", "sessionId": "s1", "attributionResolved": true}], "expected": {"state": "developing", "independentSuccessCount": 0, "delayedRetrievalCount": 0}},
+    {"id": "unknown-assistance-does-not-demonstrate", "events": [{"id": "e1", "occurredAt": "2026-09-01T10:00:00+00:00", "category": "independent_correct", "outcome": "correct", "assistance": "unknown", "familyId": "f1", "sessionId": "s1", "attributionResolved": true}], "expected": {"state": "unobserved", "independentSuccessCount": 0, "delayedRetrievalCount": 0}}
+  ]
+}

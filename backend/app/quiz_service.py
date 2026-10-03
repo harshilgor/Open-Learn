@@ -108,9 +108,12 @@ class QuizService:
         ranked = sorted(graph.concepts, key=lambda concept: len(topic_terms & set(re.findall(r"[a-z0-9]{4,}", f"{concept.title} {concept.summary}".lower()))), reverse=True)
         best = ranked[0] if ranked else None
         best_score = len(topic_terms & set(re.findall(r"[a-z0-9]{4,}", f"{best.title} {best.summary}".lower()))) if best else 0
-        concepts = request.concept_ids or [best.id if best_score else session.current_concept_id or graph.concepts[0].id]
-        if not set(concepts).issubset({c.id for c in graph.concepts}):
-            problem("invalid_concept", "Choose concepts from this learning session.")
+        requested_scope = request.concept_ids or request.canonical_concept_ids
+        concepts = requested_scope or [best.id if best_score else session.current_concept_id or graph.concepts[0].id]
+        from .stable_concept_service import StableConceptService
+        concepts, canonical_concepts = StableConceptService(self.store).resolve_quiz_scope(owner, graph, concepts, connection)
+        if request.canonical_concept_ids and set(canonical_concepts) != set(request.canonical_concept_ids):
+            problem("task_scope_mapping_conflict", "The requested stable learning scope does not match this session's reviewed concept mappings.", 409)
         now = utc_now().isoformat()
         title = topic or session.goal or graph.title
         try:
@@ -125,7 +128,8 @@ class QuizService:
                 " ".join(str(block.get("body") or "") for block in (turn.get("lesson") or {}).get("blocks", []))[:1000]])
             for turn in recent_turns if turn.get("status") in {None, "completed"}
         )[:6000]
-        quiz = {"id": quiz_id, "sessionId": session.id, "conceptIds": concepts, "graphId": graph.id,
+        quiz = {"id": quiz_id, "sessionId": session.id, "taskId": request.task_id,
+                "conceptIds": concepts, "canonicalConceptIds": canonical_concepts, "graphId": graph.id,
                 "graphVersion": graph.version, "title": title, "requestedTopic": topic or None,
                 "lessonNoteId": lesson_note.id if lesson_note else None,
                 "lessonRevisionAtStart": lesson_note.revision if lesson_note else None,

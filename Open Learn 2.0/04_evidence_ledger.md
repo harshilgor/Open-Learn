@@ -2,7 +2,7 @@
 
 Record one normalized history of observations across teaching, quizzes, review, and lecture coverage while preserving original attempts.
 
-Status: planned. Source: section 6 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented in the workspace; cross-session offline-device acceptance remains. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 6 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

@@ -26,6 +26,10 @@ export type WorkspaceQuizOpen = {
   sourceTransitionId?: string;
   origin: 'ask' | 'learn';
   quizId?: string;
+  taskId?: string;
+  taskCourseId?: string;
+  taskRevision?: number;
+  canonicalConceptIds?: string[];
 };
 
 export function openWorkspaceQuiz(input: Omit<WorkspaceQuizOpen, 'id'>): void {

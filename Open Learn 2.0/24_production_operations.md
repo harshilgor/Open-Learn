@@ -2,7 +2,9 @@
 
 Operate the integrated system within measured latency, cost, privacy, recovery, and resource limits.
 
-Status: planned. Source: section 24 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: partial operations and recovery runbook added. Runtime service limits, deployed metrics, restoration drills, PostgreSQL concurrency, and live provider thresholds remain unverified. Source: section 24 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+Implementation: see [operations and cutover runbook](../docs/OPENLEARN_2_OPERATIONS_AND_CUTOVER.md). It records current deployment profiles, worker operation, backup/restore precautions, recovery actions, and release gates. Numeric performance targets remain unset until measured on supported environments.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

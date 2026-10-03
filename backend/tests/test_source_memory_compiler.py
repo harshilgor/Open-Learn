@@ -110,6 +110,35 @@ def test_canvas_device_grant_has_narrow_route_scope_and_revocation(store,monkeyp
         with store.transaction() as conn: conn.execute(text('UPDATE identity_devices SET revoked_at=1 WHERE id=:id'),grant)
         assert client.post('/v1/canvas/connections/approved/sync',headers=headers).status_code==401
 
+def test_desktop_sync_is_ordered_idempotent_and_owner_scoped(store,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from app.identity import issue_device_grant,current_principal
+    from app.identity_middleware import IdentityMiddleware
+    from app.identity_routes import build_identity_router
+    from sqlalchemy import text
+    monkeypatch.setenv('AI_TUTOR_ENV','development');monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true')
+    app=FastAPI();app.include_router(build_identity_router(lambda:store));app.add_middleware(IdentityMiddleware,store_provider=lambda:store)
+    @app.post('/v1/test/link')
+    def link():
+        with store.transaction() as conn:return issue_device_grant(conn,current_principal().owner_id,'desktop test','desktop')
+    with TestClient(app) as client:
+        local={'X-Dev-Learner-Id':'alice'}
+        grant=client.post('/v1/test/link',headers=local).json()
+        headers={'Authorization':'Bearer '+grant['token']}
+        event={'id':'event_00000001','device_sequence':1,'occurred_at':'2026-10-01T12:00:00Z','kind':'client.checkpoint','payload':{'action':'saved'}}
+        first=client.post('/v1/account/sync',headers=headers,json={'events':[event]})
+        assert first.status_code==200
+        assert client.post('/v1/account/sync',headers=headers,json={'events':[event]}).json()==first.json()
+        gap={**event,'id':'event_00000003','device_sequence':3}
+        assert client.post('/v1/account/sync',headers=headers,json={'events':[gap]}).status_code==409
+        second={**event,'id':'event_00000002','device_sequence':2}
+        assert client.post('/v1/account/sync',headers=headers,json={'events':[second]}).status_code==200
+        assert client.get('/v1/account/sync',headers=headers).json()['events'][0]['id']==event['id']
+        with store.engine.connect() as conn:
+            assert conn.execute(text("SELECT COUNT(*) FROM identity_sync_events WHERE owner_id='alice'")).scalar()==2
+            assert conn.execute(text("SELECT COUNT(*) FROM identity_sync_events WHERE owner_id='bob'")).scalar()==0
+
 def test_new_academic_observation_invalidates_prepared_context(store):
     from sqlalchemy import text
     packet=ContextCompiler(store).compile('alice',None,'planning','Plan my next study step.')
@@ -132,3 +161,53 @@ def test_reprocessing_material_cannot_change_prepared_premise_silently(store):
     with store.engine.connect() as conn:
         with pytest.raises(HTTPException) as error: ContextCompiler(store).validate_commit(conn,'alice',packet)
         assert error.value.detail['code']=='context_source_changed'
+
+def test_oversized_required_request_returns_empty_bounded_packet(store):
+    packet=ContextCompiler(store).compile('alice',None,'teaching','required question '+('detail '*10000),token_budget=1024,reserve_output_tokens=0)
+    assert packet['status']=='insufficient_context'
+    assert packet['text']==''
+    assert packet['budget']['inputUsed']<=packet['budget']['inputAvailable']
+    assert any(item['reason']=='required_context_exceeds_budget' for item in packet['omissions'])
+
+def test_assessment_excludes_answers_in_conversation_and_history_summaries(store):
+    memory=SourceMemory(store)
+    memory.revise('alice','lesson','Algebra lesson: solve x + 2 = 5.',kind='document',expected_revision=0)
+    memory.revise('alice','conversation','The answer to the quiz is x = 3.',kind='conversation',expected_revision=0)
+    memory.derive('alice','summary','The answer is x = 3.',[{'sourceId':'conversation','revision':1}])
+    packet=ContextCompiler(store).compile('alice',None,'assessment','Algebra lesson')
+    assert 'solve x + 2 = 5' in packet['text']
+    assert 'answer is x = 3' not in packet['text']
+    assert all(item['sourceId']!='conversation' for item in packet['manifest'])
+
+def test_legacy_source_is_mirrored_as_immutable_provenance_snapshot(store):
+    from sqlalchemy import text
+    with store.transaction() as conn:
+        conn.execute(text("INSERT INTO materials(id,owner_id,title,role,deleted,course_id) VALUES('material','alice','Algebra','reference',false,NULL)"))
+        conn.execute(text("INSERT INTO material_versions(id,material_id,version,object_key,media_type,byte_count,status,payload) VALUES('version','material',1,'object','text/plain',30,'ready','{}')"))
+        conn.execute(text("INSERT INTO material_blocks(id,version_id,page_index,ordinal,kind,text,payload) VALUES('block','version',0,0,'paragraph','Algebra exact premise.','{}')"))
+    packet=ContextCompiler(store).compile('alice',None,'teaching','algebra',required_source_ids=['version'])
+    snapshot=packet['manifest'][0]['memorySourceId']
+    with store.engine.connect() as conn:
+        assert conn.execute(text("SELECT kind,revision,deleted FROM memory_sources WHERE owner_id='alice' AND id=:id"),{'id':snapshot}).one()==('legacy_material',1,0)
+        assert conn.execute(text("SELECT COUNT(*) FROM memory_revisions WHERE owner_id='alice' AND source_id=:id AND revision=1"),{'id':snapshot}).scalar()==1
+        ContextCompiler(store).validate_commit(conn,'alice',packet)
+
+def test_source_removal_invalidates_prepared_context(store):
+    memory=SourceMemory(store);compiler=ContextCompiler(store)
+    memory.revise('alice','lesson','Algebra definition for the learner.',kind='document',expected_revision=0)
+    packet=compiler.compile('alice',None,'teaching','Algebra',required_source_ids=['lesson'])
+    memory.remove('alice','lesson',1)
+    with store.engine.connect() as conn:
+        with pytest.raises(HTTPException) as error: compiler.validate_commit(conn,'alice',packet)
+        assert error.value.status_code==409
+
+def test_optional_context_is_omitted_when_budget_is_small(store):
+    from sqlalchemy import text
+    with store.transaction() as conn:
+        for index in range(12):
+            conn.execute(text('INSERT INTO academic_entities(owner_id,id,course_id,revision,payload,created_at) VALUES(:owner,:id,NULL,1,:payload,:now)'),{'owner':'alice','id':f'entity{index}','payload':json.dumps({'title':'assignment','instructions':'important scope '*300}), 'now':index})
+    packet=ContextCompiler(store).compile('alice',None,'planning','Prepare a short study plan.',token_budget=1200,reserve_output_tokens=0)
+    assert packet['budget']['inputUsed']<=packet['budget']['inputAvailable']
+    assert packet['status']=='ready'
+    assert packet['omissions']
+    assert len(packet['text'].encode())<=packet['budget']['inputAvailable']

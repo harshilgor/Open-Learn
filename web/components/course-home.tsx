@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { FileText, FolderClosed, Loader2, MessageSquare, MoreHorizontal, Plus, Search, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { CourseStudyPlanner } from '@/components/course-study-planner';
+import { CourseStudyPlanner, type Task } from '@/components/course-study-planner';
 import { CanvasConnection } from '@/components/canvas-connection';
 import { learningApi, type ChatSessionSummary, type CoursePublic, type WorkspaceNoteSummary } from '@/lib/api';
 
@@ -16,9 +16,11 @@ interface CourseHomeProps {
   onQuizSession: (sessionId: string) => void;
   onUpdated: () => void;
   onDeleted: () => void;
+  onLaunchTask: (task: Task) => Promise<string>;
+  onLaunchReady: (task: Task, sessionId: string, revision: number) => void;
 }
 
-export function CourseHome({ courseId, onOpenSession, onNewSession, onOpenNote, onQuizSession, onUpdated, onDeleted }: CourseHomeProps) {
+export function CourseHome({ courseId, onOpenSession, onNewSession, onOpenNote, onQuizSession, onUpdated, onDeleted, onLaunchTask, onLaunchReady }: CourseHomeProps) {
   const [course, setCourse] = useState<CoursePublic | null>(null);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
@@ -137,7 +139,7 @@ export function CourseHome({ courseId, onOpenSession, onNewSession, onOpenNote, 
         <div className="course-folder-actions"><Button onClick={onNewSession}><Plus size={17} />New chat</Button><div className="course-folder-menu-wrap"><Button type="button" variant="ghost" size="icon" aria-label="Course options" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={19} /></Button>{menuOpen ? <div className="course-folder-menu"><button onClick={() => { setEditing(true); setMenuOpen(false); }}>Rename course</button><button className="danger" onClick={() => { setMenuOpen(false); void deleteCourse(); }}><Trash2 size={15} />Delete course</button></div> : null}</div></div>
       </header>
 
-      <CourseStudyPlanner courseId={courseId} onNewSession={onNewSession} />
+      <CourseStudyPlanner courseId={courseId} onLaunchTask={onLaunchTask} onLaunchReady={onLaunchReady} />
       <CanvasConnection courseId={courseId} />
 
       <div className="course-folder-section"><div className="course-folder-section-head"><div><h2>Chats</h2><p>Conversations in this course</p></div><Button variant="outline" size="sm" onClick={() => { setSearch(''); setPicker(picker === 'chats' ? null : 'chats'); }}><Plus size={15} />Add chats</Button></div>

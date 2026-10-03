@@ -2,7 +2,13 @@
 
 Compile authorized, purpose-specific context for teaching, quizzes, readiness, and planning from the same memory services.
 
-Status: planned. Source: section 11 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: implemented locally for typed purpose-specific compilation, manifests, authorization filters, and budget enforcement; downstream activation and deployed acceptance remain in progress. Source: section 11 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+## Current implementation and verification
+
+`ContextCompileRequest` and `ContextPacket` are versioned contracts. The compiler loads learner projections, scoped academic facts, preferences, reviewed prerequisites, continuity state, and authorized source spans; it records source/revision dependencies, omissions, warnings, watermarks, and budget use. Selection reserves output/protocol capacity, diversifies source spans, omits optional context that does not fit, and returns an empty `insufficient_context` packet when the required task cannot fit. Assessment context excludes conversation sources and derived continuity summaries that could expose prior answers. Commit validation rechecks ownership, evidence, projections, preferences, academic revisions, and included source dependencies. Learning workflows and planning/readiness services already call this compiler; further consumer adoption is tracked in their feature briefs.
+
+Focused tests cover required-source exhaustion, optional-context omission, source removal/reprocessing races, account isolation, and answer-history exclusion. Full tokenizer calibration, source-vector freshness under hosted concurrency, real PostgreSQL snapshot isolation, and end-to-end validation through all model providers remain deployment acceptance work. Token estimates currently use a conservative UTF-8 bound when a provider-specific tokenizer is not configured.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

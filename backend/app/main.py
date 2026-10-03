@@ -69,6 +69,8 @@ from .session_snapshot_routes import build_session_snapshot_router
 from .class_recording_routes import build_class_recording_router
 from .lecture_routes import build_lecture_router
 from .lecture_pipeline import LectureWorker
+from .academic_routes import build_academic_router
+from .canvas_reader import build_canvas_router
 from threading import Thread
 
 app = FastAPI(title="AI Tutor Harness API", version="0.1.0")
@@ -140,6 +142,8 @@ app.include_router(build_review_router(get_store, lambda: lesson_provider))
 app.include_router(build_session_snapshot_router(get_store))
 app.include_router(build_class_recording_router(get_store, lambda: lesson_provider))
 app.include_router(build_lecture_router(get_store, lambda: lesson_provider))
+app.include_router(build_academic_router(get_store))
+app.include_router(build_canvas_router(get_store))
 
 
 @app.on_event("startup")

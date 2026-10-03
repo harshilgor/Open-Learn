@@ -2,7 +2,9 @@
 
 Establish a reproducible baseline and measure policy, question, grading, operational, and delayed learning outcomes separately.
 
-Status: planned. Source: section 22 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: deterministic evaluation harness extended with labeled synthetic policy and evidence-admission cases. Content correctness across subjects and real learning outcomes are not measured by this suite. Source: section 22 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+
+Implementation: `backend/app/evaluation_runner.py` reports existing regression, policy, and state-admission results separately. The synthetic case corpus is `backend/evaluation/openlearn_scenarios.json`; methodology and limits are in [the evaluation record](../docs/OPENLEARN_2_EVALUATION.md). A deterministic run passes 17/17 cases. Educational calibration, expert-reviewed item coverage, and delayed outcomes remain unmeasured.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

@@ -2,7 +2,7 @@
 
 Select an explicit teaching action that addresses supported needs and leads to an appropriate opportunity to demonstrate learning.
 
-Status: planned. Source: section 15 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented with direct-request priority, bounded actions, and task scope lineage; explanation-choice browser UX and delayed causal outcome evaluation remain. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 15 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

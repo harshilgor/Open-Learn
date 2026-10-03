@@ -26,6 +26,7 @@ class TaskCommand(BaseModel):
     capability: str = 'recall'
     entityId: str | None = None
     reason: str = Field(min_length=1, max_length=1000)
+    topic: str | None = Field(default=None, max_length=500)
     duration: list[int] = Field(default_factory=lambda: [8, 15], min_length=2, max_length=2)
     prerequisites: list[str] = Field(default_factory=list, max_length=30)
     sourceBasis: list[dict[str, Any]] = Field(default_factory=list, max_length=30)
@@ -35,6 +36,7 @@ class TaskAction(BaseModel):
     status: Literal['accepted', 'scheduled', 'active', 'completed', 'skipped', 'cancelled'] | None = None
     pinned: bool | None = None
     workflowId: str | None = None
+    sessionId: str | None = Field(default=None, max_length=160)
     evidenceIds: list[str] = Field(default_factory=list, max_length=50)
     revision: int
 

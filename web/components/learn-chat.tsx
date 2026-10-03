@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { LoaderCircle, FileText, Check, X, ArrowDown, GraduationCap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { LearningApiError, learningApi, type Gear, type LessonArtifact, type ModeTransitionSuggestion, type WorkspaceNoteSummary, type NoteDraft } from '@/lib/api';
+import { LearningApiError, learningApi, request, type Gear, type LessonArtifact, type ModeTransitionSuggestion, type WorkspaceNoteSummary, type NoteDraft } from '@/lib/api';
 import styles from './learn-chat.module.css';
 import { ChatComposer, type ChatAttachment, type ChatNoteMention } from './chat-composer';
 import { LessonReader } from './lesson-reader';
@@ -79,6 +79,8 @@ export function LearnChat({
   onInitialPromptConsumed,
   preferredMode,
   autoSubmitInitialPrompt,
+  studyTask,
+  onStudyTaskCompleted,
   initialSessionId,
   courseId,
   courseName,
@@ -90,6 +92,8 @@ export function LearnChat({
   onInitialPromptConsumed?: () => void;
   preferredMode?: ChatMode;
   autoSubmitInitialPrompt?: boolean;
+  studyTask?: { taskId: string; courseId: string; revision: number; canonicalConceptIds: string[] } | null;
+  onStudyTaskCompleted?: () => void;
   /** Route session id wins over disposable localStorage hints. */
   initialSessionId?: string | null;
   courseId?: string | null;
@@ -129,6 +133,7 @@ export function LearnChat({
   const quizOrigin = useRef<'ask' | 'learn'>('ask');
   const classificationBypass = useRef<string | null>(null);
   const submitRef = useRef<(() => Promise<void>) | null>(null);
+  const completedStudyTask = useRef<string | null>(null);
 
   useEffect(() => {
     if (!initialSessionId && !sessionId) setGear(readSettingsPreferences().defaultGear);
@@ -258,6 +263,19 @@ export function LearnChat({
   }
 
   useEffect(() => { submitRef.current = submit; });
+
+  useEffect(() => {
+    if (!studyTask || !journey?.turns.length || journey.turns.some(turn => turn.status !== 'completed')) return;
+    if (!studyTask.canonicalConceptIds.every(id => journey.canonicalConceptIds?.includes(id))) return;
+    const sid = journey.sessionId;
+    const key = `${studyTask.courseId}:${studyTask.taskId}:${journey.id}`;
+    if (completedStudyTask.current === key) return;
+    completedStudyTask.current = key;
+    void request(`/v1/courses/${encodeURIComponent(studyTask.courseId)}/academic/tasks/${encodeURIComponent(studyTask.taskId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed', workflowId: journey.id, sessionId: sid, revision: studyTask.revision }),
+    }).then(() => onStudyTaskCompleted?.()).catch(() => { completedStudyTask.current = null; });
+  }, [studyTask, journey, onStudyTaskCompleted]);
 
   useEffect(() => {
     if (!initialPrompt) return;
@@ -582,7 +600,7 @@ export function LearnChat({
     let replayExpired = false;
     setBusy(true); setStreaming(true); setError(''); setProgress('Preparing your lesson…'); setActivity(null);
     try {
-      await stream.start(sid, { mode: requestMode === 'learn' ? 'learn' : 'ask', gear, message: input.message, action: input.action, expectedRevision: journey?.revision || 1, classificationBypassId: bypassId || undefined, noteContext }, {
+      await stream.start(sid, { mode: requestMode === 'learn' ? 'learn' : 'ask', gear, message: input.message, action: input.action, expectedRevision: journey?.revision || 1, classificationBypassId: bypassId || undefined, taskId: studyTask?.taskId, canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext }, {
         onEvent: (event: GenerationEvent) => {
           if (event.type === 'tool.started' && event.data.tool === 'search_web_evidence') {
             const query = typeof event.data.query === 'string' ? event.data.query : undefined;
@@ -852,7 +870,7 @@ export function LearnChat({
       // chat. After each turn the Lesson in Notes grows selectively.
       if (chatMode === 'learn' && !journey?.steps.length) {
         setProgress('Planning your learning path…');
-        await workflow(`/sessions/${currentSession.id}/journey`, { mode: chatMode, gear, message: text, action: 'message', expectedRevision: journey?.revision || 1, classificationBypassId: classifiedSuggestion?.id || bypassId || undefined, noteContext }, 'chat');
+        await workflow(`/sessions/${currentSession.id}/journey`, { mode: chatMode, gear, message: text, action: 'message', expectedRevision: journey?.revision || 1, classificationBypassId: classifiedSuggestion?.id || bypassId || undefined, taskId: studyTask?.taskId, canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext }, 'chat');
         const next = await getJourney(currentSession.id);
         applyJourney(next); setPrompt(''); setNoteMentions([]);
         setBusy(false);

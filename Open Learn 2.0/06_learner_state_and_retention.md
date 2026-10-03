@@ -2,7 +2,7 @@
 
 Give every workflow the same capability state, evidence strength, and retention status derived from accepted observations.
 
-Status: planned. Source: section 8 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented in the workspace; demonstrated promotion remains gated pending labeled calibration and further grading integration acceptance. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 8 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

@@ -2,7 +2,7 @@
 
 Evaluate answers fairly, preserve assistance history across workflows, and repair every dependent decision after a question correction.
 
-Status: planned. Source: section 14 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented with assistance records, challenge adjudication, append-only corrections, and dependent state repair; adjudication provider/source-race and resolution-player acceptance remain. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 14 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 

@@ -10,6 +10,7 @@ from backend.app.recommendation_routes import build_recommendation_router
 from backend.app.recommendation_service import RecommendationService
 from backend.app.session_models import LearningSession
 from backend.app.session_snapshot_routes import build_session_snapshot_router
+from backend.app.identity_middleware import IdentityMiddleware
 from backend.app.state_models import EvidenceCreate
 from backend.app.state_routes import build_state_router
 from backend.app.state_service import LearnerStateService
@@ -17,6 +18,8 @@ from backend.app.storage import Store
 
 
 def _seed(store: Store):
+    from backend.app.identity import Principal, principal_context
+    principal_token = principal_context.set(Principal("local", "local"))
     now = utc_now()
     scope = TopicScope(
         id="scope-loop", topic="Closed loop", resolved_meaning="Closed loop",
@@ -38,6 +41,7 @@ def _seed(store: Store):
         current_concept_id="intro", created_at=now, updated_at=now,
     )
     store.save_session(session)
+    principal_context.reset(principal_token)
     return graph, session
 
 
@@ -107,7 +111,8 @@ def test_closed_loop_teach_check_repair_assisted_fresh_continue(tmp_path):
     app.include_router(build_state_router(lambda: store))
     app.include_router(build_recommendation_router(lambda: store))
     app.include_router(build_session_snapshot_router(lambda: store))
-    with TestClient(app) as client:
+    app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
+    with TestClient(app, headers={"X-Dev-Learner-Id": "local"}) as client:
         chain = client.get(
             "/v1/learners/local/adaptive/closed-loop",
             params={"sessionId": session.id, "conceptId": "intro"},
@@ -133,8 +138,10 @@ def test_closed_loop_teach_check_repair_assisted_fresh_continue(tmp_path):
         assert challenged.status_code == 201, challenged.text
 
     # Two-tab stale recommendation selection remains rejected.
-    with TestClient(app) as client:
-        current = client.get(f"/v1/sessions/{session.id}/recommendations").json()
+    with TestClient(app, headers={"X-Dev-Learner-Id": "local"}) as client:
+        current_response = client.get(f"/v1/sessions/{session.id}/recommendations")
+        assert current_response.status_code == 200, current_response.text
+        current = current_response.json()
         stale_id = teach.recommendations[0].id
         stale = client.post(f"/v1/recommendations/{stale_id}/interactions", json={"eventType": "selection"})
         assert stale.status_code == 409
@@ -149,7 +156,8 @@ def test_session_position_fault_injection_stale_revision_and_cross_owner(tmp_pat
     graph, session = _seed(store)
     app = FastAPI()
     app.include_router(build_session_snapshot_router(lambda: store))
-    with TestClient(app) as client:
+    app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
+    with TestClient(app, headers={"X-Dev-Learner-Id": "local"}) as client:
         snap = client.get(f"/v1/sessions/{session.id}/snapshot").json()
         revision = snap["revision"]
         ok = client.patch(

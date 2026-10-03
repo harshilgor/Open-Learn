@@ -6,7 +6,15 @@ from backend.app.evaluation_runner import run
 from backend.app.storage import Store
 
 def test_evaluation_runner_is_machine_readable():
-    result=run(); assert result["passed"] and result["suite"] == "forma-deterministic-evaluation"
+    result=run()
+    assert result["passed"] and result["suite"] == "openlearn-deterministic-evaluation"
+    assert result["categories"] == {
+        "existing_regression": {"passed": 6, "total": 6},
+        "policy": {"passed": 8, "total": 8},
+        "state_admission": {"passed": 3, "total": 3},
+    }
+    assert all(outcome["source"] == "labeled_synthetic" for outcome in result["outcomes"]
+               if outcome["category"] in {"policy", "state_admission"})
 
 def test_backup_round_trip_corruption_and_no_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_TUTOR_ENV","test"); monkeypatch.setenv("AI_TUTOR_DEV_IDENTITY","true")

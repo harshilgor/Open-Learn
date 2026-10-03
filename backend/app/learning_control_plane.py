@@ -44,9 +44,21 @@ class LearningControlPlane:
         except ImportError:
             problem("context_compiler_unavailable", "The shared context compiler is not installed yet.", 503)
         session = MaterialService(self.store).session(owner, session_id)
+        course_id = session.get("course_id") if isinstance(session, dict) else getattr(session, "course_id", None)
+        stable_target = target_id
+        if target_id:
+            # Resolve before compiling so the shared packet contains the same
+            # canonical learner projection used by policy and the decision trace.
+            from .stable_concept_service import StableConceptService
+            graph = self.store.get_graph(session.graph_id if not isinstance(session, dict) else session["graph_id"])
+            with self.store.engine.connect() as conn:
+                resolved = StableConceptService(self.store).resolve_legacy(
+                    owner, graph.id, graph.version, target_id, connection=conn)
+            stable_target = resolved.get("concept_id") or target_id
         compiled = ContextCompiler(self.store).compile(owner, session_id,
             "assessment" if workflow == "quiz" else "teaching", request,
-            required_source_ids=required_source_ids, token_budget=token_budget, quiz_scope=quiz_scope)
+            required_source_ids=required_source_ids, token_budget=token_budget, quiz_scope=quiz_scope,
+            course_id=course_id, target_concept_ids=(stable_target,) if stable_target else ())
         if compiled["status"] == "insufficient_context":
             problem("required_context_unavailable", "The required source context is unavailable. Clarify the topic or select an available source.", 409)
         watermarks = compiled.get("watermarks") or {}
@@ -56,12 +68,6 @@ class LearningControlPlane:
         from .unified_learner_state import UnifiedLearnerState
         from .hypothesis_service import HypothesisService
         with self.store.engine.connect() as conn:
-            stable_target = target_id
-            if target_id:
-                from .stable_concept_service import StableConceptService
-                graph = self.store.get_graph(session.graph_id)
-                resolved = StableConceptService(self.store).resolve_legacy(owner, graph.id, graph.version, target_id, connection=conn)
-                stable_target = resolved.get("concept_id") or target_id
             states = UnifiedLearnerState(self.store).read(conn, owner, stable_target)["states"] if target_id else []
         hypothesis = HypothesisService(self.store).recommendation(owner, target_id) if target_id else None
         previous = [r for r in WorkflowStore(self.store).listing(owner, "teaching_intervention") if r.get("sessionId") == session_id and (not target_id or r.get("conceptId") == target_id)]

@@ -2,7 +2,7 @@
 
 Keep learning evidence attached to stable concepts across sessions and graph revisions while retaining course-specific meanings.
 
-Status: planned. Source: section 7 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented in the workspace, including reviewed current-revision mapping for task scopes; merge/split editor browser acceptance remains. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 7 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 Implementation: migration `0032_stable_concepts`, service/routes and `/concepts` review interface added. See [delivery and integration notes](../docs/STABLE_CONCEPTS.md). Runtime acceptance verification remains pending; no tests were run.
 

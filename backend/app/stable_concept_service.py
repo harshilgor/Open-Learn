@@ -296,6 +296,55 @@ class StableConceptService:
         row = connection.execute(text("SELECT concept_id FROM legacy_concept_mappings WHERE owner_id=:owner AND graph_id=:graph AND graph_revision=:revision AND node_id=:node"), {"owner": owner, "graph": graph_id, "revision": graph_revision, "node": node_id}).scalar_one_or_none()
         return self.canonical(owner, row, connection) if row else {"status": "unmapped", "original_id": node_id, "concept_id": None}
 
+    def resolve_quiz_scope(self, owner, graph, requested_ids, connection):
+        """Map stable task concepts to nodes in this exact session graph revision.
+
+        The quiz UI/generator still consumes graph-local IDs. Task planning can
+        now pass stable IDs; only reviewed mappings for the active graph revision
+        are accepted, so stale or ambiguous mappings cannot silently broaden scope.
+        """
+        graph_nodes = {concept.id for concept in graph.concepts}
+        mappings = connection.execute(text("""SELECT node_id,concept_id FROM legacy_concept_mappings
+            WHERE owner_id=:owner AND graph_id=:graph AND graph_revision=:revision
+            ORDER BY node_id"""), {"owner": owner, "graph": graph.id, "revision": graph.version}).mappings().all()
+        node_to_stable = {}
+        stable_to_nodes = {}
+        for mapping in mappings:
+            canonical = self.canonical(owner, mapping["concept_id"], connection)
+            if canonical["status"] != "resolved":
+                continue
+            node_to_stable[mapping["node_id"]] = canonical["concept_id"]
+            stable_to_nodes.setdefault(canonical["concept_id"], []).append(mapping["node_id"])
+
+        local_ids, canonical_ids = [], []
+        canonical_seen = set()
+        for requested in dict.fromkeys(requested_ids):
+            if requested in graph_nodes:
+                local = requested
+                canonical_id = node_to_stable.get(local, local)
+            else:
+                exists = connection.execute(text("SELECT 1 FROM stable_concepts WHERE owner_id=:owner AND id=:id"),
+                    {"owner": owner, "id": requested}).first()
+                if not exists:
+                    problem("invalid_concept", "Choose a concept in this learning session.", 422)
+                canonical = self.canonical(owner, requested, connection)
+                if canonical["status"] != "resolved":
+                    problem("concept_mapping_ambiguous", "This concept was split and needs a reviewed mapping before it can be used for a quiz.", 409)
+                canonical_id = canonical["concept_id"]
+                candidates = [node for node in stable_to_nodes.get(canonical_id, []) if node in graph_nodes]
+                if not candidates:
+                    problem("concept_not_in_session", "This stable concept has no reviewed mapping in the current learning session.", 409)
+                # The current graph may contain duplicate legacy nodes for the
+                # same reviewed concept. Pick one deterministically; preserve
+                # the stable identity separately on the quiz record.
+                local = candidates[0]
+            if local not in local_ids:
+                local_ids.append(local)
+            if canonical_id not in canonical_seen:
+                canonical_seen.add(canonical_id)
+                canonical_ids.append(canonical_id)
+        return local_ids, canonical_ids
+
     def report(self, owner, command):
         with self.store.transaction() as conn:
             self._lock(conn, owner)

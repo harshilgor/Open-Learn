@@ -2,7 +2,7 @@
 
 Choose a measurable objective before authoring each question and adapt practice within the learner’s agreed scope.
 
-Status: planned. Source: section 13 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
+Status: Implemented with stable task-scope mapping and QuestionPlan traces; course-level prerequisite selection and supported numeric symbolic validation still need acceptance. See [verified coverage and remaining acceptance](LEARNING_WORKFLOWS_IMPLEMENTATION_STATUS.md). Source: section 13 of OpenLearn Complete Implementation Brief, prepared 30 September 2026.
 
 The implementation sequence below translates the brief into repository work. Proposed names and policies must be reconciled with existing contracts before implementation. The detailed requirements retain the source brief’s wording.
 
