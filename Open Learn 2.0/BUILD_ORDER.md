@@ -95,3 +95,7 @@ Select and document the supported desktop, browser, mobile capture, and hosted d
 Review working journeys at module boundaries rather than reviewing only diagrams. The evidence review demonstrates a duplicate answer and challenge reversal. The context review demonstrates a lecture quiz and cross-session continuity. The recording review demonstrates recovery after interruption. The planning review demonstrates insufficient time and a changed academic fact.
 
 Avoid assigning delivery dates before repository inspection and supported-platform choices establish the actual effort. Track dependencies, completed integration tests, and unresolved decisions in the team backlog. An item is complete only after its interface, data, recovery path, and acceptance evidence are delivered together.
+
+## Agent execution extension
+
+Use the [decision workshop](AGENT_DECISION_WORKSHOP.md) before selecting providers or implementing this track. The [agent execution brief](26_agent_execution_platform.md) defines proposed phases A–H: kernel, search, sandbox, browser, hosted durability, connected apps, scheduling/notifications, and mobile. Foundation contracts start alongside identity, storage, context, and evidence; UI and operational integration happen in each phase. Study TaskSpec and execution tasks remain distinct and explicitly linked. Preserve the local Canvas reader's narrower policy. Provider selections and rollout gates remain open decisions.

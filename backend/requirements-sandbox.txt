@@ -1,0 +1,2 @@
+# Optional sandbox provider; install separately from the core backend.
+daytona==0.220.0

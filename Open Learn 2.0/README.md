@@ -1,6 +1,6 @@
 # Open Learn 2.0 implementation briefs
 
-This folder organizes the complete implementation specification into 25 component briefs. Each brief includes its purpose, dependencies, existing code to inspect, an implementation sequence, and the applicable detailed requirements and completion criteria.
+This folder organizes the complete implementation specification into 25 original component briefs plus an agent execution scope extension. Each brief includes its purpose, dependencies, existing code to inspect, an implementation sequence, and the applicable detailed requirements and completion criteria.
 
 Source: `OpenLearn_Complete_Implementation_Brief.docx`, prepared 30 September 2026. The original document is in the user’s Downloads folder. Source SHA-256: `8f2d160d5e447e3707f7834730ea954021308ae520cf9d3dc9dee22dbceab169`.
 
@@ -40,6 +40,10 @@ Start with [build order and shared decisions](BUILD_ORDER.md), then use each com
 | [Performance resource use and production operations](24_production_operations.md) | Operate the integrated system within measured latency, cost, privacy, recovery, and resource limits. | 24 |
 | [Existing data migration and cutover](25_migration_and_cutover.md) | Bring existing learners and activities into the shared architecture without losing history or inventing stronger evidence. | 25 |
 
+## Agent execution scope extension
+
+The [general-purpose agent execution proposal](26_agent_execution_platform.md), added at the user's request on 3 October 2026, extends the original scope. Provider choices, APIs, frontend flows, and rollout details remain proposals until we complete the [decision workshop](AGENT_DECISION_WORKSHOP.md). This extension is planned work, not an implementation claim.
+
 ## Product scope
 
 We will build OpenLearn as one connected learning system. Ask, Learn, Quiz, lecture recordings, course materials, review scheduling, exam readiness, and study planning will use the same account identity, concept identifiers, academic facts, and evidence about the learner. The completed product must help a student decide what to study, receive teaching suited to a specific gap, demonstrate understanding, and return later for useful retrieval practice.
@@ -77,7 +81,7 @@ The finished system will answer four separate questions: what the learner encoun
 
 The selected design uses interpretable policies rather than a neural knowledge-tracing model, a mathematical information-gain optimizer, fitted Item Response Theory, or a learned reinforcement-learning teaching policy. We will fully implement the evidence collection and evaluation contracts needed to assess those methods. Their absence does not leave any selected user workflow unfinished.
 
-Canvas execution will be local. Persistent cloud browsers, per-student virtual machines, and automatically learned browser procedures are outside this delivery. Local skills will be maintained, tested implementations. Scheduled local checks will run when the connected device and browser are available; the interface will expose the last successful check and any missed execution. We will not promise unattended execution while every device is offline.
+The Canvas ingestion reader remains local and read-only. The agent execution extension adds proposed disposable, task-scoped cloud browsers and isolated code environments for broader authorized work; it does not allocate permanent per-student virtual machines or widen Canvas permissions. Automatically learned Canvas procedures remain outside the reader scope. Local skills will be maintained, tested implementations. Scheduled local checks will run when the connected device and browser are available; the interface will expose the last successful check and any missed execution. We will not promise unattended execution while every device is offline.
 
 ## Existing behavior and refactor boundaries
 
@@ -90,3 +94,6 @@ Recording already persists browser slices in IndexedDB and processes uploads int
 We will preserve successful mechanisms and connect them through shared services. The author/checker pipeline remains responsible for question production. The generation lifecycle remains responsible for streaming, cancellation, replay, and canonical completion. Note revision protection remains responsible for user-authored content. Existing quiz attempts remain authoritative historical records.
 
 Before changing code, the team will verify these boundaries in journey_service.py, context_engine.py, quiz_service.py, assessment_generation.py, state_service.py, conversation_state.py, mode_transition_service.py, recording services, route authorization, and database migrations. New contracts below are proposed interfaces; they should be adapted to the repository's actual types and conventions rather than duplicated beside equivalent existing abstractions.
+
+
+The [phone experience and provider recommendations](27_mobile_and_provider_choices.md) capture the message-first mobile direction, voice messages, lecture recording, and Daytona preference. For the current repository rather than future scope, start with the [current architecture map](../docs/CURRENT_ARCHITECTURE.md).
