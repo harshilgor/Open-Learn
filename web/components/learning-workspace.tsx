@@ -5,6 +5,7 @@ import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, Book
 import { Sidebar, SidebarContent, SidebarFooter, SidebarProvider, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { AccountMenuActions } from '@/components/account-access';
 import { LearnChat } from '@/components/learn-chat';
 import { MobileNavigation } from '@/components/mobile-navigation';
 import { buddyApi } from '@/lib/buddies';
