@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Open Learn Canvas Reader",
-  "version": "0.1.0",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "name": "Open Learn Browser Companion",
+  "version": "0.2.0",
+  "permissions": ["activeTab", "scripting", "storage", "alarms", "debugger"],
+  "background": {"service_worker": "service-worker.js", "type": "module"},
   "optional_host_permissions": ["https://*/*", "http://127.0.0.1/*"],
   "action": {"default_popup": "popup.html"}
 }

@@ -44,7 +44,7 @@ def issue_device_grant(connection, owner, name, kind='canvas'):
     principal=current_principal()
     if principal.owner_id!=owner or principal.kind not in {'web','local'}:
         fail('account_session_required','Pair a device using the account browser or local profile.',403)
-    if kind not in {'canvas','desktop'}: fail('invalid_device_kind','Unknown device capability.',422)
+    if kind not in {'canvas','desktop','browser'}: fail('invalid_device_kind','Unknown device capability.',422)
     assert_principal_active(connection,principal)
     token='oldv_'+secrets.token_urlsafe(48)
     identifier='device_'+uuid4().hex

@@ -6,6 +6,7 @@ Repository map inspected 3 October 2026. This document separates current code bo
 
 - Web: React 19 and TypeScript, with Next.js conventions and a Vinext/Vite development/build wrapper. Source: [web/package.json](../web/package.json), [framework runner](../web/scripts/run-framework.mjs), [routes](../web/app), and [components](../web/components).
 - API: Python FastAPI modular monolith. [backend/app/main.py](../backend/app/main.py) registers routes and application lifecycle. Domain services own learning, assessment, materials, notes, courses, lectures, identity, and planning.
+- Research: [web_evidence](../backend/app/web_evidence) already contains Exa-backed retrieval, a provider interface, bounded tool orchestration, citation mapping, quotas, auditing, and retention. Agent research should extend this path.
 - Models: [model_provider.py](../backend/app/model_provider.py) provides the existing provider boundary. Context compilation and learning services sit between the UI and provider calls.
 - Persistence: local SQLite and hosted PostgreSQL through the backend store and migrations. Notes, audio, uploads, and other binary content have storage boundaries separate from relational metadata.
 - Execution: existing durable job/outbox/lease machinery and workers from the same backend codebase. Inspect [foundation decisions](OPENLEARN_2_FOUNDATION_DECISIONS.md) and [application foundation](APPLICATION_FOUNDATION.md) alongside current worker code; earlier documents may describe earlier implementation stages.
@@ -26,3 +27,5 @@ The web API client reads NEXT_PUBLIC_LEARNING_API_URL and otherwise defaults to 
 ## Planned additions
 
 A native Expo mobile application, Daytona agent sandbox adapter, broader connected apps, selected hosted workflow infrastructure, and the complete general-purpose agent track remain design/implementation work. Installing the Daytona SDK or preparing a smoke check does not implement those capabilities. Existing service contracts should be reconciled before introducing replacements.
+
+The [revised agent architecture](../Open%20Learn%202.0/26_agent_execution_platform.md) maps the inspected services to the proposed persistent assistant, responsibility/task contracts, feature flows, migration and acceptance gates. It identifies the existing interactive-generation disconnect policy and worker/outbox reconciliation as explicit integration boundaries.

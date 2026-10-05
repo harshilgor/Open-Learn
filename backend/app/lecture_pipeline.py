@@ -103,6 +103,8 @@ def transcribe_chunk(store, owner: str, recording_id: str, sequence: int, transc
                 conn.execute(text("""INSERT INTO lecture_transcript_segments(id,recording_id,chunk_id,ordinal,start_ms,end_ms,speaker,speaker_confidence,raw_text,normalized_text,confidence,provider,model,transcription_version,normalization_version,created_at)
                     VALUES (:id,:recording,:chunk,:ordinal,:start,:end,:speaker,:speaker_confidence,:raw,:normalized,:confidence,:provider,:model,1,1,:now)"""), values)
             conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='completed',transcription_error=NULL,updated_at=:now WHERE id=:id"), {"now": time.time(), "id": chunk["id"]})
+            from .in_class_service import handoff
+            handoff(conn,owner,recording_id,'transcript:'+chunk['id'])
         log.info("lecture.transcribed recording_id=%s sequence=%s segments=%s latency_ms=%s", recording_id, sequence, len(prepared), int((time.monotonic() - start) * 1000))
     except Exception as exc:
         message = str(exc) if isinstance(exc, TranscriptionFailure) else "Transcription failed; the saved audio can be retried."

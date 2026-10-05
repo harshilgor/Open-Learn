@@ -1,0 +1,7 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'openlearn.capture'
+version = '0.1.0'
+android { namespace 'openlearn.capture' }

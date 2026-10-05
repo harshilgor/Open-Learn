@@ -13,6 +13,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test:visuals": "node --experimental-strip-types --test scripts/visual-intelligence.test.mjs",
     "test:tutor": "vitest run tests/tutor-components.test.tsx",
+    "test:agent": "vitest run tests/agent-execution.test.tsx tests/agent-research-sources.test.tsx tests/agent-learning.test.tsx tests/agent-connected-actions.test.tsx tests/browser-assistant.test.tsx tests/responsibilities.test.tsx",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

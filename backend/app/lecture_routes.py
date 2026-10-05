@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Path, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from .lecture_models import LectureCreate, LectureFinalize, LecturePreferences
 from .lecture_pipeline import LectureWorker
@@ -68,6 +68,14 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
                      owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
         length = request.headers.get("content-length")
+        import json
+        from sqlalchemy import text
+        with svc.store.engine.connect() as conn:
+            class_setup=conn.execute(text('SELECT payload FROM class_sessions WHERE recording_id=:id AND owner_id=:owner'),{'id':recording_id,'owner':owner}).scalar_one_or_none()
+        if class_setup:
+            expected=json.loads(class_setup)
+            if request.headers.get('x-capture-device')!=expected['deviceId'] or request.headers.get('x-capture-epoch')!=str(expected['captureEpoch']):
+                raise HTTPException(409,{'code':'capture_device_mismatch','message':'This class is recording on another device. Join its views instead.'})
         try:
             declared = int(length) if length else 0
         except ValueError:
@@ -100,8 +108,8 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
     @router.get("/{recording_id}/chunks/{sequence}/audio")
     def audio(recording_id: str, sequence: int, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
         authorize(learner_id, owner)
-        path, mime = translate(lambda: svc.chunk_audio_path(owner, recording_id, sequence))
-        return FileResponse(path, media_type=mime, headers={"Cache-Control": "private, no-store"})
+        content, mime = translate(lambda: svc.chunk_audio(owner, recording_id, sequence))
+        return Response(content, media_type=mime, headers={"Cache-Control": "private, no-store",'X-Content-Type-Options':'nosniff'})
 
     @router.get("/{recording_id}/transcript")
     def transcript(recording_id: str, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):

@@ -20,6 +20,10 @@ class LectureObservationService:
             historical = {'segmentId': segment_id, 'previousWording': segment['normalized_text'], 'rawText': segment['raw_text'], 'wording': wording.strip(), 'startMs': segment['start_ms'], 'endMs': segment['end_ms'], 'previousRevision': revision, 'source': 'student_correction'}
             conn.execute(text('INSERT INTO lecture_transcript_revisions(owner_id,id,recording_id,revision,payload,created_at) VALUES(:owner,:id,:recording,:revision,:payload,:now)'), {'owner': owner, 'id': uuid4().hex, 'recording': recording, 'revision': revision+1, 'payload': json.dumps(historical), 'now': time.time()})
             conn.execute(text('UPDATE lecture_transcript_segments SET normalized_text=:wording,normalization_version=normalization_version+1 WHERE id=:id AND normalization_version=:revision'), {'wording': wording.strip(), 'id': segment_id, 'revision': revision})
+            from .flashcards.class_adapter import invalidate_source
+            invalidate_source(self.store,conn,owner,segment_id)
+            from .in_class_service import handoff
+            handoff(conn,owner,recording,'correction:'+segment_id+':'+str(revision+1))
             sections = conn.execute(text('SELECT id,evidence_json FROM lecture_sections WHERE recording_id=:recording'), {'recording': recording}).all()
             affected = [s[0] for s in sections if any(e['segmentId'] == segment_id for e in json.loads(s[1]))]
             for section in affected:

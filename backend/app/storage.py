@@ -30,7 +30,11 @@ class Store:
             self.url = "sqlite+pysqlite:///file:ai_tutor_memdb?mode=memory&cache=shared&uri=true"
         else:
             self.url = f"sqlite+pysqlite:///{Path(raw).resolve()}"
-        run_migrations(self.url)
+        import os
+        if os.getenv('OPENLEARN_MIGRATE_ON_START','true')=='false':
+            from .database import require_current_schema
+            require_current_schema(self.url)
+        else:run_migrations(self.url)
         self.engine: Engine = create_database_engine(self.url)
 
     @contextmanager
@@ -114,6 +118,10 @@ class Store:
 
     def save_session(self, session: LearningSession) -> None:
         with self.transaction() as connection:
+            from .buddy_service import BuddyService
+            previous=connection.execute(text('SELECT buddy_id FROM buddy_chats WHERE id=:id AND owner_id=:owner'), {'id':session.id,'owner':session.learner_id}).scalar_one_or_none()
+            buddy=previous or BuddyService(self).resolve(connection,session.learner_id,session.course_id,session.buddy_id)
+            session=session.model_copy(update={'buddy_id':buddy})
             self._put(connection, "learning_sessions", "id", session.id, {
                 "graph_id": session.graph_id,
                 "learner_id": session.learner_id,
@@ -130,6 +138,7 @@ class Store:
                 "updated_at": session.updated_at,
                 "payload": session.model_dump_json(),
             })
+            connection.execute(text('INSERT INTO buddy_chats(id,owner_id,buddy_id) VALUES(:id,:owner,:buddy) ON CONFLICT(id) DO NOTHING'), {'id':session.id,'owner':session.learner_id,'buddy':buddy})
 
     def get_session(self, session_id: str) -> LearningSession | None:
         with self.engine.connect() as connection:
@@ -248,6 +257,8 @@ class Store:
                      "AND (id = :jid OR parent_id = :sid)"),
                 {"owner": owner, "jid": journey_id, "sid": session_id},
             )
+            connection.execute(text('DELETE FROM buddy_chats WHERE id=:sid AND owner_id=:owner'),{'sid':session_id,'owner':owner})
+            connection.execute(text('DELETE FROM buddy_navigation WHERE last_chat_id=:sid AND owner_id=:owner'),{'sid':session_id,'owner':owner})
             connection.execute(text("DELETE FROM learning_sessions WHERE id = :sid"), {"sid": session_id})
         return True
 

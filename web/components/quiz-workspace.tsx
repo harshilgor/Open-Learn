@@ -1,5 +1,6 @@
 "use client";
 
+import {MakeFlashcards} from './flashcard-create';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
@@ -195,6 +196,8 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
         <p>{challenge.explanation || 'Your response is saved and excluded while this question is reviewed.'}</p>
         {challenge.status !== 'resolved' && <Button variant="outline" disabled={busy} onClick={() => void act(`/challenges/${challenge.id}/review`, {})}>Review question</Button>}
       </div>)}
+      {quiz.attempts.filter(attempt=>attempt.status!=='contested' && attempt.score!==null && attempt.score<1).slice(-1).map(attempt=><MakeFlashcards key={attempt.id} sessionId={quiz.sessionId} sourceRefs={[{kind:'quiz_attempt',id:attempt.id,revision:1}]} origin="quiz" label="Make cards from this mistake"/>)}
+      {quiz.sourceSuperseded?<p role="status">The lecture transcript changed after this quiz was prepared. Your answers remain saved; use the In-Class workspace for updated practice.</p>:null}
       {timeExpired && <div className={styles.card} role="status"><h2>Time is up</h2><p>Your saved work is still available, but this timed quiz no longer accepts answers.</p></div>}
       <AnimatePresence mode="wait">{quiz.current && quiz.status !== 'paused' && !timeExpired && <motion.div key={quiz.current.id} initial={reduceMotion ? false : { opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={reduceMotion ? undefined : { opacity: 0, x: -10 }} transition={{ duration: 0.2, ease: 'easeOut' }}><AssessmentCard item={quiz.current} busy={busy} attempt={quiz.attempts.find(a => a.id === quiz.current?.attemptId)}
         onAnswer={answer => void act(`/quizzes/${quiz.id}/attempts`, { ...answer, presentationId: quiz.current!.id, expectedRevision: quiz.revision })}

@@ -1,0 +1,40 @@
+import {act} from 'react';
+import {createRoot,type Root} from 'react-dom/client';
+import {beforeEach,afterEach,expect,it,vi} from 'vitest';
+import {InClassWorkspace} from '@/components/in-class-workspace';
+import {classApi,type ClassSnapshot} from '@/lib/in-class';
+const fixture=()=>({session:{id:'class-one',sessionId:'chat-one',revision:1,recordingId:'recording-one',noteId:'note-one',buddyId:'buddy-one',courseId:'course-one',title:'Biology',deviceId:'capture-one',processing:'live',cancelled:false,partial:false},recording:{captureComplete:false,chunks:{missing:[],transcribed:1}},outputs:[{id:'notes-one',windowId:'window-one',kind:'notes',revision:1,status:'ready',result:{blocks:[{title:'Cell structure',body:'Membranes form a boundary.',segmentIds:['segment-one']}]}},{id:'practice-one',windowId:'window-one',kind:'practice',revision:1,status:'failed',error:'Quiz provider unavailable'}],transcript:[],cursor:2,hasMore:false,events:[]} as unknown as ClassSnapshot);
+vi.mock('@/lib/in-class',()=>({classApi:{snapshot:vi.fn(),command:vi.fn()}}));
+vi.mock('@/components/buddies',()=>({useBuddies:()=>({snapshot:null}),BuddyAvatar:()=>null}));
+vi.mock('@/components/rich-content',()=>({RichContent:({body}:{body:string})=><p>{body}</p>}));
+let root:Root,container:HTMLDivElement;
+beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();vi.mocked(classApi.snapshot).mockResolvedValue(fixture());container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
+afterEach(()=>{act(()=>root.unmount());container.remove();vi.clearAllMocks();vi.useRealTimers();});
+it('retains notes and reading focus when a specialist fails and polling reconnects',async()=>{
+ await act(async()=>root.render(<InClassWorkspace classId="class-one"/>));
+ const notes=[...container.querySelectorAll('button')].find(b=>b.textContent==='Notes')!;notes.focus();
+ vi.mocked(classApi.snapshot).mockRejectedValueOnce(new Error('Connection interrupted'));
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000);});
+ expect(container.textContent).toContain('Membranes form a boundary.');expect(document.activeElement).toBe(notes);
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000);});expect(document.activeElement).toBe(notes);
+ const practice=[...container.querySelectorAll('button')].find(b=>b.textContent?.startsWith('Practice'))!;
+ act(()=>practice.click());expect(container.textContent).toContain('Retry this output');
+ vi.mocked(classApi.command).mockResolvedValue(fixture());
+ act(()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Retry this output')!.click());
+ expect(classApi.command).toHaveBeenCalledWith('class-one',1,'retry','practice-one');
+});
+it('ignores a late snapshot for the previously opened class',async()=>{
+ let deliver!:(value:ClassSnapshot)=>void;
+ vi.mocked(classApi.snapshot).mockReturnValueOnce(new Promise(resolve=>{deliver=resolve;}));
+ await act(async()=>root.render(<InClassWorkspace classId="class-old"/>));
+ await act(async()=>root.render(<InClassWorkspace classId="class-one"/>));
+ await act(async()=>deliver({...fixture(),session:{...fixture().session,id:'class-old',title:'Old private class'}}));
+ expect(container.textContent).toContain('Biology');expect(container.textContent).not.toContain('Old private class');
+});
+it('keeps processing pause distinct from audio capture',async()=>{
+ await act(async()=>root.render(<InClassWorkspace classId="class-one"/>));
+ vi.mocked(classApi.command).mockResolvedValue(fixture());
+ act(()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Pause processing')!.click());
+ expect(classApi.command).toHaveBeenCalledWith('class-one',1,'cancel_processing',undefined);
+ expect(container.textContent).toContain('does not stop audio capture');
+});

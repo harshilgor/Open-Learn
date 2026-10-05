@@ -71,6 +71,8 @@ class QuizService:
         session = MaterialService(self.store).session(owner, quiz["sessionId"])
         graph = self.store.get_graph(quiz["graphId"])
         concepts = [concept for concept in graph.concepts if concept.id in quiz.get("conceptIds", [])]
+        if quiz.get('lectureOnly'):
+            return {'spanId':f'quiz-context:{quiz_id}','versionId':f'quiz-context:{quiz_id}','pageIndex':0,'title':'Covered lecture transcript (not independently verified)','text':(quiz.get('lessonSnapshot') or '')[:12000],'retrieval':'study_context'}
         text_value = "\n\n".join(part for part in [
             quiz.get("lessonSnapshot"),
             quiz.get("conversationSnapshot"),
@@ -217,9 +219,12 @@ class QuizService:
         plan = choose_question_plan(quiz, first, states, previous, quiz.get("diagnosticSpec"))
         concept_id = plan.concept_id
         concept = next(c for c in graph.concepts if c.id == concept_id)
-        sources = retrieve(self.store, owner, session.id, f"{quiz.get('requestedTopic') or session.goal} {concept.title} {concept.summary}",
-                           selected_span_ids=quiz.get("selectedSpanIds"),
-                           metadata_scope={"conceptId": concept.id, "courseId": session.course_id})
+        if quiz.get('lectureOnly'):
+            sources = [self.study_context(owner, quiz_id)]
+        else:
+            sources = retrieve(self.store, owner, session.id, f"{quiz.get('requestedTopic') or session.goal} {concept.title} {concept.summary}",
+                               selected_span_ids=quiz.get("selectedSpanIds"),
+                               metadata_scope={"conceptId": concept.id, "courseId": session.course_id})
         if not sources and not quiz.get("selectedSpanIds"):
             sources = [self.study_context(owner, quiz_id)]
             quiz["contextSource"] = True

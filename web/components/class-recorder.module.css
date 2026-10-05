@@ -25,4 +25,7 @@
 .bubble button:hover, .errorBubble button:hover { background: var(--muted); }
 .bubble button:disabled { opacity: .4; cursor: default; }
 .errorBubble { position: fixed; z-index: 80; right: 24px; bottom: 24px; display: flex; align-items: center; gap: 8px; max-width: min(380px, calc(100vw - 32px)); padding: 10px 12px; border: 1px solid var(--destructive); border-radius: 12px; background: var(--popover); color: var(--destructive); box-shadow: 0 8px 24px rgba(0,0,0,.15); font-size: 12px; }
-@media (max-width: 600px) { .bubble { right: 10px; bottom: 10px; gap: 5px; } .wave { display: none; } }
+@media (max-width: 600px) { .bubble { right: 10px; bottom: 10px; gap: 5px; } .wave { width: 18px; } }
+
+.setup { max-height: 88dvh; overflow-y: auto; }
+@media(max-width: 767px) { .bubble, .errorBubble { bottom: calc(76px + env(safe-area-inset-bottom)); } .recovery { bottom: calc(155px + env(safe-area-inset-bottom)); } .notice { bottom: calc(76px + env(safe-area-inset-bottom)); } }

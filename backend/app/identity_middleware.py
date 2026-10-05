@@ -30,6 +30,10 @@ class IdentityMiddleware:
             canvas_disconnect=scope.get('method')=='DELETE' and re.fullmatch(r'/v1/canvas/connections/[A-Za-z0-9_.:-]+',path)
             if principal.kind == 'canvas' and path != '/v1/account' and not (canvas_sync or canvas_disconnect):
                 fail('device_scope_denied', 'Canvas grants cannot access learning, settings, or account data.', 403)
+            if principal.kind == 'browser' and not (path in {'/v1/browser-devices/commands','/v1/browser-devices/disconnect'} or
+                    re.fullmatch(r'/v1/browser-devices/commands/[A-Za-z0-9_.:-]+/result', path) or
+                    re.fullmatch(r'/v1/browser-devices/handoffs/[A-Za-z0-9_.:-]+/ack', path)):
+                fail('device_scope_denied', 'Browser grants can only receive and acknowledge their scoped commands.', 403)
             if path.startswith('/v1/learners/'):
                 owner = unquote(path.split('/')[3])
                 if owner != principal.owner_id:

@@ -1,6 +1,6 @@
 # Phone experience and recommended provider stack
 
-Design discussion updated 3 October 2026. User direction: a message-first phone interface inspired by iMessage and Grok-style bot interactions, with audio recording from the phone. Daytona is the user's preferred sandbox candidate. Recommendations below are proposals for discussion, not completed integrations or purchased services.
+Design discussion updated 3 October 2026. The [research-backed agent architecture](26_agent_execution_platform.md) now governs integration details and supersedes earlier provider assumptions where noted. User direction: a message-first phone interface inspired by iMessage and Grok-style bot interactions, with audio recording from the phone. Daytona is the user's preferred sandbox candidate. Recommendations below are proposals for discussion, not completed integrations or purchased services.
 
 ## Phone product direction
 
@@ -27,7 +27,7 @@ Expo documents background recording configuration, but support must pass real iO
 | Reasoning models | Existing provider adapter | Keep model selection configurable; evaluate reasoning, tool use, lecture math, latency, and cost before choosing one default |
 | Agent orchestration | Extend the Python kernel and existing durable jobs | Typed tools, checkpoints, permissions, sources, budgets; defer a LangGraph migration until a concrete gap justifies it |
 | Code sandbox | Daytona as preferred initial candidate | Python daytona SDK behind SandboxService; task-scoped allocation, deadlines, private sessions, controlled networking, output collection, and deletion |
-| Research | Tavily initially | Search and Extract endpoints behind SearchService; retain source passages, timestamps and citations; compare Exa if research quality warrants it |
+| Research | Reuse the existing Exa-backed WebEvidenceService first | Preserve its provider interface, tool policies, quotas and citation mapping; benchmark a Tavily adapter only against a demonstrated gap |
 | Cloud browser | Browserbase + Playwright | Session/CDP and live-view APIs behind BrowserService; DOM first, visual fallback, authenticated takeover; test mobile keyboard interaction before committing |
 | Course ingestion | Existing local Canvas reader | Preserve narrower read-only grants and academic reconciliation; cloud browsers do not replace this boundary automatically |
 | Hosted durable workflows | Existing job/outbox system first; Temporal for the full durable-agent track | Python Temporal SDK and external workers when long waits/recovery justify the extra system; migrate through WorkflowService |

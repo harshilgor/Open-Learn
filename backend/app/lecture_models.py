@@ -25,6 +25,7 @@ class LecturePreferences(ApiModel):
 
 
 class LectureCreate(ApiModel):
+    buddy_id: str | None = Field(default=None, max_length=160)
     id: str = Field(pattern=r"^rec_[a-f0-9]{32}$")
     title: str = Field(min_length=1, max_length=240)
     course_id: str | None = Field(default=None, max_length=160)

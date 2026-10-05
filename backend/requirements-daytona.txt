@@ -1,0 +1,2 @@
+# Optional remote execution adapter. Install in the existing backend environment.
+daytona==0.220.0

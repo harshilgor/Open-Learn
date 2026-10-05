@@ -3,22 +3,31 @@ const skills = ['courses', 'assignments', 'modules', 'announcements', 'syllabus'
 function validate(config) {
   const institution = new URL(config.origin);
   const backend = new URL(config.backend);
-  if (institution.protocol !== 'https:' || institution.origin !== config.origin || institution.pathname !== '/' || !config.courses || !config.grant || !config.connectionId || !config.deviceId) throw Error('Invalid pairing configuration.');
+  if (institution.protocol !== 'https:' || institution.origin !== config.origin || institution.pathname !== '/' || !config.connectionId || !config.deviceId) throw Error('Invalid pairing configuration.');
   if (backend.protocol !== 'https:' && !(backend.hostname === '127.0.0.1' && backend.protocol === 'http:')) throw Error('Use HTTPS or the local companion.');
-  if (Object.keys(config.courses).some(id => !/^\d+$/.test(id))) throw Error('Canvas course IDs must be numeric.');
+  if (config.kind === 'browser') { if (!config.authToken) throw Error('Missing browser grant.'); return config; }
+  if (!config.courses || !config.grant || Object.keys(config.courses).some(id => !/^\d+$/.test(id))) throw Error('Canvas course IDs must be numeric.');
   return config;
 }
 document.querySelector('#pair').onclick = async () => {
   try {
     const config = validate(JSON.parse(document.querySelector('#config').value));
-    const granted = await chrome.permissions.request({origins: [config.origin+'/*', new URL(config.backend).origin+'/*']});
+    const granted = await chrome.permissions.request({origins: [config.origin+'/*', ...(config.approvedOrigins || []).map(origin=>origin+'/*'), new URL(config.backend).origin+'/*']});
     if (!granted) throw Error('Institution access was declined.');
+    if (config.kind === 'browser') {
+      const result = await chrome.runtime.sendMessage({type:'companion-pair',config});
+      if (result.error) throw Error(result.error);
+      status.textContent='Connected. Ask OpenLearn to read this website. You can close this popup.';
+      return;
+    }
     // Short-lived Open Learn session credentials survive this browser session only.
     await chrome.storage.session.set({config}); status.textContent = 'Connected. Open the selected Canvas course before reading.';
   } catch (error) { status.textContent = error.message; }
 };
 document.querySelector('#sync').onclick = async () => {
   try {
+    const {companionConnections=[]}=await chrome.storage.local.get('companionConnections');
+    if (companionConnections.length) {await chrome.runtime.sendMessage({type:'companion-poll'});status.textContent='Checking OpenLearn tasks. Reads continue after closing this popup.';return;}
     const {config} = await chrome.storage.session.get('config'); validate(config);
     const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
     if (!tab?.url || new URL(tab.url).origin !== config.origin) throw Error('Select a tab at the approved Canvas institution.');
@@ -64,6 +73,8 @@ document.querySelector('#sync').onclick = async () => {
   } catch (error) { status.textContent = error.message; }
 };
 document.querySelector('#disconnect').onclick = async () => {
+  const {companionConnections=[]}=await chrome.storage.local.get('companionConnections');
+  if (companionConnections.length) {await chrome.runtime.sendMessage({type:'companion-disconnect'});status.textContent='Browser companion disconnected.';return;}
   const {config} = await chrome.storage.session.get('config');
   if (config) {
     const response = await fetch(`${config.backend}/v1/canvas/connections/${config.connectionId}`, {method: 'DELETE', headers: config.authToken ? {Authorization: `Bearer ${config.authToken}`} : {}});

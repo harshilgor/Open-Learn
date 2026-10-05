@@ -1,0 +1,1 @@
+{"platforms":["apple","android"],"apple":{"modules":["LectureCaptureModule"]},"android":{"modules":["openlearn.capture.LectureCaptureModule"]}}

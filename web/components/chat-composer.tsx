@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronDown, CircleHelp, FileText, GraduationCap, MessageCircleQuestion, Plus, Square, X, Upload, type LucideIcon } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, CircleHelp, FileText, GraduationCap, MessageCircle, MessageCircleQuestion, Plus, Square, X, Upload, type LucideIcon } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { Button } from '@/components/ui/button';
@@ -19,16 +19,18 @@ export type ChatModeOption = {
 
 /** Add future modes (e.g. Agent) here — the selector renders them with no other changes. */
 export const CHAT_MODES: ChatModeOption[] = [
-  { value: 'ask', label: 'Ask', description: 'Ask questions and get direct answers', icon: MessageCircleQuestion, accent: '#5f705c', tileBg: '#e6ece1' },
+  { value: 'ask', label: 'Ask', description: 'Get developed answers with explanations and sources', icon: MessageCircleQuestion, accent: '#5f705c', tileBg: '#e6ece1' },
   { value: 'learn', label: 'Learn', description: 'Learn a topic interactively, step by step', icon: GraduationCap, accent: '#77663f', tileBg: '#efe9d8' },
   { value: 'quiz', label: 'Quiz', description: 'Practice active recall and test your understanding', icon: CircleHelp, accent: '#536d7a', tileBg: '#e6edf2' },
 ];
 
-export function ChatModeSelector({ mode, onModeChange, disabled }: {
+export function ChatModeSelector({ mode, onModeChange, disabled, conversation, onConversation, onInClass }: {
   mode: ChatMode; onModeChange?: (mode: ChatMode) => void; disabled?: boolean;
+  conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
 }) {
   const current = CHAT_MODES.find(option => option.value === mode) ?? CHAT_MODES[0];
-  const CurrentIcon = current.icon;
+  const isConversation = mode === 'ask' && conversation;
+  const CurrentIcon = isConversation ? MessageCircle : current.icon;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -36,19 +38,21 @@ export function ChatModeSelector({ mode, onModeChange, disabled }: {
           type="button"
           disabled={disabled}
           aria-label="Conversation mode"
+          title={isConversation ? 'Conversation · Your everyday study partner' : `${current.label} · ${current.description}`}
           className={styles.modeTrigger}
         >
           <span className={styles.modeTile} style={{ background: current.tileBg, color: current.accent }}>
             <CurrentIcon size={14} />
           </span>
-          {current.label}
+          {mode==='ask'&&conversation?'Conversation':current.label}
           <ChevronDown size={14} className={styles.modeChevron} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" sideOffset={6} className="w-[280px] p-1.5">
+        {onConversation?<DropdownMenuItem onSelect={onConversation} className="items-start gap-2.5 rounded-lg px-2.5 py-2 cursor-pointer"><span className={styles.modeTile}><MessageCircle size={15}/></span><span className="grid flex-1 gap-0.5"><span className="flex items-center gap-1.5 text-[13px] font-semibold">Conversation{isConversation?<Check size={13}/>:null}</span><span className="text-xs leading-snug text-muted-foreground">Talk, plan your day, and prepare together</span></span></DropdownMenuItem>:null}
         {CHAT_MODES.map(option => {
           const OptionIcon = option.icon;
-          const selected = option.value === mode;
+          const selected = option.value === mode && !(mode==='ask'&&conversation);
           return (
             <DropdownMenuItem
               key={option.value}
@@ -68,6 +72,7 @@ export function ChatModeSelector({ mode, onModeChange, disabled }: {
             </DropdownMenuItem>
           );
         })}
+        {onInClass?<DropdownMenuItem onSelect={onInClass} className="mt-1 border-t border-border pt-2">In-Class · Set up class recording</DropdownMenuItem>:null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -76,10 +81,10 @@ export function ChatModeSelector({ mode, onModeChange, disabled }: {
 export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
-export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', contextConcept, onRemoveContext }: {
+export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext }: {
   value: string; onChange: (value: string) => void; attachments: ChatAttachment[];
   onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
-  mode?: ChatMode; onModeChange?: (mode: ChatMode) => void;
+  mode?: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
   noteMentions?: ChatNoteMention[]; onAddNoteMention?: (note: WorkspaceNoteSummary) => void; onRemoveNoteMention?: (noteId: string) => void; onOpenNoteMention?: (noteId: string) => void;
   variant?: 'main' | 'compact'; contextConcept?: { id: string; title: string } | null; onRemoveContext?: () => void;
 }) {
@@ -145,7 +150,7 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />
-    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div>
+    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div>
     {hasLink && <p className={styles.composerNote}>Public links are imported as readable source material when you send.</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
   </form>;

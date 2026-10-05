@@ -1,5 +1,6 @@
 "use client";
 
+import {routeFlashcardRequest} from '@/lib/flashcards-client';
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { ChatComposer, type ChatAttachment } from './chat-composer';
@@ -9,6 +10,9 @@ import { GenerationStream } from '@/lib/generation-stream';
 import { getJourney, type Journey } from '@/lib/learning-workflows';
 import { materialCommand, materialRequest, prepareAttachment } from '@/lib/chat-materials';
 import styles from './compact-tutor-chat.module.css';
+import {useBrowserAssistant} from '@/lib/browser-assistant';
+import {BrowserTaskCard} from './browser-task-card';
+import {ExecutionPanel} from './assistant/execution-panel';
 
 /** A shared context boundary for note discussions and future concept explanations. */
 export type TutorChatContext = {
@@ -19,6 +23,7 @@ type Block = { id: string; heading: string; body: string };
 
 export function CompactTutorChat({ context, onClose }: { context: TutorChatContext; onClose: () => void }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const browserAssistant = useBrowserAssistant(sessionId, context.courseId);
   const [revision, setRevision] = useState(1);
   const [turns, setTurns] = useState<Journey['turns']>([]);
   const [prompt, setPrompt] = useState('');
@@ -39,13 +44,15 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
     panel.current?.querySelector<HTMLTextAreaElement>('textarea')?.focus();
     let live = true;
     const sid = (() => { try { return localStorage.getItem(storageKey); } catch { return null; } })();
+    const restoreTimer = window.setTimeout(() => {
     if (sid) {
       setBusy(true);
       void getJourney(sid).then(journey => {
         if (live) { setSessionId(sid); setRevision(journey.revision); setTurns(journey.turns); }
       }).catch(() => { try { localStorage.removeItem(storageKey); } catch { /* Optional hint. */ } }).finally(() => { if (live) setBusy(false); });
     }
-    return () => { live = false; alive.current = false; requestController.current?.abort(); void stream.current?.stop().catch(() => undefined); };
+    }, 0);
+    return () => { window.clearTimeout(restoreTimer); live = false; alive.current = false; requestController.current?.abort(); void stream.current?.stop().catch(() => undefined); };
   }, [storageKey]);
   useEffect(() => { content.current?.scrollTo({ top: content.current.scrollHeight }); }, [turns, pending]);
 
@@ -61,6 +68,10 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
         if (!alive.current) return;
         setSessionId(sid);
         try { localStorage.setItem(storageKey, sid); } catch { /* Server conversation is still durable. */ }
+      }
+      if (!attachments.length && await routeFlashcardRequest(question,sid,context.courseId)) {setPrompt('');setPending(null);return;}
+      if (!attachments.length && await browserAssistant.tryStart(question, sid)) {
+        setPrompt(''); setPending(null); return;
       }
       for (const attachment of attachments) {
         const uploaded = await prepareAttachment(attachment, controller.signal, item => setAttachments(current => current.map(existing => existing.id === item.id ? item : existing)));
@@ -107,6 +118,9 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
       {!turns.length && !pending ? <p className={styles.empty}>Ask about an idea, an example, or something unclear in this note.</p> : null}
       {turns.map((turn, index) => <div className={styles.turn} key={`${turn.generationId || index}`}><p className={styles.question}>{turn.question}</p>{turn.lesson?.blocks.map(block => <div key={block.id}>{block.heading ? <h3>{block.heading}</h3> : null}<RichContent body={block.body} /></div>)}</div>)}
       {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? pending.blocks.map(block => <div key={block.id}>{block.heading ? <h3>{block.heading}</h3> : null}<RichContent body={block.body} /></div>) : <p role="status">Thinking…</p>}</div> : null}
+      <ExecutionPanel sessionId={sessionId} courseId={context.courseId} onSession={id => { setSessionId(id); try { localStorage.setItem(storageKey, id); } catch { /* Durable server state remains available. */ } }} />
+      {browserAssistant.tasks.map(task=><BrowserTaskCard key={task.id} task={task} onCommand={browserAssistant.command}/>)}
+      {browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </div>
     <div className={styles.composer}><ChatComposer variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>

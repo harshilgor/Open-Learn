@@ -1,0 +1,40 @@
+# Deploy manually after supplying the shared environment group. No secret values here.
+services:
+  - type: web
+    name: openlearn-api
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime api
+    preDeployCommand: python -m backend.app.hosted_runtime migrate
+    healthCheckPath: /ready
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production
+  - type: worker
+    name: openlearn-learning
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime learning
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production
+  - type: worker
+    name: openlearn-agent
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime agent
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production
+  - type: worker
+    name: openlearn-browser
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime browser
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production

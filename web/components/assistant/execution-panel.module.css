@@ -1,0 +1,13 @@
+.panel { padding: 16px; border: 1px solid var(--border, #d9ddd8); border-radius: 12px; margin-bottom: 16px; }
+.panel summary { cursor: pointer; font-weight: 600; }
+.panel p { margin: 8px 0; }
+.panel form { display: grid; gap: 10px; margin: 12px 0; }
+.panel label { display: grid; gap: 5px; font-size: 14px; }
+.panel input, .panel textarea, .panel select { padding: 8px 10px; border: 1px solid var(--border, #ccd2cb); border-radius: 6px; background: var(--background, #fff); color: inherit; width: 100%; }
+.panel textarea { font-family: monospace; resize: vertical; }
+.panel button { display: inline-block; padding: 6px 10px; border: 1px solid var(--border, #ccd2cb); border-radius: 6px; margin: 4px 6px 4px 0; text-align: left; cursor: pointer; }
+.panel button:disabled { opacity: .5; cursor: default; }
+.panel button:focus-visible, .panel input:focus-visible, .panel textarea:focus-visible, .panel select:focus-visible { outline: 2px solid #47765b; outline-offset: 2px; }
+.panel article { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border, #d9ddd8); }
+.panel ul { padding-left: 18px; }
+.panel [role='alert'] { color: #9f2929; }

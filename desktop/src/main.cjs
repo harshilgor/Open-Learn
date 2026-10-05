@@ -26,6 +26,7 @@ let shuttingDown = false;
 let restartAttempts = 0;
 let restartTimer;
 let reviewTimer;
+let academicTimer;
 const updateRepository = 'harshilgor/AI-Tutor-Harness-';
 let updateStatus = { state: 'unavailable', currentVersion: app.getVersion() };
 
@@ -220,8 +221,29 @@ async function notifyDueReviews() {
 
 function startReviewNotifications() {
   clearInterval(reviewTimer);
+  clearInterval(academicTimer);
   void notifyDueReviews();
+  void notifyAcademicReminders();
   reviewTimer = setInterval(() => void notifyDueReviews(), 5 * 60 * 1000);
+  academicTimer = setInterval(() => void notifyAcademicReminders(), 60 * 1000);
+}
+
+async function notifyAcademicReminders() {
+  if (!apiPort || !apiToken || !Notification.isSupported()) return;
+  try {
+    const response = await fetch(`http://127.0.0.1:${apiPort}/v1/notifications`, {headers:{'X-Forma-Desktop-Token':apiToken}});
+    if (!response.ok) return;
+    const {notifications} = await response.json();
+    const preferences = readPreferences();
+    const shown = preferences.notifiedAcademicKeys || {};
+    let changed = false;
+    for (const item of notifications) {
+      if (item.status !== 'available' || !item.deliverable || !item.channels?.includes('desktop') || shown[item.id]) continue;
+      new Notification({title:'OpenLearn academic reminder',body:item.title,tag:item.id}).show();
+      shown[item.id] = Date.now(); changed = true;
+    }
+    if (changed) writePreferences({...preferences,notifiedAcademicKeys:shown});
+  } catch (error) {console.error('Could not check academic reminders', error.name);}
 }
 
 function scheduleApiRestart() {
@@ -370,6 +392,6 @@ app.whenReady().then(() => {
     app.quit();
   });
 });
-app.on('window-all-closed', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); webProcess?.close(); if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); webProcess?.close(); });
+app.on('window-all-closed', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });

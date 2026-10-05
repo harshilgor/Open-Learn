@@ -6,6 +6,10 @@ export type LecturePreferences = { depth: 'concise' | 'standard' | 'detailed'; d
 export const defaultLecturePreferences: LecturePreferences = { depth: 'standard', definitions: true, examples: true, equations: true, derivations: true, studentQuestions: true, professorEmphasis: true, examHints: true, administrative: false, keepAudio: true };
 
 export type LocalLecture = {
+  ownerId?:string;
+  classSetup?:import('./in-class').ClassSetup;
+  classSessionId?:string;
+  buddyId?: string;
   id: string; title: string; courseId: string | null; noteFolder: string | null; noteId: string | null;
   startedAtMs: number; durationMs: number; phase: LocalLecturePhase; expectedChunkCount: number | null;
   nextSequenceNumber: number; markersMs: number[]; preferences: LecturePreferences; captureInterrupted: boolean;

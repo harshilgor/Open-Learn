@@ -42,4 +42,4 @@ Start with the product boundary because it determines which provider features, A
 
 ## Current decisions
 
-The user requested documentation first, followed by brainstorming each part before major implementation changes. The shared agent-under-learning architecture is the proposal under discussion. Specific vendors, API details, frontend layouts, prices, and delivery dates are unselected.
+The user requested documentation first, followed by brainstorming each part before major implementation changes. The shared agent-under-learning architecture is the proposal under discussion. The user prefers Daytona; its isolated hello-world smoke test succeeded, including deletion. The phone direction is an iMessage-inspired interface with both voice messages and lecture recording. The revised [agent brief](26_agent_execution_platform.md) adds persistent responsibilities, steering and scoped memory, and reuses the existing Exa research pipeline. Other provider selections, detailed API/frontend contracts, prices and delivery dates remain open.

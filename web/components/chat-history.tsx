@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Ellipsis, Plus } from 'lucide-react';
 import { learningApi, LearningApiError, type ChatSessionSummary, type CourseSummary } from '@/lib/api';
 import styles from './chat-history.module.css';
+import { useBuddies } from './buddies';
 
 type Group = 'Today' | 'Yesterday' | 'Previous 7 days' | 'Older';
 
@@ -38,6 +39,11 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
   courseFilter?: string | null;
 }) {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const buddies=useBuddies();
+  const refreshBuddies=buddies.refresh;
+  const [total,setTotal]=useState(0),[loadingMore,setLoadingMore]=useState(false);
+  const [search,setSearch]=useState('');
+  const [allChats,setAllChats]=useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [errorDetail, setErrorDetail] = useState('');
@@ -66,6 +72,8 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
     try {
       const result = await learningApi.listChatSessions({ limit: 100 });
       setSessions(result.sessions);
+      setTotal(result.total);
+      await refreshBuddies();
     } catch (cause) {
       const friendly = friendlyError(cause);
       setError(friendly.message);
@@ -73,7 +81,9 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [refreshBuddies]);
+
+  async function loadMore(){setLoadingMore(true);try{const result=await learningApi.listChatSessions({limit:100,offset:sessions.length});setSessions(current=>[...current,...result.sessions.filter(item=>!current.some(old=>old.id===item.id))]);setTotal(result.total);await refreshBuddies();}catch(cause){setError(friendlyError(cause).message);}finally{setLoadingMore(false);}}
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -102,13 +112,16 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
     const buckets = new Map<string, ChatSessionSummary[]>();
     const courseNames = new Map(courses.map(course => [course.id, course.name]));
     for (const item of sessions) {
+      if(!buddies.snapshot)continue;
+      if(!allChats && buddies.snapshot.chats[item.id]!==buddies.active?.id)continue;
+      if(search&&!`${item.title} ${courseNames.get(item.courseId||'')||''} ${buddies.snapshot?.profiles.find(p=>p.id===buddies.snapshot?.chats[item.id])?.name||''}`.toLowerCase().includes(search.toLowerCase()))continue;
       if (courseFilter && item.courseId !== courseFilter) continue;
       const group = item.courseId ? `course:${item.courseId}` : `date:${groupFor(item.updatedAt, now)}`;
       if (!buckets.has(group)) buckets.set(group, []);
       buckets.get(group)!.push(item);
     }
     return [...courses.map(course => `course:${course.id}`).filter(key => buckets.has(key)), ...[...buckets.keys()].filter(key => key.startsWith('course:') && !courseNames.has(key.slice(7))), ...GROUP_ORDER.map(group => `date:${group}`).filter(key => buckets.has(key))].map(key => ({ group: key.startsWith('course:') ? courseNames.get(key.slice(7)) || 'Other course' : key.slice(5), key, items: buckets.get(key)! }));
-  }, [sessions, courses, courseFilter]);
+  }, [sessions, courses, courseFilter,buddies.snapshot,buddies.active?.id,allChats,search]);
 
   async function commitRename(id: string) {
     const title = draft.trim();
@@ -162,6 +175,8 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
   return (
     <div className={styles.history}>
       <div className={styles.label}>Recents</div>
+      <input className="buddy-history-search" aria-label="Search chats" placeholder="Search chats, courses, Buddies…" value={search} onChange={e=>setSearch(e.target.value)}/>
+      <label className="px-3 text-xs"><input type="checkbox" checked={allChats} onChange={e=>setAllChats(e.target.checked)}/> All chats, including archived Buddies</label>
       {loading ? (
         <div aria-busy="true" aria-label="Loading chat history" className={styles.loading}>
           {[0, 1, 2].map(index => <span key={index} className={styles.skeleton} />)}
@@ -208,7 +223,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
                     className={'nav-item ' + styles.item + (item.id === activeSessionId ? ' active' : '')}
                     onClick={() => onOpen(item.id)}
                   >
-                    <span className={styles.itemBody}><span className={styles.title}>{item.title}</span><span className={styles.meta}>{relativeTime(item.updatedAt, new Date())}{item.courseId ? <span className={styles.courseTag}>{courses.find(course => course.id === item.courseId)?.name || 'Course'}</span> : null}</span></span>
+                    <span className={styles.itemBody}><span className={styles.title}>{item.title}</span><span className={styles.meta}>{relativeTime(item.updatedAt, new Date())}<span className={styles.courseTag}>{buddies.snapshot?.profiles.find(p=>p.id===buddies.snapshot?.chats[item.id])?.name||'Buddy'}</span>{item.courseId ? <span className={styles.courseTag}>{courses.find(course => course.id === item.courseId)?.name || 'Course'}</span> : null}</span></span>
                   </button>
                 )}
                 {renamingId !== item.id ? (
@@ -243,6 +258,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
           </ul>
         </div>
       )) : null}
+      {!loading&&!error&&sessions.length<total?<button className={styles.retry} disabled={loadingMore} onClick={()=>void loadMore()}>{loadingMore?'Loading…':'Load older chats'}</button>:null}
     </div>
   );
 }

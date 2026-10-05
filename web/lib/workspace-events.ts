@@ -104,3 +104,8 @@ export function openReview(detail: ReviewOpenDetail = {}): void {
 export function returnToReview(sessionId: string): void {
   window.dispatchEvent(new CustomEvent<string>(REVIEW_RETURN_EVENT, { detail: sessionId }));
 }
+
+export const WORKSPACE_FLASHCARDS_OPEN_EVENT = 'forma:workspace-flashcards-open';
+export function openWorkspaceFlashcards(input: import('./flashcards-client').FlashcardView): void {
+  window.dispatchEvent(new CustomEvent(WORKSPACE_FLASHCARDS_OPEN_EVENT, {detail:input}));
+}

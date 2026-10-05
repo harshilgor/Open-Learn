@@ -1,5 +1,6 @@
 import io
 import pytest
+from backend.app.identity_middleware import IdentityMiddleware
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -15,6 +16,7 @@ def material_api(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_TUTOR_DEV_IDENTITY", "true")
     store = Store(tmp_path / "test.db")
     app = FastAPI()
+    app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
     app.include_router(build_material_router(lambda: store))
     with TestClient(app) as client:
         yield client, store
@@ -132,6 +134,10 @@ def test_retrieval_excludes_answer_keys_and_respects_attachment_and_budget(mater
     store.save_scope(scope)
     graph = GraphGenerator().generate(scope)
     store.save_graph(graph)
+    from backend.app.identity import grant_resource
+    with store.transaction() as connection:
+        grant_resource(connection, "topic_scopes", scope.id, "local")
+        grant_resource(connection, "graph_versions", graph.id, "local")
     store.save_session(LearningSession(id="session_material", graph_id=graph.id, created_at=utc_now(), updated_at=utc_now()))
     items = []
     for role in ["reference", "answer_key", "sample_paper"]:
@@ -156,9 +162,12 @@ def test_retrieval_excludes_answer_keys_and_respects_attachment_and_budget(mater
             assert "learnerEvidence" in prompt
             return [GeneratedBlock("explanation", "Equality", "Both sides remain equal.")]
     provider_app = FastAPI()
+    provider_app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
     provider_app.include_router(build_material_router(lambda: store, lambda: FakeProvider()))
     with TestClient(provider_app) as provider_client:
-        generated = provider_client.post("/v1/sessions/session_material/material-answer", json={"message": "linear equations"}).json()
+        generated_response = provider_client.post("/v1/sessions/session_material/material-answer", json={"message": "linear equations"})
+        assert generated_response.status_code == 200, generated_response.text
+        generated = generated_response.json()
         assert generated["status"] == "source_informed_unverified"
         assert generated["blocks"][0]["heading"] == "Equality"
     assert client.post("/v1/sessions/session_material/material-answer", json={"message": "linear"}, headers={"X-Dev-Learner-Id": "other"}).status_code == 404

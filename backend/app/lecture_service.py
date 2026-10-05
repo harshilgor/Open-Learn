@@ -43,6 +43,16 @@ class LectureService:
         self.objects = LectureObjectStore()
         self.jobs = WorkflowStore(store)
 
+    def chunk_audio(self,owner,recording_id,sequence):
+        """Read through the object adapter so hosted audio works across workers."""
+        with self.store.transaction() as conn:
+            if not self._row(owner,recording_id,conn):raise LectureError('recording_not_found','Recording unavailable.',404)
+            row=conn.execute(text('SELECT storage_key,media_type,sha256 FROM lecture_audio_chunks WHERE recording_id=:id AND sequence_number=:sequence'),{'id':recording_id,'sequence':sequence}).mappings().first()
+            if not row:raise LectureError('chunk_not_found','Audio slice unavailable.',404)
+            content=self.objects.read(owner,recording_id,row['storage_key'])
+            if hashlib.sha256(content).hexdigest()!=row['sha256']:raise LectureError('audio_integrity_failed','Audio integrity check failed.',409)
+            return content,row['media_type']
+
     def _row(self, owner: str, recording_id: str, connection=None):
         def query(conn):
             return conn.execute(text("SELECT * FROM lecture_recordings WHERE id=:id AND learner_id=:owner"), {"id": recording_id, "owner": owner}).mappings().first()
@@ -65,6 +75,10 @@ class LectureService:
         if existing:
             if existing["title"] != command.title.strip() or existing["course_id"] != command.course_id or existing["started_at"] != command.started_at_ms / 1000:
                 raise LectureError("recording_conflict", "This recording ID already belongs to another capture.", 409)
+            if command.buddy_id:
+                with self.store.engine.connect() as conn:
+                    buddy=conn.execute(text('SELECT buddy_id FROM buddy_classes WHERE id=:id AND owner_id=:owner'),{'id':command.id,'owner':owner}).scalar_one_or_none()
+                if buddy and buddy!=command.buddy_id:raise LectureError('recording_conflict','This recording already has another Buddy.',409)
             return self.status(owner, command.id)
         if command.course_id:
             with self.store.engine.connect() as conn:
@@ -72,6 +86,10 @@ class LectureService:
             if not course:
                 raise LectureError("course_not_found", "The selected course is unavailable.", 404)
         frontmatter = {"lecture_recording_id": command.id, "lecture_pipeline_version": 1, "lecture_recording_status": "recording"}
+        from .buddy_service import BuddyService
+        with self.store.transaction() as conn:
+            resolved_buddy = BuddyService(self.store).resolve(conn,owner,command.course_id,command.buddy_id)
+        frontmatter['buddy_id'] = resolved_buddy
         if command.note_folder:
             frontmatter["note_folder"] = command.note_folder
         if command.course_id:
@@ -80,6 +98,8 @@ class LectureService:
         now = time.time()
         try:
             with self.store.transaction() as conn:
+                BuddyService(self.store).profile(conn,owner,resolved_buddy,True)
+                conn.execute(text('INSERT INTO buddy_classes(id,owner_id,buddy_id) VALUES(:id,:owner,:buddy) ON CONFLICT(id) DO NOTHING'), {'id':command.id,'owner':owner,'buddy':resolved_buddy})
                 conn.execute(text("""INSERT INTO lecture_recordings(id,learner_id,note_id,course_id,title,status,expected_chunk_count,duration_ms,markers_json,preferences_json,stage_json,pipeline_version,generation_version,started_at,created_at,updated_at)
                     VALUES (:id,:owner,:note,:course,:title,'recording',NULL,0,'[]',:prefs,:stages,1,0,:started,:now,:now)"""), {
                     "id": command.id, "owner": owner, "note": note.id, "course": command.course_id,
@@ -95,6 +115,9 @@ class LectureService:
             if existing["title"] == command.title.strip() and existing["course_id"] == command.course_id:
                 return self.status(owner, command.id)
             raise LectureError("recording_conflict", "This recording ID already belongs to another capture.", 409) from exc
+        except Exception:
+            WorkspaceNoteService(self.store).delete(owner,note.id,note.revision)
+            raise
         log.info("lecture.created recording_id=%s owner=%s", command.id, owner)
         return self.status(owner, command.id)
 
@@ -194,6 +217,8 @@ class LectureService:
                     "count": command.expected_chunk_count, "duration": command.duration_ms,
                     "interrupted": command.capture_interrupted, "markers": encoded(command.markers_ms), "now": time.time(), "id": recording_id, "owner": owner,
                 })
+                from .in_class_service import handoff
+                handoff(conn,owner,recording_id,'finalize')
         self.maybe_enqueue_finalize(owner, recording_id)
         return self.status(owner, recording_id)
 
@@ -220,11 +245,13 @@ class LectureService:
         row = self._row(owner, recording_id)
         with self.store.engine.connect() as conn:
             chunks = conn.execute(text("SELECT sequence_number,transcription_status,start_ms,end_ms FROM lecture_audio_chunks WHERE recording_id=:id ORDER BY sequence_number"), {"id": recording_id}).all()
+            buddy=conn.execute(text('SELECT buddy_id FROM buddy_classes WHERE id=:id AND owner_id=:owner'),{'id':recording_id,'owner':owner}).scalar_one_or_none()
         expected = row["expected_chunk_count"]
         present = {chunk[0] for chunk in chunks}
         missing = [seq for seq in range(expected) if seq not in present] if expected is not None else []
         return {
             "id": row["id"], "noteId": row["note_id"], "title": row["title"], "courseId": row["course_id"],
+            "buddyId":buddy,
             "recordingStatus": row["status"], "captureComplete": expected is not None,
             "captureInterrupted": bool(row["capture_interrupted"]),
             "durationMs": row["duration_ms"], "markersMs": json.loads(row["markers_json"]),
@@ -356,6 +383,16 @@ class LectureService:
         with self.store.transaction() as conn:
             rows = conn.execute(text("SELECT id FROM lecture_recordings WHERE learner_id=:owner AND note_id=:note"), {"owner": owner, "note": note_id}).all()
             for (rid,) in rows:
+                class_id=conn.execute(text('SELECT id FROM class_sessions WHERE recording_id=:id AND owner_id=:owner'),{'id':rid,'owner':owner}).scalar_one_or_none()
+                if class_id:
+                    conn.execute(text("UPDATE learning_jobs SET status='cancelled',lease=NULL,expires=NULL,cancel_requested=true,cancellation_requested=true WHERE owner_id=:owner AND target_id=:id AND kind='class_specialist'"),{'owner':owner,'id':class_id})
+                    conn.execute(text("DELETE FROM practice_records WHERE owner_id=:owner AND parent_id=:id AND kind='flashcard_deck'"),{'owner':owner,'id':class_id})
+                from .flashcards.repository import Repository as FlashcardRepository
+                fc=FlashcardRepository(self.store)
+                for deck in fc.rows(conn,owner,'decks'):
+                    if deck.get('classId')==class_id:
+                        deck['status']='deleted';fc.put(conn,owner,'decks',deck)
+                conn.execute(text('DELETE FROM buddy_classes WHERE id=:id AND owner_id=:owner'),{'id':rid,'owner':owner})
                 conn.execute(text("UPDATE learning_jobs SET status='cancelled',lease=NULL,expires=NULL WHERE owner_id=:owner AND target_id=:id AND kind LIKE 'lecture_%'"), {"owner": owner, "id": rid})
                 conn.execute(text("DELETE FROM execution_outbox WHERE owner_id=:owner AND target_id=:id"), {"owner": owner, "id": rid})
             chunks = conn.execute(text("SELECT c.storage_key,c.recording_id FROM lecture_audio_chunks c JOIN lecture_recordings r ON r.id=c.recording_id WHERE r.learner_id=:owner AND r.note_id=:note"), {"owner": owner, "note": note_id}).all()

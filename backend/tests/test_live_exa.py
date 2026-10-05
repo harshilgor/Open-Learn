@@ -36,14 +36,26 @@ def test_live_exa_search_contract():
         max_chars_per_source=400,
         max_total_evidence_chars=800,
     )
-    hits = provider.search(
-        "NIST definition of the metre",
-        intent=SearchIntent.definition,
-        decision=decision,
-    )
-    assert isinstance(hits, list)
-    if hits:
-        assert hits[0].url.startswith("http")
-        assert hits[0].excerpt
-        assert hits[0].provider_result_ref
-    provider.close()
+    try:
+        hits = provider.search(
+            "NIST definition of the metre",
+            intent=SearchIntent.definition,
+            decision=decision,
+        )
+        assert isinstance(hits, list)
+        assert hits, "Live acceptance requires at least one usable source."
+        assert len(hits) <= decision.max_results
+        for hit in hits:
+            assert hit.url.startswith("https://")
+            assert hit.excerpt.strip()
+            assert len(hit.excerpt) <= decision.max_chars_per_source
+            assert hit.provider_result_ref
+        opened = provider.open_result(
+            hits[0].provider_result_ref, focus=None, decision=decision,
+        )
+        assert opened.provider_result_ref == hits[0].provider_result_ref
+        assert opened.url.startswith("https://")
+        assert opened.excerpt.strip()
+        assert len(opened.excerpt) <= decision.max_chars_per_source
+    finally:
+        provider.close()

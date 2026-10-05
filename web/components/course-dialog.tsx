@@ -4,6 +4,8 @@ import { useState, type FormEvent } from 'react';
 import { FolderClosed, Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { useBuddies } from './buddies';
+import { buddyApi } from '@/lib/buddies';
 import { learningApi, LearningApiError, type CoursePublic } from '@/lib/api';
 
 interface CourseDialogProps {
@@ -16,6 +18,9 @@ export function CourseDialog({ open, onOpenChange, onCreated }: CourseDialogProp
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const buddies = useBuddies();
+  const [buddyId, setBuddyId] = useState('');
+  const [created, setCreated] = useState<CoursePublic | null>(null);
 
   async function createCourse(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -24,8 +29,13 @@ export function CourseDialog({ open, onOpenChange, onCreated }: CourseDialogProp
     setBusy(true);
     setError('');
     try {
-      const course = await learningApi.createCourse({ name: trimmed });
+      const course = created || await learningApi.createCourse({ name: trimmed });
+      setCreated(course);
+      if (buddyId) await buddyApi.assign(course.id, buddyId);
+      await buddies.refresh();
       setName('');
+      setCreated(null);
+      setBuddyId('');
       onOpenChange(false);
       onCreated(course);
     } catch (cause) {
@@ -49,6 +59,7 @@ export function CourseDialog({ open, onOpenChange, onCreated }: CourseDialogProp
           <label htmlFor="course-name" className="text-sm font-medium">Course name</label>
           <input id="course-name" autoFocus required maxLength={300} value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Physics" className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground" />
         </div>
+        <label className="block text-sm">Study partner<select className="mt-2 h-10 w-full rounded-lg border bg-background px-3" value={buddyId} onChange={event=>setBuddyId(event.target.value)} disabled={busy}><option value="">Use my default Buddy</option>{buddies.snapshot?.profiles.filter(buddy=>!buddy.archived).map(buddy=><option key={buddy.id} value={buddy.id}>{buddy.name}</option>)}</select></label>
         <DialogFooter>
           <Button type="button" variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button type="submit" disabled={!name.trim() || busy}>{busy ? <><Loader2 size={16} className="animate-spin" />Creating…</> : 'Create course'}</Button>
