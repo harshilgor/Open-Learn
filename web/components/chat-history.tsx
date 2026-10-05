@@ -51,10 +51,10 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
   function friendlyError(cause: unknown): { message: string; detail: string } {
     const detail = cause instanceof Error ? cause.message : 'Unknown error.';
     if (cause instanceof LearningApiError && (cause.status === 404 || cause.status === 405)) {
-      return { message: 'Chat history needs a newer tutor service.', detail: 'Restart the local API (it serves this list), then retry.' };
+      return { message: 'Chat history needs a newer tutor service.', detail: 'Please retry. Your saved conversations are retained.' };
     }
-    if (detail.startsWith('Cannot connect to the tutor service')) {
-      return { message: 'Could not reach the tutor service.', detail: 'Start the local app, then retry. Your chats stay saved on the server.' };
+    if ((cause instanceof LearningApiError && cause.status >= 500) || detail.startsWith('Cannot connect to the tutor service')) {
+      return { message: 'Could not reach the tutor service.', detail: 'Please retry. Your chats stay saved on the server.' };
     }
     return { message: 'Could not load conversations.', detail: 'Please retry. Your chats stay saved on the server.' };
   }

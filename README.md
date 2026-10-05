@@ -21,7 +21,7 @@ The script installs what Open Learn needs and starts it.
 
 API Key 
 
-- To start using OpenLearn, connect a model provider; open **Settings → API keys** after the app starts.
+- AI access is provided by Open Learn. Customers use **Settings → AI service** to check availability; they do not supply provider keys. See `docs/PRODUCT_SERVICE_REPAIR.md` for the shared backend and client deployment configuration.
 
 ## What you can do
 

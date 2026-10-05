@@ -12,12 +12,15 @@ class ReviewService:
         result={k:v for k,v in session.items() if k not in {'selection','response'}}
         result['total']=len(session['selection']);result['current']=None
         if session['status']=='active' and session['cursor']<len(session['selection']):
-            pick=session['selection'][session['cursor']];version=self.repo.get(conn,owner,'versions',pick['versionId'])
+            pick=session['selection'][session['cursor']]
+            if self.repo.get(conn,owner,'decks',pick['deckId'])['status']!='published':
+                result['status']='cancelled';return result
+            version=self.repo.get(conn,owner,'versions',pick['versionId'])
             prompt=version['prompt']
             if version['type']=='cloze':
                 import re
                 prompt=re.sub(r'\{\{c1::[^{}]+\}\}','[…] ',prompt)
-            result['current']={'cardId':pick['cardId'],'deckId':pick['deckId'],'versionId':pick['versionId'],'attemptId':pick['attemptId'],'type':version['type'],'prompt':prompt,'revealed':session['revealed']}
+            result['current']={'cardId':pick['cardId'],'deckId':pick['deckId'],'versionId':pick['versionId'],'attemptId':pick['attemptId'],'type':version['type'],'prompt':prompt,'revealed':session['revealed'],'image':version.get('image')}
             if session['revealed']:result['current'].update(answer=version['answer'],explanation=version['explanation'],sourceIds=version['sourceIds'],response=session.get('response',''))
         return result
     def get(self,owner,identifier):
@@ -35,7 +38,7 @@ class ReviewService:
                 schedules={s['id']:s for s in self.repo.rows(conn,owner,'schedule',deck['id'])}
                 for card in self.repo.rows(conn,owner,'cards',deck['id']):
                     state=schedules.get(card['id'])
-                    if card['state']!='active' or card.get('stale') or not card.get('publishedVersionId') or not state or not body.practice and state['dueAt']>time.time():continue
+                    if card['state']!='active' or (card.get('stale') or card.get('publishedStale')) or not card.get('publishedVersionId') or not state or not body.practice and state['dueAt']>time.time():continue
                     picks.append({'cardId':card['id'],'deckId':deck['id'],'versionId':card['publishedVersionId'],'scheduleRevision':state['revision'],'attemptId':uid('fca'),'dueAt':state['dueAt']})
             if not picks:fail('nothing_due','No published cards available for this review.',409)
             picks.sort(key=lambda p:(p['dueAt'],p['cardId']))
@@ -58,7 +61,7 @@ class ReviewService:
             else:
                 if body.action=='rate' and (not session['revealed'] or not body.rating):fail('answer_not_revealed','Reveal the answer before rating recall.',409)
                 state=self.repo.get(conn,owner,'schedule',pick['cardId'],True)
-                if body.action=='rate' and (state['revision']!=pick['scheduleRevision'] or card.get('stale')):fail('schedule_conflict','This card was reviewed or corrected elsewhere. Skip it or start a new session.',409)
+                if body.action=='rate' and (state['revision']!=pick['scheduleRevision'] or card.get('stale') or card.get('publishedStale')):fail('schedule_conflict','This card was reviewed or corrected elsewhere. Skip it or start a new session.',409)
                 if body.action=='rate' and not session['practice']:
                     outcome,confidence={'again':('incorrect','somewhat'),'hard':('partial','somewhat'),'good':('correct','confident'),'easy':('correct','very')}[body.rating]
                     decision=schedule_after_outcome(outcome=outcome,confidence=confidence,condition='independent',memory=MemorySnapshot(review_count=state['reviewCount'],last_interval_days=state['intervalDays'],consecutive_successes=state['successes'],consecutive_failures=state['failures'],difficulty_estimate=state['difficulty']))
@@ -76,7 +79,7 @@ class ReviewService:
             for deck in self.repo.rows(conn,owner,'decks'):
                 if deck['status']!='published':continue
                 schedules={s['id']:s for s in self.repo.rows(conn,owner,'schedule',deck['id'])}
-                count=sum(c['state']=='active' and not c.get('stale') and bool(c.get('publishedVersionId')) and schedules.get(c['id'],{}).get('dueAt',float('inf'))<=time.time() for c in self.repo.rows(conn,owner,'cards',deck['id']))
+                count=sum(c['state']=='active' and not c.get('stale') and not c.get('publishedStale') and bool(c.get('publishedVersionId')) and schedules.get(c['id'],{}).get('dueAt',float('inf'))<=time.time() for c in self.repo.rows(conn,owner,'cards',deck['id']))
                 due+=count;key=deck.get('courseId') or 'uncategorized';courses[key]=courses.get(key,0)+count
             sessions=self.repo.rows(conn,owner,'sessions')
             return {'dueCount':due,'courses':courses,'sessions':[{'id':s['id'],'status':s['status'],'cursor':s['cursor'],'total':len(s['selection']),'createdAt':s['createdAt']} for s in sessions[-30:]]}

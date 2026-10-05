@@ -101,6 +101,14 @@ def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None
                               provider_getter: Callable[[], object] | None = None) -> APIRouter:
     router = APIRouter(prefix="/v1")
 
+    def managed() -> bool:
+        from .identity import hosted
+        return hosted() or os.getenv('OPENLEARN_ALLOW_LOCAL_PROVIDER_KEYS', 'false').lower() != 'true'
+
+    def require_local_management() -> None:
+        if managed():
+            raise HTTPException(status_code=403, detail={'code': 'managed_provider', 'message': 'AI access is provided by Open Learn. Provider credentials are managed by the service.'})
+
     def restart_required(values: dict[str, str]) -> bool:
         if provider_getter is None:
             return False
@@ -118,6 +126,9 @@ def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None
     @router.get("/provider-settings")
     def status(owner: str = Depends(material_owner)) -> dict:
         values = _read_values(env_path())
+        if managed():
+            active = provider_getter() if provider_getter is not None else None
+            return {'managed': True, 'available': active is not None, 'provider': 'Open Learn', 'restartRequired': False, 'openRouterConfigured': False, 'openAiConfigured': False}
         return {
             "provider": effective_provider(values),
             "openRouterConfigured": key_present("OPENROUTER_API_KEY", values),
@@ -127,6 +138,7 @@ def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None
 
     @router.post("/provider-settings/test")
     def test_connection(owner: str = Depends(material_owner)) -> dict:
+        require_local_management()
         provider = provider_getter() if provider_getter is not None else None
         if provider is None:
             raise HTTPException(status_code=503, detail={"code": "provider_unavailable", "message": "Connect a model provider before testing the connection."})
@@ -140,6 +152,7 @@ def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None
 
     @router.put("/provider-settings")
     def save_key(request: ProviderKeyInput, owner: str = Depends(material_owner)) -> dict:
+        require_local_management()
         _write_values({_PROVIDER_ENV_VAR[request.provider]: request.api_key, "AI_TUTOR_PROVIDER": request.provider})
         values = _read_values(env_path())
         apply(values)
@@ -152,6 +165,7 @@ def build_provider_key_router(on_change: Callable[[dict[str, str]], None] | None
 
     @router.delete("/provider-settings/{provider}")
     def delete_key(provider: Literal["openrouter", "openai"], owner: str = Depends(material_owner)) -> dict:
+        require_local_management()
         values = _read_values(env_path())
         updates: dict[str, str | None] = {_PROVIDER_ENV_VAR[provider]: None}
         if values.get("AI_TUTOR_PROVIDER", "").lower() == provider:

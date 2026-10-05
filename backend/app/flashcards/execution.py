@@ -17,7 +17,13 @@ def execute_task(worker,job):
         with repo.transaction() as conn:
             current=repo.run(conn,owner,run['id']);repo.jobs.validate_lease(conn,job)
             if current['revision']!=expected or current['desired_input_revision']!=job['input_revision']:fail('revision_conflict','Task changed during generation.',409)
-    result=generate(worker.provider_getter(),request,manifest,guard)
+    def phase(value):
+        nonlocal expected
+        with repo.transaction() as conn:
+            current=repo.run(conn,owner,run['id']);repo.jobs.validate_lease(conn,job)
+            if current['revision']!=expected:fail('revision_conflict','Task changed.',409)
+            current=repo.update(conn,current,phase=value);expected=current['revision'];repo.event(conn,current,'task.phase_changed',phase=value)
+    result=generate(worker.provider_getter(),request,manifest,guard,phase)
     guard()
     with repo.transaction() as conn:
         current=repo.run(conn,owner,run['id']);repo.jobs.validate_lease(conn,job)

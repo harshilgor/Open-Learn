@@ -117,9 +117,10 @@ export function LearnChat({
   const buddies=useBuddies();
   const [conversation,setConversation]=useState(()=>initialSessionId?buddies.snapshot?.modes[initialSessionId]!=='ask':true);
   const restoredPresentation = useRef(initialSessionId ? buddies.snapshot?.modes[initialSessionId] : undefined);
+  const pendingDraftKey=`openlearn-pending-chat-draft:${initialSessionId||'new'}`;
   const draftKey=buddies.active?`openlearn-chat-draft:${buddies.active.id}:${initialSessionId||'new'}`:null;
-  const [prompt, setPrompt] = useState(()=>{try{return draftKey?localStorage.getItem(draftKey)||'':'';}catch{return '';}});
-  useEffect(()=>{if(!draftKey)return;try{if(prompt)localStorage.setItem(draftKey,prompt);else localStorage.removeItem(draftKey);}catch{/* Optional drafts */}},[prompt,draftKey]);
+  const [prompt, setPrompt] = useState(()=>{try{return (draftKey?localStorage.getItem(draftKey):null)||sessionStorage.getItem(pendingDraftKey)||'';}catch{return '';}});
+  useEffect(()=>{try{if(draftKey){if(prompt)localStorage.setItem(draftKey,prompt);else localStorage.removeItem(draftKey);sessionStorage.removeItem(pendingDraftKey);}else{if(prompt)sessionStorage.setItem(pendingDraftKey,prompt);else sessionStorage.removeItem(pendingDraftKey);}}catch{/* Optional drafts */}},[prompt,draftKey,pendingDraftKey]);
   const [dismissedConceptId, setDismissedConceptId] = useState<string|null>(null);
   const [selectedConcept, setSelectedConcept] = useState<{ id: string; title: string } | null>(null);
   const [resolvedExercises, setResolvedExercises] = useState<Set<string>>(new Set());
@@ -615,6 +616,7 @@ export function LearnChat({
 
   async function streamTurn(input: { action: 'message' | 'start' | 'next' | 'repair'; message: string; question: string }, sid = sessionId, bypassId?: string | null, modeOverride?: ChatMode) {
     if (!sid || busy) return;
+    const submittedDraft = prompt;
     const requestMode = modeOverride || chatMode;
     const stream = new GenerationStream();
     activeGeneration.current = stream;
@@ -754,7 +756,7 @@ export function LearnChat({
       if (replayExpired) applyJourney((await restoreSessionAuthority(sid)).journey);
       else applyJourney(await getJourney(sid));
       rememberGeneration(null);
-      setPrompt(''); setNoteMentions([]);
+      setPrompt(current => current === submittedDraft ? '' : current); setNoteMentions([]);
       if (requestMode === 'learn') void evolveLessonFromNewest(sid);
     } catch (cause) {
       setActivity(null);
@@ -808,13 +810,17 @@ export function LearnChat({
   }
 
   async function submit(quickAction?: string) {
+    const submittedDraft = prompt;
+    const clearSubmittedDraft = () => setPrompt(current => current === submittedDraft ? '' : current);
     const text = quickAction?.trim() || prompt.trim() || (attachments.length ? `Help me understand ${attachments.map(item => item.name).join(', ')}` : '');
     if (!text || busy) return;
-    if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){setPrompt('');onInClass();return;}
+    if (!buddies.active) { setError('Reconnect to Open Learn before sending. Your draft is still here.'); void buddies.refresh(); return; }
+    if (buddies.active.archived && !sessionId) { setError('Choose an active Buddy to start a new conversation.'); return; }
+    if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}
     if (quizClarification) {
       const pending = quizClarification;
       setQuizClarification(null);
-      setPrompt('');
+      clearSubmittedDraft();
       try {
         const sid = pending.sessionId || (await learningApi.createSession({ topic: text.slice(0, 200), goal: text.slice(0, 1000), gear, courseId: courseId ?? undefined, buddyId:buddies.active?.id })).id;
         await buddyApi.mode(sid, 'quiz');
@@ -844,9 +850,9 @@ export function LearnChat({
       if (!sessionId) setSessionId(currentSession.id);
       rememberSessionHint(currentSession.id);
       navigateToSession(currentSession.id, !sessionId);
-      if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {setPrompt('');setProgress('');return;}
+      if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {clearSubmittedDraft();setProgress('');return;}
       if (chatMode !== 'quiz' && !attachments.length && await browserAssistant.tryStart(text, currentSession.id)) {
-        setPrompt(''); setProgress('');
+        clearSubmittedDraft(); setProgress('');
         return;
       }
       if (!sessionId) window.dispatchEvent(new CustomEvent('forma:chat-history-changed'));
@@ -881,7 +887,7 @@ export function LearnChat({
       }
       if (chatMode === 'quiz') {
         const origin = quizOrigin.current;
-        setPrompt(''); setNoteMentions([]);
+        clearSubmittedDraft(); setNoteMentions([]);
         await requestQuiz(currentSession.id, undefined, text, undefined, origin);
         return;
       }
@@ -909,7 +915,7 @@ export function LearnChat({
         setProgress('Planning your learning path…');
         await workflow(`/sessions/${currentSession.id}/journey`, { mode: chatMode, gear, message: text, action: 'message', expectedRevision: journey?.revision || 1, classificationBypassId: classifiedSuggestion?.id || bypassId || undefined, taskId: studyTask?.taskId, canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext }, 'chat');
         const next = await getJourney(currentSession.id);
-        applyJourney(next); setPrompt(''); setNoteMentions([]);
+        applyJourney(next); clearSubmittedDraft(); setNoteMentions([]);
         setBusy(false);
         if (next.status === 'proposed' && next.steps.length) {
           await streamTurn({ action: 'start', message: '', question: 'Start learning' }, currentSession.id);
@@ -1041,6 +1047,6 @@ export function LearnChat({
         onDismiss={handleDismissTransition}
       /> : null}
       {buddies.active?.archived&&!sessionId?<p role="status">This Buddy is archived. Choose an active Buddy to start a new conversation.</p>:null}
-      <ChatComposer onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy||!buddies.active||Boolean(buddies.active.archived&&!sessionId)} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
+      <ChatComposer onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
   </div>;
 }

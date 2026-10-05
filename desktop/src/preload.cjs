@@ -3,8 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('formaDesktop', Object.freeze({
   platform: process.platform,
   version: process.env.npm_package_version || '0.1.0',
-  apiBaseUrl: process.env.FORMA_API_PORT ? `http://127.0.0.1:${process.env.FORMA_API_PORT}` : undefined,
-  apiToken: process.env.FORMA_API_TOKEN || undefined,
+  serviceMode: process.env.FORMA_HOSTED_API_URL ? 'cloud' : 'local',
+  apiBaseUrl: process.env.FORMA_HOSTED_API_URL || (process.env.FORMA_API_PORT ? `http://127.0.0.1:${process.env.FORMA_API_PORT}` : undefined),
+  apiToken: process.env.FORMA_HOSTED_API_URL ? undefined : process.env.FORMA_API_TOKEN || undefined,
   credentials: Object.freeze({
     has: key => ipcRenderer.invoke('credentials:has', key),
     get: key => ipcRenderer.invoke('credentials:get', key),

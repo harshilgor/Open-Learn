@@ -1,0 +1,14 @@
+# Deploy only the web client; exclude backend secrets and local device data.
+/*
+!/web
+/web/node_modules
+/web/.next
+/web/.vinext
+/web/dist
+/web/.wrangler
+/web/.git-local-backup
+/web/.vercel
+/web/.env
+/web/.env.*
+!/web/.env.example
+/web/*.tsbuildinfo

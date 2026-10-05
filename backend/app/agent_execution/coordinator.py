@@ -124,6 +124,8 @@ class Coordinator:
                 except ValueError as exc: fail('invalid_input',str(exc),422)
             else:
                 constraints={**run['constraints'],'steering':message}
+            if run['kind']=='flashcards':
+                constraints['flashcardRequest']={**constraints['flashcardRequest'],'objective':message[:1000]}
             if command.action=='answer_input':
                 request=conn.execute(text('SELECT * FROM agent_input_requests WHERE id=:id AND owner_id=:owner AND run_id=:run'),{'id':command.request_id,'owner':owner,'run':task_id}).mappings().first()
                 if not request: fail('not_found','Question unavailable for this task.',404)

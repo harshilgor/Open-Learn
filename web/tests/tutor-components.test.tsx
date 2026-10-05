@@ -69,6 +69,19 @@ describe('composer and message actions', () => {
     expect(button('Stop generating')).not.toBeNull();
   });
 
+  it('keeps a draft editable during an outage and blocks submit until reconnect', () => {
+    const submit=vi.fn(),retry=vi.fn();
+    render(<ChatComposer value="My retained draft" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={submit} busy={false} followup={false} gear="Quick" onGearChange={vi.fn()} unavailable="Connection interrupted" onRetry={retry}/>);
+    const area=container.querySelector('textarea')!;
+    expect(area.disabled).toBe(false);
+    expect(button('Send message').hasAttribute('disabled')).toBe(true);
+    act(()=>area.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})));
+    expect(submit).not.toHaveBeenCalled();
+    click(button('Retry connection'));expect(retry).toHaveBeenCalledOnce();
+    render(composer('My retained draft',true));
+    expect(container.querySelector('textarea')!.disabled).toBe(false);
+  });
+
   it('offers message actions and a data-driven verification badge', async () => {
     const lost = vi.fn();
     render(<><MessageActionBar messageId="lesson-1" markdown="## Chain rule" title="Chain rule" isLatest onLost={lost}/><VerificationBadge verification={{ status: 'verified', agents: 2, sources: [{ title: 'Paper', url: 'https://example.com' }] }}/></>);

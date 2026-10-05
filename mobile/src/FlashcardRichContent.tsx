@@ -1,0 +1,9 @@
+import {useState} from 'react';
+import {WebView} from 'react-native-webview';
+import {mathCss,mathScript} from './flashcard-math-assets';
+export function FlashcardRichContent({body}:{body:string}){
+ const [height,setHeight]=useState(80);
+ const value=JSON.stringify(body).replace(/</g,'\\u003c');
+ const html=`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:"><style>${mathCss}body{background:#181b23;color:#eee;font:17px system-ui;white-space:pre-wrap;overflow-wrap:anywhere;margin:6px}.katex-display{overflow-x:auto;overflow-y:hidden}</style></head><body><div id="content"></div><script>${mathScript}</script><script>const value=${value};const root=document.getElementById('content');const parts=value.split(/(\\$\\$[\\s\\S]*?\\$\\$|\\$[^\\n$]+\\$|\\\\\\([\\s\\S]*?\\\\\\)|\\\\\\[[\\s\\S]*?\\\\\\])/g);for(const part of parts){if(part.startsWith('$')||part.startsWith('\\\\(')||part.startsWith('\\\\[')){const node=document.createElement('span');root.appendChild(node);const display=part.startsWith('$$')||part.startsWith('\\\\[');const count=part.startsWith('$$')||part.startsWith('\\\\')?2:1;try{katex.render(part.slice(count,-count),node,{displayMode:display,throwOnError:false,trust:false});}catch{node.textContent=part;}}else root.appendChild(document.createTextNode(part));}window.ReactNativeWebView.postMessage(String(document.body.scrollHeight));</script></body></html>`;
+ return <WebView accessibilityLabel={body} originWhitelist={['about:blank']} source={{html}} style={{height:Math.min(1200,Math.max(60,height)),backgroundColor:'#181b23'}} javaScriptEnabled onMessage={event=>{const value=Number(event.nativeEvent.data);if(Number.isFinite(value))setHeight(value+12)}} onShouldStartLoadWithRequest={request=>request.url==='about:blank'} scrollEnabled={height>1200}/>;
+}

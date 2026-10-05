@@ -62,7 +62,7 @@ class DeckService:
             summaries=[]
             for d in values[offset:offset+limit]:
                 cards=self.repo.rows(conn,owner,'cards',d['id']);schedules={s['id']:s for s in self.repo.rows(conn,owner,'schedule',d['id'])}
-                d['cardCount']=sum(c['state']!='deleted' for c in cards);d['dueCount']=sum(c['state']=='active' and not c.get('stale') and bool(c.get('publishedVersionId')) and schedules.get(c['id'],{}).get('dueAt',float('inf'))<=time.time() for c in cards)
+                d['cardCount']=sum(c['state']!='deleted' for c in cards);d['dueCount']=sum(c['state']=='active' and not c.get('stale') and not c.get('publishedStale') and bool(c.get('publishedVersionId')) and schedules.get(c['id'],{}).get('dueAt',float('inf'))<=time.time() for c in cards)
                 summaries.append(d)
             return {'decks':summaries,'nextOffset':offset+limit if offset+limit<len(values) else None}
     def command(self,owner,identifier,body):
@@ -78,9 +78,10 @@ class DeckService:
                 deck['title']=body.title
             elif action in {'archive','restore','delete'}:
                 deck['status']={'archive':'archived','restore':'published' if any(c.get('publishedVersionId') for c in self.repo.rows(conn,owner,'cards',identifier)) else 'draft','delete':'deleted'}[action]
-                if action=='delete':
-                    for session in self.repo.rows(conn,owner,'sessions'):
-                        if any(p['deckId']==identifier for p in session['selection']) and session['status']=='active':session['status']='cancelled';self.repo.put(conn,owner,'sessions',session)
+            elif action=='create':
+                if not body.content:fail('invalid_input','Provide card content.',422)
+                self.validate_content(conn,owner,deck,body.content)
+                self.add_card(conn,owner,deck,body.content.model_dump(by_alias=True),'student')
             elif action in {'accept_candidate','dismiss_candidate'}:
                 candidate=self.repo.get(conn,owner,'candidates',body.candidate_id)
                 if candidate['deckId']!=identifier or candidate['status']!='pending':fail('invalid_state','Candidate unavailable.',409)
@@ -99,14 +100,15 @@ class DeckService:
                     if card['deckId']!=identifier or card['state']=='deleted':fail('not_found','Card unavailable in this deck.',404)
                     if action=='edit':
                         if not body.content:fail('invalid_input','Provide card content.',422)
+                        self.validate_content(conn,owner,deck,body.content)
                         content=body.content.model_dump(by_alias=True)
                         allowed={s['id'] for s in deck['coverage']['sources']}
                         if not set(content['sourceIds'])<=allowed:fail('invalid_input','Choose cited sources belonging to this deck.',422)
-                        version={'id':uid('fcv'),'cardId':cid,**content,'contentHash':digest(content),'creatorKind':'student','createdAt':time.time()}
+                        version={'id':uid('fcv'),'cardId':cid,**content,'contentHash':digest(content),'creatorKind':'student','createdAt':time.time(),'sourceRefs':[s for s in deck['coverage']['sources'] if s['id'] in content['sourceIds']]}
                         self.repo.put(conn,owner,'versions',version,parent=identifier,new=True);card['versionId']=version['id'];card['stale']=False
                     elif action=='publish':
                         if deck['status']=='archived' or card.get('stale'):fail('invalid_state','Restore or revalidate cards before publication.',409)
-                        card['publishedVersionId']=card['versionId'];deck['status']='published'
+                        card['publishedVersionId']=card['versionId'];card['publishedStale']=False;deck['status']='published'
                     elif action in {'suspend','activate','remove'}:card['state']={'suspend':'suspended','activate':'active','remove':'deleted'}[action]
                     schedules=self.repo.rows(conn,owner,'schedule',identifier);schedule=next((s for s in schedules if s['id']==cid),None)
                     if action=='publish' and schedule is None or action=='reset_schedule' or body.reset_schedule:
@@ -117,3 +119,11 @@ class DeckService:
             deck['updatedAt']=time.time();self.repo.put(conn,owner,'decks',deck)
             result={'deckId':identifier,'revision':deck['revision']+1,'status':deck['status']}
             return self.repo.receipt(conn,owner,identifier,body,result)
+
+    def validate_content(self,conn,owner,deck,content):
+        if not set(content.source_ids)<={s['id'] for s in deck['coverage']['sources']}:fail('invalid_input','Choose deck source citations.',422)
+        if content.image:
+            from ..material_service import MaterialService
+            version=MaterialService(self.store).version(owner,content.image.version_id,conn)
+            if version['media_type'] not in {'image/png','image/jpeg','image/webp'} or version['byte_count']>20000000:fail('unsupported_image','Choose a PNG, JPEG or WebP image under 20 MB.',422)
+            if deck.get('courseId') and version.get('course_id') not in {None,deck['courseId']}:fail('source_scope_mismatch','Choose an image available to this course.',422)

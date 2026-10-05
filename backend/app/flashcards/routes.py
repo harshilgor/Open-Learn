@@ -12,6 +12,28 @@ def build_flashcard_router(get_store):
     @router.post('/flashcard-generations',status_code=202)
     def create(body:FlashcardRequest,owner=Depends(material_owner)):
         return Coordinator(get_store()).admit(owner,Message(clientMessageId=body.client_command_id,sessionId=body.session_id,text=body.objective,capability='flashcards',flashcardSpec=body),body.client_command_id)
+    @router.post('/flashcard-generations/{task_id}/retry',status_code=202)
+    def retry(task_id:str,body:RefreshCommand,owner=Depends(material_owner)):
+        from ..agent_execution.repository import Repository as AgentRepository
+        from ..identity import fail
+        repo=AgentRepository(get_store());receipts=Repository(get_store())
+        with receipts.transaction(owner) as conn:
+            cached=receipts.replay(conn,owner,task_id,body)
+            if cached is not None:return cached
+        with repo.transaction() as conn:
+            run=repo.run(conn,owner,task_id)
+            if run['kind']!='flashcards' or run['status'] not in {'failed','cancelled','completed_partial'}:fail('invalid_state','Retry a failed, stopped or partial flashcard task.',409)
+            if run['revision']!=body.expected_revision:fail('revision_conflict','Task changed.',409)
+            spec={**run['constraints']['flashcardRequest'],'clientCommandId':body.command_id}
+            if run.get('deckId'):
+                deck=Repository(get_store()).get(conn,owner,'decks',run['deckId'])
+                spec.update(targetDeckId=deck['id'],expectedDeckRevision=deck['revision'])
+        result=create(FlashcardRequest.model_validate(spec),owner)
+        with receipts.transaction(owner) as conn:
+            cached=receipts.replay(conn,owner,task_id,body)
+            if cached is not None:return cached
+            receipts.receipt(conn,owner,task_id,body,result)
+        return result
     @router.get('/flashcard-decks')
     def listing(course_id:str|None=None,status:str|None=None,offset:int=Query(0,ge=0),limit:int=Query(30,ge=1,le=100),owner=Depends(material_owner)):
         return DeckService(get_store()).listing(owner,course_id,status,offset,limit)
@@ -66,6 +88,21 @@ def build_flashcard_router(get_store):
     def session(identifier:str,owner=Depends(material_owner)):return ReviewService(get_store()).get(owner,identifier)
     @router.post('/flashcard-review-sessions/{identifier}/commands')
     def rating(identifier:str,body:ReviewCommand,owner=Depends(material_owner)):return ReviewService(get_store()).command(owner,identifier,body)
+    @router.get('/flashcard-images/{version_id}')
+    def image(version_id:str,owner=Depends(material_owner)):
+        from fastapi.responses import Response
+        from ..material_service import MaterialService
+        from ..identity import fail
+        svc=MaterialService(get_store());version=svc.version(owner,version_id)
+        if version['media_type'] not in {'image/png','image/jpeg','image/webp'} or version['byte_count']>20000000:fail('unsupported_image','Image unavailable.',422)
+        return Response(svc.objects.read(version['object_key']),media_type=version['media_type'],headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+    @router.get('/flashcard-notifications')
+    def notifications(owner=Depends(material_owner)):
+        import json
+        from sqlalchemy import text
+        with Repository(get_store()).transaction(owner) as conn:
+            rows=conn.execute(text("SELECT id,status,payload FROM notification_deliveries WHERE owner_id=:owner AND channel='inbox' AND id LIKE 'fc_notice_%' ORDER BY created_at DESC LIMIT 30"),{'owner':owner}).mappings()
+            return {'notifications':[{'id':r['id'],'status':r['status'],**json.loads(r['payload'])} for r in rows]}
     @router.get('/flashcard-preferences')
     def preferences(owner=Depends(material_owner)):
         repo=Repository(get_store())

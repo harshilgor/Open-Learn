@@ -14,6 +14,15 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
 const isDev = process.argv.includes('--dev') || !app.isPackaged;
+const cloudMode = process.env.FORMA_SERVICE_MODE === 'cloud' || (!isDev && process.env.FORMA_SERVICE_MODE !== 'local');
+const cloudWebUrl = process.env.FORMA_HOSTED_WEB_URL || 'https://open-learn-eta.vercel.app';
+if (cloudMode) {
+  const service = new URL(cloudWebUrl);
+  if (service.protocol !== 'https:' || service.username || service.password) throw new Error('The hosted app must use HTTPS.');
+  process.env.FORMA_HOSTED_API_URL = service.origin;
+  delete process.env.FORMA_API_TOKEN;
+  delete process.env.FORMA_API_PORT;
+}
 const projectRoot = path.resolve(__dirname, '..', '..');
 const configuredApiPort = Number(process.env.FORMA_API_PORT);
 let apiPort = Number.isInteger(configuredApiPort) && configuredApiPort > 0 && configuredApiPort < 65536 ? configuredApiPort : undefined;
@@ -146,13 +155,19 @@ function readCredential(key) {
   try { return safeStorage.decryptString(Buffer.from(value, 'base64')); } catch { return undefined; }
 }
 function configureCredentialBridge() {
-  ipcMain.handle('credentials:has', (_event, key) => Boolean(readCredential(key)));
+  const trusted = event => {
+    if (!cloudMode) return true;
+    try { return new URL(event.senderFrame?.url || '').origin === new URL(cloudWebUrl).origin; } catch { return false; }
+  };
+  ipcMain.handle('credentials:has', (_event, key) => trusted(_event) && (!cloudMode || key === 'openlearn-device-grant') ? Boolean(readCredential(key)) : false);
   ipcMain.handle('credentials:get', (_event, key) => {
+    if (!trusted(_event) || (cloudMode && key !== 'openlearn-device-grant')) return null;
     const value = readCredentials()[key];
     if (!value || !safeStorage.isEncryptionAvailable()) return null;
     try { return safeStorage.decryptString(Buffer.from(value, 'base64')); } catch { return null; }
   });
   ipcMain.handle('credentials:set', (_event, key, value) => {
+    if (!trusted(_event) || (cloudMode && key !== 'openlearn-device-grant')) throw new Error('Provider access is managed by Open Learn.');
     if (typeof key !== 'string' || !/^[a-z][a-z0-9_.-]{0,80}$/i.test(key) || typeof value !== 'string' || value.length > 20000) throw new Error('Invalid credential.');
     if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable on this device.');
     const values = readCredentials();
@@ -165,6 +180,7 @@ function configureCredentialBridge() {
     return true;
   });
   ipcMain.handle('credentials:delete', (_event, key) => {
+    if (!trusted(_event) || (cloudMode && key !== 'openlearn-device-grant')) throw new Error('Provider access is managed by Open Learn.');
     const values = readCredentials(); delete values[key]; writeCredentials(values);
     const preferences = readPreferences();
     const removedProvider = key === 'OPENAI_API_KEY' ? 'openai' : key === 'OPENROUTER_API_KEY' ? 'openrouter' : undefined;
@@ -356,12 +372,12 @@ function stopApi() {
 
 async function createWindow() {
   if (!isDev) webPort = await availableLoopbackPort();
-  await startApi();
+  if (!cloudMode) await startApi();
   window = new BrowserWindow({
     width: 1440,
     height: 960,
-    minWidth: 960,
-    minHeight: 680,
+    minWidth: 360,
+    minHeight: 480,
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -375,7 +391,8 @@ async function createWindow() {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url);
     return { action: 'deny' };
   });
-  if (isDev) await window.loadURL(process.env.FORMA_WEB_URL || 'http://127.0.0.1:3000');
+  if (cloudMode) await window.loadURL(cloudWebUrl);
+  else if (isDev) await window.loadURL(process.env.FORMA_WEB_URL || 'http://127.0.0.1:3000');
   else {
     webProcess = await startWebServer({ root: path.join(process.resourcesPath, 'web'), port: webPort });
     await window.loadURL(`http://127.0.0.1:${webPort}`);

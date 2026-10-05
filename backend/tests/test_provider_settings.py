@@ -14,6 +14,7 @@ client = TestClient(app)
 
 
 def _isolated_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENLEARN_ALLOW_LOCAL_PROVIDER_KEYS", "true")
     target = tmp_path / ".env"
     monkeypatch.setattr(provider_keys, "env_path", lambda: target)
     for var in ("AI_TUTOR_PROVIDER", "OPENROUTER_API_KEY", "OPENAI_API_KEY"):
@@ -41,7 +42,7 @@ def test_save_key_writes_env_and_never_returns_value(monkeypatch, tmp_path):
     assert payload["provider"] == "openrouter"
     assert payload["openRouterConfigured"] is True
     assert payload["openAiConfigured"] is False
-    assert payload["restartRequired"] is True
+    assert payload["restartRequired"] is False
     assert "sk-or-v1-testkey123" not in response.text
     content = target.read_text(encoding="utf-8")
     assert "# comment" in content
@@ -67,3 +68,25 @@ def test_delete_key_falls_back_to_baseline(monkeypatch, tmp_path):
     assert payload["provider"] == "deterministic_baseline"
     content = target.read_text(encoding="utf-8")
     assert "OPENAI_API_KEY" not in content
+
+
+def test_managed_service_hides_keys_and_blocks_customer_mutations(monkeypatch):
+    from fastapi import FastAPI
+    monkeypatch.delenv('OPENLEARN_ALLOW_LOCAL_PROVIDER_KEYS',raising=False)
+    fake=type('Provider',(),{'api_key':'private-test-key','provider_name':'openrouter/test'})()
+    app=FastAPI();app.include_router(provider_keys.build_provider_key_router(provider_getter=lambda:fake))
+    app.dependency_overrides[provider_keys.material_owner]=lambda:'alice'
+    managed=TestClient(app)
+    response=managed.get('/v1/provider-settings')
+    assert response.json()['managed'] and response.json()['available']
+    assert 'private-test-key' not in response.text
+    assert managed.put('/v1/provider-settings',json={'provider':'openrouter','apiKey':'sk-or-v1-customer'}).status_code==403
+    assert managed.delete('/v1/provider-settings/openrouter').status_code==403
+    assert managed.post('/v1/provider-settings/test').status_code==403
+
+
+def test_production_never_allows_local_key_management(monkeypatch):
+    from fastapi import FastAPI
+    monkeypatch.setenv('AI_TUTOR_ENV','production');monkeypatch.setenv('OPENLEARN_ALLOW_LOCAL_PROVIDER_KEYS','true')
+    app=FastAPI();app.include_router(provider_keys.build_provider_key_router());app.dependency_overrides[provider_keys.material_owner]=lambda:'alice'
+    assert TestClient(app).put('/v1/provider-settings',json={'provider':'openrouter','apiKey':'sk-or-v1-customer'}).status_code==403

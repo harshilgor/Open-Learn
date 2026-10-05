@@ -43,6 +43,12 @@ def invalidate_source(store,conn,owner,source_id):
         affected=False
         for card in svc.repo.rows(conn,owner,'cards',deck['id']):
             version=svc.repo.get(conn,owner,'versions',card['versionId'])
-            if source_id in version['sourceIds'] and not card.get('stale'):
-                card['stale']=True;svc.repo.put(conn,owner,'cards',card);affected=True
+            published=svc.repo.get(conn,owner,'versions',card['publishedVersionId']) if card.get('publishedVersionId') else None
+            def depends(content):
+                return bool(content and (source_id in content['sourceIds'] or (content.get('image') or {}).get('versionId')==source_id))
+            current_affected=depends(version);published_affected=depends(published)
+            if (current_affected and not card.get('stale')) or (published_affected and not card.get('publishedStale')):
+                card['stale']=bool(card.get('stale') or current_affected or published_affected)
+                card['publishedStale']=bool(card.get('publishedStale') or published_affected)
+                svc.repo.put(conn,owner,'cards',card);affected=True
         if affected:deck['updatedAt']=time.time();svc.repo.put(conn,owner,'decks',deck)

@@ -10,7 +10,7 @@ const clientId=process.env.EXPO_PUBLIC_OIDC_CLIENT_ID || '';
 let session:Session|null=null;
 let epoch=0;
 let refreshing:Promise<void>|null=null;
-function configured(){if(!origin.startsWith('https://') || !issuer.startsWith('https://') || !clientId)throw Error('Configure the HTTPS API and native account client first.');}
+function configured(){if(!origin.startsWith('https://') || !issuer.startsWith('https://') || !clientId)throw Error('Open Learn is unavailable in this build. Please use the latest app release.');}
 async function verify(accessToken:string){const response=await fetch(origin+'/v1/account',{headers:{Authorization:'Bearer '+accessToken}});if(!response.ok)throw Error('Account verification failed.');return await response.json() as {ownerId:string;displayName:string};}
 async function save(value:Session){await SecureStore.setItemAsync('openlearn-session',JSON.stringify(value));session=value;}
 export async function restoreAccount(){configured();const saved=await SecureStore.getItemAsync('openlearn-session');if(saved)session=JSON.parse(saved);return session;}
