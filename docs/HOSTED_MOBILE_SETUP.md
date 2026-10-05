@@ -24,7 +24,7 @@ Render uses **Harshil's workspace** (`tea-d4j0f6h5pdvs7386n2r0`), service **open
 
 Supabase **Open Learn** (`apxwjejimdzcvyosejzy`) is a dedicated Free project in US East. The owner authorized pausing **our dates** to free a project slot. Data API is disabled. Private storage bucket `openlearn-private` uses the Supabase S3 endpoint, with its approved server credentials stored only in Render. The database password is percent-encoded within Render's `DATABASE_URL`.
 
-The production web origin is `https://open-learn-eta.vercel.app`. Vercel production has `NEXT_PUBLIC_LEARNING_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and the browser-safe `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Supabase Site URL is that origin and the exact redirect allow-list entry is `/auth/callback`. Web sign-in uses an email link with PKCE; tokens are verified by the backend against Supabase's issuer, authenticated audience, and public JWKS. Native mobile OIDC configuration still requires its own provider/client integration.
+The production web origin is `https://open-learn-eta.vercel.app`. Vercel production has `NEXT_PUBLIC_LEARNING_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and the browser-safe `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Supabase Site URL is that origin and the exact redirect allow-list entry is `/auth/callback`. Web sign-in supports Google OAuth and email links with PKCE; tokens are verified by the backend against Supabase's issuer, authenticated audience, and public JWKS. Native mobile OIDC configuration still requires its own provider/client integration.
 
 The organization reports existing storage over its free quota and a potential restriction date of 27 October 2026. Resolve unrelated storage usage before then without automatically upgrading or deleting data. Supabase's default email sender is suitable for initial project-team testing; configure a sender before broad public sign-up.
 
@@ -32,7 +32,7 @@ The organization reports existing storage over its free quota and a potential re
 
 Render deployment `06c50af` completed successfully. `/ready` returned HTTP 200 with `status=ready`; `/health` reported PostgreSQL/schema checks passing and `lesson_provider=openrouter/openrouter/free`. An unauthenticated `/v1/account` returned 401, CORS allowed the production web origin, and Supabase JWKS advertised ES256. Vercel production deployment `dpl_4qDLwD5WW3tH5ynpZLLdGFsp2zVJ` is READY and serves `/auth/sign-in`. Seven backend migration/runtime tests passed; five web account tests passed before deployment. A post-deployment Vercel error-log scan found no entries.
 
-Real-account sign-in, lesson generation, private upload/download and cross-owner isolation still require live authenticated acceptance. Health checks prove configuration and database readiness, not a completed AI request or storage write. Free service sleeping and native phone acceptance remain subject to the limits above.
+Google OAuth completed successfully in Chrome and the hosted account and Buddy loaded. Repeated same-account Supabase sign-in/refresh notifications are deduplicated to keep the UI stable. Seven web authentication/transport tests pass. Lesson generation, private upload/download and cross-owner isolation still require live acceptance. Health checks prove configuration and database readiness, not a completed AI request or storage write. Free service sleeping and native phone acceptance remain subject to the limits above.
 
 ## Deploy and verify
 
