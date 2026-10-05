@@ -3,7 +3,7 @@ import { AccountSettings } from './account-settings';
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTheme } from 'next-themes';
-import { ArrowLeft, Bell, BookOpen, CircleHelp, Database, Download, ExternalLink, Gauge, Headphones, KeyRound, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { ArrowLeft, Bell, BookOpen, CircleHelp, Database, Download, Gauge, Monitor, Moon, Settings2, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ProviderSettings } from './provider-settings';
 import { UsageSettings } from './usage-settings';
@@ -14,20 +14,19 @@ import { DataActionsSection, UpdateSection } from './local-data-settings';
 import styles from './settings-page.module.css';
 import { DEFAULT_SETTINGS, readSettingsPreferences, saveSettingsPreferences, SETTINGS_CHANGED_EVENT, type SettingsPreferences } from '@/lib/settings-preferences';
 
-export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about';
+export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about' | 'updates';
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 }[] = [
-  { id: 'account', label: 'Account & devices', icon: Monitor },
-  { id: 'websites', label: 'Connected websites', icon: ExternalLink },
-  { id: 'general', label: 'General', icon: Settings2 },
+  { id: 'account', label: 'Account', icon: Monitor },
+  { id: 'general', label: 'Appearance', icon: Settings2 },
   { id: 'learning', label: 'Learning', icon: BookOpen },
-  { id: 'audio', label: 'Audio & recordings', icon: Headphones },
   { id: 'usage', label: 'Usage', icon: Gauge },
-  { id: 'api-keys', label: 'AI service', icon: KeyRound },
   { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'data', label: 'Data & privacy', icon: Database },
-  { id: 'about', label: 'About', icon: CircleHelp },
+  { id: 'data', label: 'Privacy & data', icon: Database },
+  { id: 'about', label: 'Help', icon: CircleHelp },
+  { id: 'updates', label: 'Updates', icon: Download },
 ];
+const CATEGORY_ALIASES: Partial<Record<SettingsCategory, SettingsCategory>> = { websites: 'account', audio: 'learning', 'api-keys': 'about' };
 
 function hasDesktopPreferences(): boolean {
   if (typeof window === 'undefined') return false;
@@ -54,6 +53,8 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
   onCategoryChange: (category: SettingsCategory) => void;
   onBack: () => void;
 }) {
+  category = CATEGORY_ALIASES[category] || category;
+  const [saved, setSaved] = useState(false);
   const [desktop, setDesktop] = useState(false);
   const [appVersion, setAppVersion] = useState('Web app');
   const [platform, setPlatform] = useState('Browser');
@@ -75,7 +76,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
     window.addEventListener(SETTINGS_CHANGED_EVENT, refresh);
     return () => { window.clearTimeout(timer); window.removeEventListener(SETTINGS_CHANGED_EVENT, refresh); };
   }, []);
-  const updatePreference = <K extends keyof SettingsPreferences>(key: K, value: SettingsPreferences[K]) => setPreferences(saveSettingsPreferences({ [key]: value }));
+  const updatePreference = <K extends keyof SettingsPreferences>(key: K, value: SettingsPreferences[K]) => { setPreferences(saveSettingsPreferences({ [key]: value })); setSaved(true); };
 
   return (
     <div className={styles.page}>
@@ -83,7 +84,9 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
         <button type="button" className={styles.back} onClick={onBack}>
           <ArrowLeft size={15} />Back to app
         </button>
-        {CATEGORIES.map(item => (
+        <h2 className={styles.navTitle}>Settings</h2>
+        <label className={styles.mobilePicker}>Section<select aria-label="Settings section" value={category} onChange={event=>onCategoryChange(event.target.value as SettingsCategory)}>{CATEGORIES.filter(item=>desktop||item.id!=='updates').map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        {CATEGORIES.filter(item=>desktop||item.id!=='updates').map(item => (
           <button
             key={item.id}
             type="button"
@@ -97,39 +100,34 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
       </nav>
       <div className={styles.content}>
         <div className={styles.inner} data-density={preferences.density} style={{ '--settings-scale': preferences.textSize === 'large' ? 1.08 : 1 } as CSSProperties}>
-          {category === 'account' && <AccountSettings />}
-          {category === 'websites' && <SiteConnections />}
+          {category === 'account' && <section><h1>Account</h1><p className={styles.lede}>Your identity, linked devices and connected websites.</p><div className={styles.card}><AccountSettings section="account" /></div><div className={styles.card}><SiteConnections compact /></div></section>}
           {category === 'general' ? (
             <section aria-label="General settings">
-              <h1>General</h1>
+              <h1>Appearance</h1>
               <p className={styles.lede}>Set the appearance and reading comfort for this device.</p>
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Appearance</h2>
                 <p className={styles.preferenceHelp}>Choose a theme and accent. These preferences stay on this device.</p>
                 <div className={styles.themeChoices} role="group" aria-label="Color theme">
-                  <button type="button" aria-pressed={selectedTheme === 'light'} className={styles.themeChoice + (selectedTheme === 'light' ? ' ' + styles.themeChoiceActive : '')} onClick={() => setTheme('light')}>
+                  <button type="button" aria-pressed={selectedTheme === 'light'} className={styles.themeChoice + (selectedTheme === 'light' ? ' ' + styles.themeChoiceActive : '')} onClick={() => {setTheme('light');setSaved(true);}}>
                     <Sun size={17} />Light
                   </button>
-                  <button type="button" aria-pressed={selectedTheme === 'dark'} className={styles.themeChoice + (selectedTheme === 'dark' ? ' ' + styles.themeChoiceActive : '')} onClick={() => setTheme('dark')}>
+                  <button type="button" aria-pressed={selectedTheme === 'dark'} className={styles.themeChoice + (selectedTheme === 'dark' ? ' ' + styles.themeChoiceActive : '')} onClick={() => {setTheme('dark');setSaved(true);}}>
                     <Moon size={17} />Dark
                   </button>
-                  <button type="button" aria-pressed={selectedTheme === 'system'} className={styles.themeChoice + (selectedTheme === 'system' ? ' ' + styles.themeChoiceActive : '')} onClick={() => setTheme('system')}>
+                  <button type="button" aria-pressed={selectedTheme === 'system'} className={styles.themeChoice + (selectedTheme === 'system' ? ' ' + styles.themeChoiceActive : '')} onClick={() => {setTheme('system');setSaved(true);}}>
                     <Monitor size={17} />System
                   </button>
                 </div>
                 <h3 className={styles.subTitle}>Accent color</h3>
                 <div className={styles.swatches} role="group" aria-label="Accent color">
-                  {(['sage', 'blue', 'violet', 'amber'] as const).map(accent => <button key={accent} type="button" aria-label={`${accent} accent`} aria-pressed={preferences.accent === accent} className={`${styles.swatch} ${styles[`swatch_${accent}`]}${preferences.accent === accent ? ` ${styles.swatchActive}` : ''}`} onClick={() => updatePreference('accent', accent)} />)}
+                  {(['sage', 'blue', 'violet', 'amber'] as const).map(accent => <button key={accent} type="button" aria-label={`${accent} accent`} aria-pressed={preferences.accent === accent} className={`${styles.swatch} ${styles[`swatch_${accent}`]}${preferences.accent === accent ? ` ${styles.swatchActive}` : ''}`} onClick={() => updatePreference('accent', accent)}>{preferences.accent === accent ? '✓' : null}</button>)}
                 </div>
                 <div className={styles.preferenceGrid}>
                   <label className={styles.selectRow}>Interface density<select value={preferences.density} onChange={event => updatePreference('density', event.target.value as SettingsPreferences['density'])}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
                   <label className={styles.selectRow}>Text size<select value={preferences.textSize} onChange={event => updatePreference('textSize', event.target.value as SettingsPreferences['textSize'])}><option value="default">Default</option><option value="large">Large</option></select></label>
                 </div>
                 <label className={styles.checkRow}><input type="checkbox" checked={preferences.reduceMotion} onChange={event => updatePreference('reduceMotion', event.target.checked)} /><span><strong>Reduce motion</strong><small>Limit animated transitions throughout the app.</small></span></label>
-              </div>
-              <div className={styles.group}>
-                <UpdateSection />
-                {!desktop ? <p className={styles.muted}>Update checks are available in the desktop app.</p> : null}
               </div>
             </section>
           ) : null}
@@ -153,12 +151,6 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
                   {preferences.quizMode === 'timed_short_quiz' ? <label className={styles.selectRow}>Time limit<select value={preferences.quizDurationMinutes} onChange={event => updatePreference('quizDurationMinutes', Number(event.target.value) as SettingsPreferences['quizDurationMinutes'])}>{[5, 10, 15, 20].map(minutes => <option key={minutes} value={minutes}>{minutes} minutes</option>)}</select></label> : null}
                 </div>
               </div>
-            </section>
-          ) : null}
-          {category === 'audio' ? (
-            <section aria-label="Audio and recording preferences">
-              <h1>Audio &amp; recordings</h1>
-              <p className={styles.lede}>Set defaults for future class recordings. Existing recordings keep their current settings.</p>
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Recording defaults</h2>
                 <label className={styles.selectRow}>Default note detail<select value={preferences.lectureDepth} onChange={event => updatePreference('lectureDepth', event.target.value as SettingsPreferences['lectureDepth'])}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
@@ -170,21 +162,10 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'usage' ? (
             <section aria-label="Usage settings">
               <h1>Usage</h1>
-              <p className={styles.lede}>Tokens and generations used on this device, measured from provider-reported usage where available.</p>
+              <p className={styles.lede}>Recorded tutor activity for your account, measured from provider reports where available.</p>
               <div className={styles.group}>
                 <div className={styles.card}>
-                  <UsageSettings />
-                </div>
-              </div>
-            </section>
-          ) : null}
-          {category === 'api-keys' ? (
-            <section aria-label="AI service settings">
-              <h1>AI service</h1>
-              <p className={styles.lede}>AI access is included with Open Learn. Check service availability without managing provider credentials.</p>
-              <div className={styles.group}>
-                <div className={styles.card}>
-                  <ProviderSettings />
+                  <p className={styles.preferenceHelp}>Plan allowances are not configured yet. This page shows recorded activity, not a remaining allowance or a bill.</p><UsageSettings />
                 </div>
               </div>
             </section>
@@ -194,35 +175,37 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               <h1>Notifications</h1>
               <p className={styles.lede}>Reminders that help you return to scheduled reviews.</p>
               <div className={styles.card}>
-                <ReviewNotificationSettings />
+                {desktop ? <ReviewNotificationSettings /> : null}
                 <AcademicReminderSettings />
-                {!desktop ? <p className={styles.muted}>Review reminders are available in the desktop app. Notifications stay on this device.</p> : null}
+                {!desktop ? <p className={styles.muted}>Delivery permissions belong to each device. Configure desktop review notifications in the installed app.</p> : null}
               </div>
             </section>
           ) : null}
           {category === 'data' ? (
             <section aria-label="Data and privacy settings">
-              <h1>Data &amp; privacy</h1>
-              <p className={styles.lede}>{desktop ? 'Your lessons, notes, recordings, and review state are stored by this desktop app.' : 'Your learning data is stored by the connected local service. Export or remove it at any time.'}</p>
-              <div className={styles.card}>
-                <DataActionsSection />
-              </div>
+              <h1>Privacy &amp; data</h1>
+              <p className={styles.lede}>Manage your account data, source memory and saved changes. Device drafts may remain until synchronized or discarded.</p>
+              <div className={styles.card}><AccountSettings section="privacy" /></div>
+              {(typeof window !== 'undefined' && (window as Window & {formaDesktop?:{serviceMode?:string}}).formaDesktop?.serviceMode === 'local') ? <div className={styles.card}><DataActionsSection /></div> : null}
             </section>
           ) : null}
           {category === 'about' ? (
             <section aria-label="About Open Learn">
-              <h1>About</h1>
+              <h1>Help</h1>
               <p className={styles.lede}>Your learning environment for guided study, practice, and review across devices.</p>
+              <div className={styles.card}><ProviderSettings /></div>
               <div className={styles.card}>
                 <div className={styles.aboutRow}><strong>Open Learn</strong><span>Your Open Learn account</span></div>
                 <dl className={styles.aboutFacts}><div><dt>Version</dt><dd>{appVersion}</dd></div><div><dt>Platform</dt><dd>{platform}</dd></div><div><dt>Storage</dt><dd>Account service and device drafts</dd></div></dl>
                 <p className={styles.muted}>Preferences are saved on this device. AI credentials are managed securely by Open Learn and are never included in app downloads or learning backups.</p>
-                <div className={styles.aboutActions}>
+                <details className={styles.aboutActions}><summary>Troubleshooting</summary>
                   <Button variant="outline" onClick={() => downloadDiagnostics(preferences, appVersion, platform)}><Download size={15} />Download diagnostics</Button>
-                </div>
+                </details>
               </div>
             </section>
           ) : null}
+          {category === 'updates' && <section><h1>Updates</h1><p className={styles.lede}>Keep your installed app current.</p><div className={styles.card}>{desktop?<UpdateSection />:<p>The web app updates automatically when you reload. Android and iOS updates are available in the installed app’s Settings.</p>}</div></section>}
+          {saved && <p className={styles.saved} role="status">Preferences saved on this device.</p>}
         </div>
       </div>
     </div>

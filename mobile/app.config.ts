@@ -1,6 +1,7 @@
+import {APP_VERSION} from './src/release';
 import type {ExpoConfig} from 'expo/config';
 const config:ExpoConfig={
-  name:'Open Learn',slug:'openlearn',version:'0.1.0',scheme:'openlearn',
+  name:'Open Learn',slug:'openlearn',version:APP_VERSION,scheme:'openlearn',
   orientation:'default',userInterfaceStyle:'automatic',
   ios:{bundleIdentifier:process.env.EXPO_PUBLIC_IOS_BUNDLE_ID || 'dev.openlearn.app',supportsTablet:true,infoPlist:{NSMicrophoneUsageDescription:'Record voice messages and save lectures for your course.',UIBackgroundModes:['audio'],ITSAppUsesNonExemptEncryption:false}},
   android:{package:process.env.EXPO_PUBLIC_ANDROID_PACKAGE || 'dev.openlearn.app',permissions:['RECORD_AUDIO','FOREGROUND_SERVICE','FOREGROUND_SERVICE_MICROPHONE','POST_NOTIFICATIONS']},

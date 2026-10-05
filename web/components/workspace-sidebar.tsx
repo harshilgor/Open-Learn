@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from 'react';
-import { ArrowUpRight, CircleHelp, Download, FolderClosed, FolderPlus, Plus, RotateCcw, SquarePen } from 'lucide-react';
+import { ArrowUpRight, CircleHelp, FolderClosed, FolderPlus, Plus, RotateCcw, SquarePen } from 'lucide-react';
 import { Button } from './ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { ChatHistory } from './chat-history';
@@ -32,7 +32,6 @@ export function WorkspaceSidebar({ tab, onTabChange, collapseControl, courses, a
   return <>
     <div className="brand">Open Learn{collapseControl}</div>
     <SidebarTabs tab={tab} onChange={onTabChange} />
-    <button type="button" className="nav-item" onClick={() => window.dispatchEvent(new Event('openlearn:install'))}><Download size={17} />Install app</button>
     <DropdownMenu><DropdownMenuTrigger asChild><Button className="sidebar-new" aria-label="Create new"><Plus size={18} />New</Button></DropdownMenuTrigger><DropdownMenuContent align="start">
       {tab === 'home' ? <><DropdownMenuItem onSelect={onNewChat}><SquarePen size={16} />New chat</DropdownMenuItem><DropdownMenuItem onSelect={onNewCourse}><FolderPlus size={16} />New course</DropdownMenuItem></> : <><DropdownMenuItem onSelect={() => onNotesCommand('new-note')}><SquarePen size={16} />New note</DropdownMenuItem><DropdownMenuItem onSelect={() => onNotesCommand('new-folder')}><FolderPlus size={16} />New folder</DropdownMenuItem></>}
     </DropdownMenuContent></DropdownMenu>

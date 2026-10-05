@@ -28,7 +28,7 @@ export function BuddyProvider({children}:{children:ReactNode}) {
 }
 
 function BuddyEditor({existing,onClose,onSaved}:{existing?:Buddy;onClose:()=>void;onSaved:(buddy:Buddy)=>Promise<void>}) {
-  const {snapshot,refresh}=useBuddies();
+  const {snapshot,refresh,error:connectionError}=useBuddies();
   const [input,setInput]=useState<BuddyInput>(existing||{name:'',avatar:'spark',color:'sage',style:'encouraging',concise:true,examples:true,proactive:false});
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[replacement,setReplacement]=useState('');
   const preview={...input,id:'preview',revision:1,archived:false};
@@ -40,14 +40,15 @@ function BuddyEditor({existing,onClose,onSaved}:{existing?:Buddy;onClose:()=>voi
     <div className="buddy-fields">{(['avatar','color','style'] as const).map(field=><label key={field}>{field}<select value={input[field]} onChange={e=>setInput({...input,[field]:e.target.value})}>{(field==='avatar'?Object.keys(icons):field==='color'?['sage','blue','violet','rose','amber']:['calm','encouraging','playful','direct']).map(value=><option key={value}>{value}</option>)}</select></label>)}</div>
     <label><input type="checkbox" checked={input.concise} onChange={e=>setInput({...input,concise:e.target.checked})}/>Prefer concise explanations</label><label><input type="checkbox" checked={input.examples} onChange={e=>setInput({...input,examples:e.target.checked})}/>Use examples</label>
     <p className="text-xs text-muted-foreground">Automatic preparation will be available when course scheduling is connected.</p>
-    {error?<p role="alert">{error}</p>:null}<Button disabled={busy||!input.name.trim()} onClick={()=>void save()}>{busy?'Saving…':'Save Buddy'}</Button>
+    {!snapshot?<div role="status"><p>{connectionError?'Reconnect to save your Buddy. You can customize it here while the service is unavailable.':'Connecting to your account. You can customize your Buddy while we connect.'}</p><Button variant="outline" onClick={()=>void refresh()}>Retry connection</Button></div>:null}
+    {error?<p role="alert">{error}</p>:null}<Button disabled={busy||!snapshot||!input.name.trim()} onClick={()=>void save()}>{busy?'Saving…':'Save Buddy'}</Button>
     {existing?<><Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{await buddyApi.makeDefault(existing.id);await refresh();}catch(e){setError(String(e));}finally{setBusy(false);}}}>Use as my default</Button><details><summary>Archive Buddy</summary><p>{Object.values(snapshot?.courses||{}).filter(id=>id===existing.id).length} assigned courses and {snapshot?.responsibilities?.[existing.id]||0} responsibility records will transfer to the replacement. Chats stay attributed to this Buddy in All chats. Existing reminder and task IDs remain unchanged.</p><select aria-label="Replacement Buddy" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Choose replacement</option>{snapshot?.profiles.filter(p=>!p.archived&&p.id!==existing.id).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><Button variant="outline" disabled={busy||!replacement} onClick={()=>void archive()}>Archive and reassign</Button></details></>:null}
   </DialogContent></Dialog>;
 }
 
 export function BuddyRail({onSwitch,onHome,onSettings}:{onSwitch:(id:string)=>void;onHome:()=>void;onSettings:()=>void}) {
   const {snapshot,active,edit,error,refresh}=useBuddies();
-  return <nav className="buddy-rail" aria-label="Study companions"><button aria-label="Home and Today" onClick={onHome}><Home size={20}/></button>{snapshot?.profiles.filter(p=>!p.archived).map(p=><button key={p.id} aria-label={`Open ${p.name}`} aria-pressed={active?.id===p.id} title={p.name} onClick={()=>onSwitch(p.id)}><BuddyAvatar buddy={p}/>{(snapshot.unread?.[p.id]||0)>0?<small aria-label={`${snapshot.unread?.[p.id]} unread reminders`}>{snapshot.unread?.[p.id]}</small>:null}</button>)}<button aria-label="Create Buddy" disabled={!snapshot} onClick={()=>edit()}><Plus size={20}/></button><button aria-label="Settings" onClick={onSettings}><Settings size={20}/></button>{error?<button aria-label="Retry loading Buddies" title={error} onClick={()=>void refresh()}><RefreshCw size={20}/></button>:null}</nav>;
+  return <nav className="buddy-rail" aria-label="Study companions"><button aria-label="Home and Today" onClick={onHome}><Home size={20}/></button>{snapshot?.profiles.filter(p=>!p.archived).map(p=><button key={p.id} aria-label={`Open ${p.name}`} aria-pressed={active?.id===p.id} title={p.name} onClick={()=>onSwitch(p.id)}><BuddyAvatar buddy={p}/>{(snapshot.unread?.[p.id]||0)>0?<small aria-label={`${snapshot.unread?.[p.id]} unread reminders`}>{snapshot.unread?.[p.id]}</small>:null}</button>)}<button aria-label="Create Buddy" title="Create a study partner" onClick={()=>edit()}><Plus size={20}/></button><button aria-label="Settings" onClick={onSettings}><Settings size={20}/></button>{error?<button aria-label="Retry loading Buddies" title={error} onClick={()=>void refresh()}><RefreshCw size={20}/></button>:null}</nav>;
 }
 
 export function BuddyHeader({onSwitch}:{onSwitch:(id:string)=>void}) {
