@@ -9,3 +9,5 @@
 @media(max-width:1023px){.buddy-desktop-action{display:none}.buddy-header{padding:4px;gap:5px}.buddy-header select{max-width:100px}.topbar{flex-wrap:wrap;height:auto;min-height:56px}.topbar>div{min-width:0;flex-wrap:wrap}.buddy-header .buddy-avatar{width:30px;height:30px}.buddy-preview{padding:12px}}
 .buddy-desktop-switch{display:flex;align-items:center;gap:8px}.buddy-mobile-switch{display:none!important}@media(max-width:1023px){.buddy-desktop-switch{display:none}.buddy-mobile-switch{display:flex!important;align-items:center;gap:8px}}
 .buddy-event{border:1px solid var(--border);border-radius:16px;padding:16px;flex:1;min-width:180px}.buddy-event small{display:block;color:var(--muted-foreground);margin:8px 0}.buddy-event button{min-width:0;flex:0;padding:8px}
+
+.buddy-rail button{cursor:pointer;transition:background-color .15s ease}.buddy-rail button:hover{background:var(--muted)}.buddy-rail button:active{background:var(--accent)}

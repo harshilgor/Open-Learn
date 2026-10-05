@@ -15,7 +15,7 @@ it('does not start a microphone on import and leaves no manifest when permission
 });
 
 it('releases the microphone as soon as Stop is pressed, before pending audio saves',async()=>{
- const stopTrack=vi.fn();const track={stop:stopTrack,addEventListener:vi.fn()};
+ const stopTrack=vi.fn();const track={readyState:'live',stop:stopTrack,addEventListener:vi.fn(),removeEventListener:vi.fn()};
  const stream={getTracks:()=>[track],getAudioTracks:()=>[track]};
  Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:vi.fn().mockResolvedValue(stream)}});
  let finishRecorder!:(()=>void);

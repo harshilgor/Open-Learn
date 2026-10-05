@@ -19,6 +19,7 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
   const [chunks, setChunks] = useState<AudioChunk[]>([]);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [removingAudio, setRemovingAudio] = useState(false);
   const [local, setLocal] = useState<LocalLecture | null>(null);
   const player = useRef<HTMLAudioElement>(null);
   const currentUrl = useRef<string | null>(null);
@@ -28,6 +29,13 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
     try {
       const next = await learningApi.getLectureRecording(recordingId);
       setStatus(next);
+      if (next.stages.audioRetention === 'pending' || next.stages.audioRetention === 'removed' || next.stages.audioRetention === 'failed') {
+        player.current?.pause();
+        if (currentUrl.current) URL.revokeObjectURL(currentUrl.current);
+        currentUrl.current = null;
+        currentSequence.current = null;
+        setAudioUrl(null);
+      }
       setLocal(await getLocalLecture(recordingId) || null);
       const [notes, sectionData, chunkData, transcriptData] = await Promise.all([
         learningApi.getLectureNotes(recordingId), learningApi.getLectureSections(recordingId),
@@ -43,10 +51,10 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
     return () => window.clearTimeout(initial);
   }, [refresh]);
   useEffect(() => {
-    if (status?.recordingStatus === 'completed') return;
+    if (status?.stages.audioRetention === 'failed' || (status?.recordingStatus === 'completed' && (status.preferences.keepAudio !== false || status.stages.audioRetention === 'removed'))) return;
     const timer = window.setInterval(() => void refresh(), 4000);
     return () => window.clearInterval(timer);
-  }, [refresh, status?.recordingStatus]);
+  }, [refresh, status?.recordingStatus, status?.preferences.keepAudio, status?.stages.audioRetention]);
   useEffect(() => () => { if (currentUrl.current) URL.revokeObjectURL(currentUrl.current); }, []);
 
   async function seek(timeMs: number) {
@@ -85,8 +93,28 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Notes could not be regenerated.'); }
   }
 
+  async function removeSavedAudio() {
+    const confirmation = status?.stages.audioRetention === 'failed'
+      ? 'Retry deleting the saved audio for this class? Your notes and transcript will remain.'
+      : 'Delete the saved audio for this class? Your notes and transcript will remain.';
+    if (!window.confirm(confirmation)) return;
+    setRemovingAudio(true);
+    try {
+      await learningApi.deleteLectureAudio(recordingId);
+      player.current?.pause();
+      if (currentUrl.current) URL.revokeObjectURL(currentUrl.current);
+      currentUrl.current = null;
+      currentSequence.current = null;
+      setAudioUrl(null);
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Saved audio could not be removed.'); }
+    finally { setRemovingAudio(false); }
+  }
+
   const bySection = new Map(sections.map(section => [section.id, section]));
-  const audioRetained = status?.preferences.keepAudio !== false || status?.recordingStatus !== 'completed';
+  const audioRemovalPending = status?.preferences.keepAudio === false && (status.stages.audioRetention === 'pending' || (status.recordingStatus === 'completed' && status.stages.audioRetention !== 'removed' && status.stages.audioRetention !== 'failed'));
+  const audioRemovalFailed = status?.preferences.keepAudio === false && status.recordingStatus === 'completed' && status.stages.audioRetention === 'failed';
+  const audioRetained = status?.stages.audioRetention !== 'pending' && status?.stages.audioRetention !== 'removed' && status?.stages.audioRetention !== 'failed' && (status?.preferences.keepAudio !== false || status?.recordingStatus !== 'completed');
   const ordered = [...blocks].sort((a, b) => (bySection.get(a.sectionId)?.ordinal ?? 0) - (bySection.get(b.sectionId)?.ordinal ?? 0) || a.ordinal - b.ordinal);
   return <section className="rounded-xl border border-border p-4 space-y-3" aria-label="Lecture notes">
     <div className="flex flex-wrap items-center justify-between gap-2"><strong>Class recording</strong><span className="text-xs text-muted-foreground">{status ? `${status.chunks.serverConfirmed}/${status.chunks.expected ?? '?'} slices uploaded · ${status.chunks.transcribed} transcribed` : 'Loading…'}</span></div>
@@ -96,13 +124,16 @@ export function LectureNotesView({ recordingId }: { recordingId: string }) {
     {status?.recordingStatus !== 'completed' ? <p role="status" className="text-sm">{status?.recordingStatus === 'failed' ? 'Processing needs attention.' : status?.captureComplete ? 'Processing the lecture…' : 'Recording or uploading audio…'} {status?.error || ''}</p> : null}
     {status?.recordingStatus === 'failed' ? <Button size="sm" variant="outline" onClick={() => void retry()}>Retry failed work</Button> : null}
     {status?.recordingStatus === 'completed' ? <label className="text-xs">Note detail <select className="ml-2 rounded border border-border bg-background p-1" value={String(status.preferences.depth || 'standard')} onChange={event => void changeDepth(event.target.value as 'concise' | 'standard' | 'detailed')}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label> : null}
+    {status?.recordingStatus === 'completed' && status.preferences.keepAudio !== false ? <Button size="sm" variant="outline" disabled={removingAudio} onClick={() => void removeSavedAudio()}>{removingAudio ? 'Removing audio…' : 'Delete audio, keep notes'}</Button> : null}
+    {audioRemovalFailed ? <div role="alert" className="space-y-2"><p className="text-xs text-muted-foreground">Audio cleanup stopped after a temporary failure. Some audio may already be gone; notes and transcript remain.</p><Button size="sm" variant="outline" disabled={removingAudio} onClick={() => void removeSavedAudio()}>{removingAudio ? 'Retrying…' : 'Retry audio removal'}</Button></div> : null}
     {audioRetained && chunks.length ? <Button size="sm" variant="outline" onClick={() => void seek(chunks[0].startMs)}>Play class from start</Button> : null}
-    {!audioRetained ? <p className="text-xs text-muted-foreground">Audio was removed after processing, as requested when recording began.</p> : null}
+    {audioRemovalPending ? <p role="status" className="text-xs text-muted-foreground">Removing the server audio copy in the background. Playback is paused during removal; notes and transcript stay available.</p> : null}
+    {!audioRetained ? <p className="text-xs text-muted-foreground">Audio was removed after processing, as requested when recording began. Notes and transcript remain available.</p> : null}
     {audioUrl ? <audio ref={player} controls src={audioUrl} aria-label="Lecture audio" onEnded={() => { const next = chunks.find(item => item.sequenceNumber === (currentSequence.current ?? -1) + 1); if (next) void seek(next.startMs); }} /> : null}
     {ordered.map((block, index) => {
       const section = bySection.get(block.sectionId);
       const showHeading = section && ordered[index - 1]?.sectionId !== section.id;
-      return <div key={block.id}>{showHeading ? <h3 className="mt-4 font-semibold">{section.title}</h3> : null}<article className="mt-2"><h4 className="text-sm font-medium">{block.title}</h4><RichContent body={block.content} /><div className="flex flex-wrap gap-2 text-xs">{block.evidence.map((ref, index) => audioRetained ? <button type="button" className="text-primary underline" key={`${ref.segmentId}-${index}`} onClick={() => void seek(ref.startMs)} title="Play cited audio">▶ {timestamp(ref.startMs)}</button> : <span key={`${ref.segmentId}-${index}`}>{timestamp(ref.startMs)}</span>)}{block.sourceKind === 'ai_enrichment' ? <span>AI explanation</span> : null}{block.verificationStatus === 'uncertain' ? <span>Audio unclear</span> : null}</div></article></div>;
+      return <div key={block.id}>{showHeading ? <h3 className="mt-4 font-semibold">{section.title}</h3> : null}<article className="mt-2"><h4 className="text-sm font-medium">{block.title}</h4><RichContent body={block.content} /><div className="flex flex-wrap gap-2 text-xs">{block.evidence.map((ref, index) => audioRetained ? <button type="button" className="text-primary underline" key={`${ref.segmentId}-${index}`} onClick={() => void seek(ref.startMs)} title="Play cited audio" aria-label={`Play cited audio at ${timestamp(ref.startMs)}`}>▶ {timestamp(ref.startMs)}</button> : <span key={`${ref.segmentId}-${index}`}>{timestamp(ref.startMs)}</span>)}{block.sourceKind === 'ai_enrichment' ? <span>AI explanation</span> : null}{block.verificationStatus === 'uncertain' ? <span>Audio unclear</span> : null}</div></article></div>;
     })}
     {!ordered.length && transcript.length ? <details><summary>{status?.recordingStatus === 'completed' ? 'No verified note blocks; view the transcript' : 'Transcript available while notes process'}</summary>{transcript.map(segment => <p key={segment.id} className="my-2 text-sm">{audioRetained ? <button type="button" className="text-primary underline" onClick={() => void seek(segment.startMs)}>{timestamp(segment.startMs)}</button> : <span>{timestamp(segment.startMs)}</span>} {segment.normalizedText || segment.rawText}</p>)}</details> : null}
     <LectureTranscriptEditor recordingId={recordingId} segments={transcript} onChanged={refresh} />

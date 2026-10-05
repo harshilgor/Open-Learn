@@ -103,10 +103,35 @@ class SessionSnapshotService:
                 WHERE owner_id=:owner AND session_id=:session AND status='current'
                 ORDER BY created_at DESC LIMIT 1
             """), {"owner": owner, "session": session_id}).mappings().first()
-            activities = connection.execute(text("""
-                SELECT id,kind,payload FROM practice_records
-                WHERE owner_id=:owner AND kind IN ('quiz','review_session')
-            """), {"owner": owner}).mappings().all()
+            quiz_id = None
+            if session.active_quiz_id:
+                quiz_id = connection.execute(text("""
+                    SELECT id FROM practice_records
+                    WHERE id=:id AND owner_id=:owner AND kind='quiz'
+                      AND history_session_id=:session
+                      AND (history_status IS NULL OR history_status NOT IN ('completed','cancelled'))
+                """), {"id": session.active_quiz_id, "owner": owner, "session": session_id}).scalar_one_or_none()
+            if not quiz_id:
+                quiz_id = connection.execute(text("""
+                    SELECT id FROM practice_records
+                    WHERE owner_id=:owner AND kind='quiz' AND history_session_id=:session
+                      AND (history_status IS NULL OR history_status NOT IN ('completed','cancelled'))
+                    ORDER BY history_created_at DESC,id DESC LIMIT 1
+                """), {"owner": owner, "session": session_id}).scalar_one_or_none()
+            review_id = None
+            if session.active_review_id:
+                review_id = connection.execute(text("""
+                    SELECT id FROM practice_records
+                    WHERE id=:id AND owner_id=:owner AND kind='review_session'
+                      AND history_session_id=:session AND history_status IN ('ready','in_progress')
+                """), {"id": session.active_review_id, "owner": owner, "session": session_id}).scalar_one_or_none()
+            if not review_id:
+                review_id = connection.execute(text("""
+                    SELECT id FROM practice_records
+                    WHERE owner_id=:owner AND kind='review_session' AND history_session_id=:session
+                      AND history_status IN ('ready','in_progress')
+                    ORDER BY history_created_at DESC,id DESC LIMIT 1
+                """), {"owner": owner, "session": session_id}).scalar_one_or_none()
 
         journey = _object(journey_row["payload"]) if journey_row else {
             "mode": "ask",
@@ -115,15 +140,6 @@ class SessionSnapshotService:
             "steps": [],
             "turns": [],
         }
-        quiz_id = session.active_quiz_id
-        review_id = session.active_review_id
-        for row in activities:
-            payload = _object(row["payload"])
-            if row["kind"] == "quiz" and payload.get("sessionId") == session_id and payload.get("status") not in {"completed", "cancelled"}:
-                quiz_id = row["id"]
-            if row["kind"] == "review_session" and payload.get("learnSessionId") == session_id and payload.get("status") not in {"completed", "abandoned"}:
-                review_id = row["id"]
-
         steps = journey.get("steps") or []
         position = min(int(journey.get("position") or 0), max(0, len(steps) - 1))
         step = steps[position] if steps else {}

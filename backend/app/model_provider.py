@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import base64
+import threading
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -131,6 +132,15 @@ class OpenRouterLessonProvider:
 
     endpoint = "https://openrouter.ai/api/v1/chat/completions"
     supports_generation_context = True
+    usage_thread_local = True
+
+    @property
+    def last_usage(self) -> ProviderUsage | None:
+        return getattr(self._usage_state, "last_usage", None)
+
+    @last_usage.setter
+    def last_usage(self, usage: ProviderUsage | None) -> None:
+        self._usage_state.last_usage = usage
 
     @staticmethod
     def _context_budget(model: str) -> int:
@@ -159,6 +169,7 @@ class OpenRouterLessonProvider:
         self.app_name = app_name
         self.provider_name = f"openrouter/{model}"
         self.base_url = self.endpoint
+        self._usage_state = threading.local()
         self.last_usage: ProviderUsage | None = None
         self.context_input_budget_tokens = self._context_budget(model)
         self.context_image_token_reserve = max(0, int(os.getenv("AI_TUTOR_CONTEXT_IMAGE_RESERVE_TOKENS", "1200")))

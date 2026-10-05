@@ -1,5 +1,6 @@
 """Shared inline/standalone assessment with private keys and atomic evidence."""
 from datetime import datetime, timedelta
+import base64
 import json
 import hashlib
 import re
@@ -21,40 +22,89 @@ class QuizService:
         self.records = WorkflowStore(store)
         self.lifecycle = AssessmentLifecycle(store, provider)
 
-    def _effective_attempt(self, owner, attempt):
+    def _effective_attempt(self, owner, attempt, pending_presentations=None):
         try:
             resolution = self.records.read(owner, "attempt_resolution_" + attempt["id"], "attempt_resolution")
             return {**attempt, **{k: v for k, v in resolution.items() if k in {"score", "status", "feedback", "criteria", "resolutionId", "solution"}}}
         except HTTPException as exc:
             if exc.status_code != 404:
                 raise
-        if self.records.listing(owner, "challenge"):
-            pending = any(c.get("presentationId") == attempt.get("presentationId") and c.get("status") == "excluded_pending_review" for c in self.records.listing(owner, "challenge"))
-            if pending:
-                return {**attempt, "score": None, "status": "contested", "feedback": "This question is awaiting review and excluded from your score."}
+        if pending_presentations is None:
+            pending_presentations = self._pending_challenge_presentations(owner, attempt.get("quizId"))
+        if attempt.get("presentationId") in pending_presentations:
+            return {**attempt, "score": None, "status": "contested", "feedback": "This question is awaiting review and excluded from your score."}
         return attempt
 
     def _save_quiz(self, conn, owner, quiz, expected):
         quiz["updatedAt"] = utc_now().isoformat()
         self.records.put(conn, owner, "quiz", quiz, expected=expected)
 
-    def history(self, owner, *, session_id=None, lesson_note_id=None):
-        quizzes = self.records.listing(owner, "quiz")
+    @staticmethod
+    def _encode_history_cursor(created_at, quiz_id):
+        raw = json.dumps({"createdAt": created_at, "id": quiz_id}, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    @staticmethod
+    def _decode_history_cursor(cursor):
+        try:
+            if len(cursor) > 512:
+                raise ValueError("cursor too long")
+            raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            value = json.loads(raw)
+            if not isinstance(value, dict) or not isinstance(value.get("createdAt"), str) or not isinstance(value.get("id"), str) or not value["id"]:
+                raise ValueError("invalid cursor fields")
+            return value["createdAt"], value["id"]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            problem("invalid_cursor", "This quiz history page cursor is invalid. Reload quiz history.", 422)
+
+    def _pending_challenge_presentations(self, owner, quiz_id):
+        if not quiz_id:
+            return set()
+        with self.store.engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT payload FROM practice_records
+                WHERE owner_id=:owner AND kind='challenge' AND parent_id=:quiz
+            """), {"owner": owner, "quiz": quiz_id}).scalars().all()
+        return {payload.get("presentationId") for raw in rows if (payload := json.loads(raw)).get("status") == "excluded_pending_review"}
+
+    def history(self, owner, *, session_id=None, lesson_note_id=None, limit=25, cursor=None):
+        limit = max(1, min(int(limit), 100))
         if session_id:
             MaterialService(self.store).session(owner, session_id)
-            quizzes = [quiz for quiz in quizzes if quiz.get("sessionId") == session_id]
         if lesson_note_id:
             note = WorkspaceNoteService(self.store).get(owner, lesson_note_id)
             if (note.frontmatter or {}).get("study_note") is not True:
                 problem("invalid_lesson", "This is not a lesson note.", 422)
-            quizzes = [quiz for quiz in quizzes if quiz.get("lessonNoteId") == lesson_note_id]
+        clauses = ["owner_id=:owner", "kind='quiz'", "history_created_at IS NOT NULL"]
+        params = {"owner": owner, "limit": limit + 1}
+        if session_id:
+            clauses.append("history_session_id=:session_id")
+            params["session_id"] = session_id
+        if lesson_note_id:
+            clauses.append("history_lesson_note_id=:lesson_note_id")
+            params["lesson_note_id"] = lesson_note_id
+        if cursor:
+            cursor_time, cursor_id = self._decode_history_cursor(cursor)
+            clauses.append("(history_created_at<:cursor_time OR (history_created_at=:cursor_time AND id<:cursor_id))")
+            params.update({"cursor_time": cursor_time, "cursor_id": cursor_id})
+        with self.store.engine.connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT id,payload,history_created_at FROM practice_records
+                WHERE {' AND '.join(clauses)}
+                ORDER BY history_created_at DESC,id DESC LIMIT :limit
+            """), params).mappings().all()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
         result = []
-        for quiz in quizzes:
-            attempts = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt")) for aid in quiz.get("attempts", [])]
+        for row in page_rows:
+            quiz = json.loads(row["payload"])
+            quiz_id = row["id"]
+            pending_presentations = self._pending_challenge_presentations(owner, quiz_id)
+            attempts = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt"), pending_presentations) for aid in quiz.get("attempts", [])]
             first = [attempt for attempt in attempts if not attempt.get("retryOf")]
             evaluated = [attempt for attempt in first if attempt.get("score") is not None and attempt.get("status") != "contested"]
             result.append({
-                "id": quiz["id"], "title": quiz["title"], "sessionId": quiz["sessionId"],
+                "id": quiz_id, "title": quiz["title"], "sessionId": quiz["sessionId"],
                 "lessonNoteId": quiz.get("lessonNoteId"), "origin": quiz.get("origin", "quiz"),
                 "status": quiz["status"], "count": quiz["count"],
                 "attempted": len(first), "score": round(100 * sum(a["score"] for a in evaluated) / len(evaluated)) if evaluated else None,
@@ -64,7 +114,8 @@ class QuizService:
                 "contested": sum(a.get("status") == "contested" for a in first),
                 "createdAt": quiz.get("createdAt"), "updatedAt": quiz.get("updatedAt"),
             })
-        return sorted(result, key=lambda quiz: quiz.get("updatedAt") or quiz.get("createdAt") or "", reverse=True)
+        next_cursor = self._encode_history_cursor(page_rows[-1]["history_created_at"], page_rows[-1]["id"]) if has_more and page_rows else None
+        return {"quizzes": result, "nextCursor": next_cursor}
 
     def study_context(self, owner, quiz_id):
         quiz = self.records.read(owner, quiz_id, "quiz")
@@ -152,7 +203,8 @@ class QuizService:
         current = self.records.read(owner, quiz["current"], "presentation") if quiz["current"] else None
         if current and current.get("questionPlan"):
             current["questionPlan"] = {key: current["questionPlan"][key] for key in ("objective", "capability", "reason_codes")}
-        history = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt")) for aid in quiz["attempts"]]
+        pending_presentations = self._pending_challenge_presentations(owner, quiz_id)
+        history = [self._effective_attempt(owner, self.records.read(owner, aid, "attempt"), pending_presentations) for aid in quiz["attempts"]]
         first = [a for a in history if not a.get("retryOf")]
         evaluated = [a for a in first if a["score"] is not None and a["status"] != "contested"]
         quiz["summary"] = {"score": round(100 * sum(a["score"] for a in evaluated) / len(evaluated)) if evaluated else None,
@@ -164,7 +216,7 @@ class QuizService:
                            "contested": sum(a["status"] == "contested" for a in first)}
         if quiz.get("mode") == "timed_short_quiz" and quiz.get("deadlineAt"):
             quiz["remainingSeconds"] = max(0, int((datetime.fromisoformat(quiz["deadlineAt"]) - utc_now()).total_seconds()))
-        challenges = [c for c in self.records.listing(owner, "challenge") if c.get("presentationId") in quiz.get("presentations", [])]
+        challenges = self.records.listing_by_parent(owner, "challenge", quiz_id)
         return {**{key: value for key, value in quiz.items() if key not in {"lessonSnapshot", "conversationSnapshot"}}, "current": current, "attempts": history, "challenges": challenges, "quality": {"approvedOnly": True}}
 
     def _ensure_active_time(self, quiz):

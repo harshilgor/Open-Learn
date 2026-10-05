@@ -17,7 +17,7 @@ OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_waterm
         'site_connections', 'assistant_runs', 'assistant_events', 'assistant_steps', 'browser_snapshots',
         'browser_session_leases', 'browser_provider_cleanup', 'assistant_objects', 'external_course_links',
         'academic_scan_coverage', 'connection_refresh_schedules', 'notification_subscriptions',
-        'notification_deliveries', 'reminders', 'reminder_policies',
+        'notification_deliveries', 'reminders', 'reminder_policies', 'reminder_action_runs', 'reminder_preferences', 'reminder_runtime',
         'agent_messages', 'agent_commands', 'agent_input_requests', 'agent_checkpoints',
         'agent_operations', 'agent_artifacts', 'agent_activity', 'agent_activity_cursors',
         'agent_research_sources', 'agent_research_runs', 'execution_command_outbox',
@@ -26,6 +26,11 @@ OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_waterm
 _profile_locks = defaultdict(RLock)
 OMIT.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions','agent_action_drafts','agent_action_operations','agent_delegation_budgets','agent_delegated_children','agent_delegation_charges'})
 OMIT.add('agent_connector_intakes')
+OMIT.add('class_material_intakes')
+# In-progress resource selections are not resumed when class sessions are
+# copied. NeedInfo is reconstructed lazily from the copied class snapshot.
+OMIT.add('class_resource_intents')
+OMIT.add('class_caption_interims')
 OMIT.add('flashcard_commands')
 
 
@@ -166,6 +171,7 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
                     prefs=json.loads(values['payload']);prefs.update(reminders=False,proactiveDrafts=False);values['payload']=json.dumps(prefs)
                 if table.name=='class_sessions':
                     copied=json.loads(values['payload'])
+                    copied.pop('outputTransition',None)
                     copied.update(cancelled=True,processing='paused',captureDeviceImported=True)
                     values['payload']=json.dumps(copied)
 
@@ -186,6 +192,13 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
                         continue
                     values['identity_kind'] = 'verified_account'
                 conn.execute(table.insert().values(**values))
+        from .class_metadata import migrate_legacy
+        for source_row in rows.get('class_sessions', []):
+            imported_id=mapping.get(source_row['id'],source_row['id'])
+            raw=conn.execute(text('SELECT payload FROM class_sessions WHERE id=:id AND owner_id=:owner'),{'id':imported_id,'owner':owner}).scalar_one()
+            item=json.loads(raw);item.update(id=imported_id,owner=owner)
+            migrate_legacy(conn,item)
+            conn.execute(text('UPDATE class_sessions SET payload=:payload WHERE id=:id'),{'id':imported_id,'payload':json.dumps(item)})
         from .identity import grant_resource
         for name in ('graph_versions', 'graph_jobs', 'topic_scopes'):
             for row in rows.get(name, []):

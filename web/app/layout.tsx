@@ -8,7 +8,7 @@ import { AppInstall } from "@/components/app-install";
 export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, title: "Open Learn", statusBarStyle: "default" },
-  title: "Forma — A space to understand",
+  title: "Open Learn. — A space to understand",
   description: "Explore connected ideas and follow your curiosity without losing your place.",
   other: {
     "codex-preview": "development",

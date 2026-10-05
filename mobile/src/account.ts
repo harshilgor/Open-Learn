@@ -50,6 +50,64 @@ export async function authenticated(path:string,init:RequestInit={}){
   if(!response.ok){let message='Request failed. Pending work is retained.';try{const body=await response.json();message=body.detail?.message||message;}catch{}throw new ApiError(response.status,message);}
   return response;
 }
+export type AuthenticatedStreamEvent={event:string;id?:string;data:string};
+export async function authenticatedEventStream(path:string,options:{lastEventId?:string;signal:AbortSignal;onEvent:(event:AuthenticatedStreamEvent)=>void;onActivity?:()=>void}){
+  if(!path.startsWith('/v1/'))throw Error('Unsupported API route.');
+  const version=epoch;const accessToken=await token();
+  if(epoch!==version)throw new ApiError(401,'Account changed.');
+  await new Promise<void>((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();let settled=false,offset=0,buffer='',eventName='',eventId:string|undefined;const data:string[]=[];
+    const cleanup=()=>options.signal.removeEventListener('abort',abort);
+    const finish=(error?:Error)=>{if(settled)return;settled=true;cleanup();if(error){try{xhr.abort()}catch{};reject(error)}else resolve();};
+    const abort=()=>{const error=new Error('Stream aborted.');error.name='AbortError';finish(error);};
+    const responseError=()=>{
+      let message='Request failed. Pending work is retained.';
+      try{const body=JSON.parse(xhr.responseText) as {detail?:{message?:string}|string};message=typeof body.detail==='string'?body.detail:body.detail?.message||message;}catch{}
+      return new ApiError(xhr.status,message);
+    };
+    const dispatch=()=>{
+      if(!data.length){eventName='';eventId=undefined;return;}
+      const next={event:eventName||'message',id:eventId,data:data.join('\n')};
+      data.length=0;eventName='';eventId=undefined;
+      options.onEvent(next);
+    };
+    const consume=(chunk:string)=>{
+      buffer+=chunk.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+      let newline=buffer.indexOf('\n');
+      while(newline>=0){const line=buffer.slice(0,newline);buffer=buffer.slice(newline+1);newline=buffer.indexOf('\n');
+        if(!line){dispatch();continue;}if(line.startsWith(':'))continue;
+        const separator=line.indexOf(':');const field=separator<0?line:line.slice(0,separator);const value=(separator<0?'':line.slice(separator+1)).replace(/^ /,'');
+        if(field==='event')eventName=value;else if(field==='id'&&!value.includes('\0'))eventId=value;else if(field==='data')data.push(value);
+      }
+    };
+    options.signal.addEventListener('abort',abort,{once:true});
+    if(options.signal.aborted){abort();return;}
+    try{
+      xhr.open('GET',origin+path,true);xhr.setRequestHeader('Authorization','Bearer '+accessToken);xhr.setRequestHeader('Accept','text/event-stream');xhr.setRequestHeader('Cache-Control','no-cache');
+      if(options.lastEventId)xhr.setRequestHeader('Last-Event-ID',options.lastEventId);
+      xhr.onprogress=()=>{
+        if(settled)return;
+        if(epoch!==version){finish(new ApiError(401,'Account changed.'));return;}
+        if(xhr.status>=400){finish(responseError());return;}
+        options.onActivity?.();
+        try{const text=xhr.responseText||'';if(text.length>offset){consume(text.slice(offset));offset=text.length;}}catch{finish(new Error('This app cannot read the class event stream.'));}
+      };
+      xhr.onreadystatechange=()=>{
+        if(settled)return;
+        if(xhr.readyState>=2&&xhr.status>=400){finish(responseError());return;}
+        if(xhr.readyState===4){
+          if(epoch!==version){finish(new ApiError(401,'Account changed.'));return;}
+          try{const text=xhr.responseText||'';if(text.length>offset)consume(text.slice(offset));}catch{}
+          finish(new Error('Class event stream disconnected.'));
+        }
+      };
+      xhr.onerror=()=>finish(new Error('Class event stream connection failed.'));
+      xhr.ontimeout=()=>finish(new Error('Class event stream timed out.'));
+      xhr.onabort=()=>{if(!settled){const error=new Error('Class event stream aborted.');error.name='AbortError';finish(error);}};
+      xhr.send();
+    }catch(cause){finish(cause instanceof Error?cause:new Error('Could not open class event stream.'));}
+  });
+}
 export const api:Transport={
   async json<T>(path:string,init:RequestInit={}){const headers=new Headers(init.headers);if(init.body)headers.set('Content-Type','application/json');const response=await authenticated(path,{...init,headers});return (response.status===204?undefined:await response.json()) as T;},
   async binary<T>(path:string,bytes:Uint8Array,headers:Record<string,string>){const response=await authenticated(path,{method:'PUT',headers,body:bytes as unknown as BodyInit});return await response.json() as T;},

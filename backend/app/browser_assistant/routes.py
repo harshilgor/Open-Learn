@@ -208,7 +208,7 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
         from .workers import upcoming
         return {'events': upcoming(store_getter(), owner(), course_id)}
 
-    @router.get('/reminders')
+    @router.get('/academic-reminders')
     def reminders():
         items = AssistantStore(store_getter()).list('reminders', owner())
         return {'reminders': [{k:v for k,v in item.items() if k not in {'payload','owner_id'}} for item in items]}
@@ -216,7 +216,7 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
     @router.get('/reminder-policies')
     def policies():
         fields = set(ReminderPolicyInput.model_json_schema(by_alias=True)['properties']) | {'id','revision'}
-        return {'policies': [{k:v for k,v in item.items() if k in fields} for item in AssistantStore(store_getter()).list('reminder_policies', owner())]}
+        return {'policies': [{k:v for k,v in item.items() if k in fields} for item in AssistantStore(store_getter()).list('reminder_policies', owner()) if item.get('kind','academic')=='academic']}
 
     @router.post('/reminder-policies')
     def policy(body: ReminderPolicyInput):
@@ -240,7 +240,7 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
                 reminder = conn.execute(text('SELECT * FROM reminders WHERE owner_id=:owner AND id=:id'), {'owner':learner,'id':item['reminder_id']}).mappings().first()
                 if not reminder or not valid_reminder(conn, reminder): continue
                 data = {k:v for k,v in item.items() if k not in {'payload','owner_id'}}
-                data['deliverable'] = time.time() <= min(item['eventAt'], reminder['due_at'] + item['catchupMinutes']*60)
+                data['deliverable'] = time.time() <= min(item.get('eventAt',float('inf')), reminder['due_at'] + item.get('catchupMinutes',120)*60)
                 result.append(data)
         return {'notifications':result}
 

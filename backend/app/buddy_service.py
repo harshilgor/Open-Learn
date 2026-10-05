@@ -161,7 +161,8 @@ class BuddyService:
             for row in rows:
                 self.responsibility(conn,owner,row['id'],'reminder',row['course_id'])
                 buddy=conn.execute(text('SELECT buddy_id FROM buddy_responsibilities WHERE id=:id AND owner_id=:owner'),{'id':row['id'],'owner':owner}).scalar_one()
-                result.append({'id':row['id'],'dueAt':row['due_at'],'status':row['status'],'title':json.loads(row['payload']).get('title','Academic event'),'courseId':row['course_id'],'buddyId':buddy,'entityId':row['entity_id']})
+                payload=json.loads(row['payload'])
+                result.append({'id':row['id'],'kind':row['kind'],'dueAt':row['due_at'],'status':row['status'],'title':payload.get('title','Academic event'),'body':payload.get('body'),'url':(payload.get('artifacts') or {}).get('deepLink') or payload.get('url'),'courseId':row['course_id'] or payload.get('courseId'),'buddyId':buddy,'entityId':row['entity_id'],'lastError':row['last_error']})
             return {'reminders':result}
 
     def today(self,owner):

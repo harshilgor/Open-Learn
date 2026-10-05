@@ -22,6 +22,7 @@ class LecturePreferences(ApiModel):
     exam_hints: bool = True
     administrative: bool = False
     keep_audio: bool = True
+    capture_system_audio: bool = False
 
 
 class LectureCreate(ApiModel):

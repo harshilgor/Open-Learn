@@ -13,7 +13,7 @@ from .workflow_store import WorkflowStore
 
 INTERACTIVE_KINDS = frozenset({"create", "journey", "note_synthesis", "note_draft", "next", "answer", "hint", "retry", "resume", "pause", "challenge", "flag"})
 REVIEW_KINDS = frozenset({"review_create", "review_answer", "concept_sync", "review_backfill"})
-LECTURE_KINDS = frozenset({"lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate"})
+LECTURE_KINDS = frozenset({"lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention"})
 
 
 class ExecutionWorker:
@@ -30,7 +30,9 @@ class ExecutionWorker:
         ExecutionOutbox(self.store).drain({"execution.enqueue": enqueue}, limit)
         if self.queue == "batch":
             from .lecture_pipeline import LectureWorker
-            return LectureWorker(self.store, self.provider_getter).drain(limit)
+            # Reserve a bounded transcription batch per poll so workers on
+            # other class/session queues can make progress between batches.
+            return LectureWorker(self.store, self.provider_getter).drain(min(limit, 4))
         from .learning_routes import run_job
         from .review_routes import run_review_job
         ids = self.records.ready_ids(self.queue, INTERACTIVE_KINDS | REVIEW_KINDS, limit)

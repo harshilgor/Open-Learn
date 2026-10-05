@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import styles from './learn-chat.module.css';
 import { learningApi, type Gear, type WorkspaceNoteSummary } from '@/lib/api';
 import type { ChatMode } from '@/lib/learning-workflows';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 
 export type ChatModeOption = {
   value: ChatMode; label: string; description: string; icon: LucideIcon;
@@ -78,15 +79,16 @@ export function ChatModeSelector({ mode, onModeChange, disabled, conversation, o
   );
 }
 
-export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string };
+export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string; uploadPath?: string; resumableUploadPath?: string; uploadSessionUrl?: string; uploadComplete?: boolean };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
-export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry }: {
+export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry, onVoice }: {
   value: string; onChange: (value: string) => void; attachments: ChatAttachment[];
   onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
   mode?: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
   noteMentions?: ChatNoteMention[]; onAddNoteMention?: (note: WorkspaceNoteSummary) => void; onRemoveNoteMention?: (noteId: string) => void; onOpenNoteMention?: (noteId: string) => void;
   unavailable?: string; onRetry?: () => void;
+  onVoice?: () => void;
   variant?: 'main' | 'compact'; contextConcept?: { id: string; title: string } | null; onRemoveContext?: () => void;
 }) {
   const reduceMotion = useAppReducedMotion();
@@ -95,6 +97,7 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [noteMatches, setNoteMatches] = useState<WorkspaceNoteSummary[]>([]);
   const mentionMatch = value.match(/(?:^|\s)@([^\s@]*)$/);
   const noteQuery = mentionMatch?.[1] ?? null;
@@ -109,25 +112,31 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     const accepted: ChatAttachment[] = [];
     const rejected: string[] = [];
     for (const file of files) {
-      if (!/\.(pdf|txt|md|png|jpe?g|webp|gif)$/i.test(file.name) || !file.size || file.size > 50 * 1024 * 1024) { rejected.push(file.name); continue; }
+      const image = /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+      if (!/\.(pdf|txt|md|png|jpe?g|webp|gif)$/i.test(file.name) || !file.size || file.size > (image ? 50 : 250) * 1024 * 1024) { rejected.push(file.name); continue; }
       if (!attachments.some(item => item.name === file.name && item.file.size === file.size) && !accepted.some(item => item.name === file.name && item.file.size === file.size)) accepted.push({ id: crypto.randomUUID(), name: file.name, file });
     }
     onAttachmentsChange([...attachments, ...accepted]);
-    setError(rejected.length ? `Couldn't attach ${rejected.join(', ')}. Use PDF, TXT, Markdown, PNG, JPG, WEBP, or GIF files up to 50 MB.` : '');
+      setError(rejected.length ? `Couldn't attach ${rejected.join(', ')}. Use PDF, TXT, or Markdown files up to 500 MiB, or images up to 50 MiB.` : '');
   }
   const hasLink = /https?:\/\/\S+/i.test(value);
   const resizeTextarea = useCallback(() => {
     const element = textarea.current;
     if (!element) return;
-    const maxHeight = 196;
+    const mobile = window.innerWidth <= 1023;
+    const maxHeight = mobile ? 112 : 196;
     element.style.height = '0px';
-    const height = Math.min(Math.max(element.scrollHeight, 44), maxHeight);
+    const height = Math.min(Math.max(element.scrollHeight, mobile ? 28 : 44), maxHeight);
     element.style.height = `${height}px`;
     element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, []);
   useLayoutEffect(() => { resizeTextarea(); }, [resizeTextarea, value]);
+  useEffect(() => {
+    window.addEventListener('resize', resizeTextarea);
+    return () => window.removeEventListener('resize', resizeTextarea);
+  }, [resizeTextarea]);
 
-  return <form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : ''} ${dragging ? styles.dragging : ''}`}
+  return <><div className={styles.connectionStrip}>{unavailable ? <p className={styles.connectionNotice} role="status"><span>{unavailable}</span>{onRetry ? <button type="button" aria-label="Retry connection" onClick={onRetry}>Retry</button> : null}</p> : null}</div><form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : ''} ${dragging ? styles.dragging : ''}`}
     onSubmit={event => { event.preventDefault(); if (!busy && !unavailable) onSubmit(); }}
     onDragEnter={event => { if (!busy && event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDragging(true); } }}
     onDragOver={event => { if (event.dataTransfer.types.some(type => ['Files', 'text/uri-list'].includes(type))) { event.preventDefault(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; } }}
@@ -138,7 +147,8 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     {contextConcept ? <div className={styles.contextRow}><span>Asking about: {contextConcept.title}<button type="button" aria-label={`Remove ${contextConcept.title} context`} onClick={onRemoveContext}><X size={13}/></button></span></div> : null}
     {noteMentions.length > 0 ? <div className={styles.noteReceipt} aria-label="Learner note context"><AnimatePresence initial={false}>{noteMentions.map(note => <motion.span key={note.noteId} layout={!reduceMotion} initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }} transition={{ duration: 0.16 }}><button type="button" onClick={() => onOpenNoteMention?.(note.noteId)} title="Open note in workspace">@{note.title}</button><details><summary>{note.endOffset - note.startOffset} characters</summary><pre>{note.excerpt}</pre></details><button type="button" aria-label={`Remove ${note.title} from context`} onClick={() => onRemoveNoteMention?.(note.noteId)}><X size={12} /></button></motion.span>)}</AnimatePresence><p>Learner-provided context only. It is not a verified source.</p></div> : null}
     <label htmlFor="chat-message" className="sr-only">Message your tutor</label>
-    {unavailable ? <p className={styles.connectionNotice} role="status">{unavailable}{onRetry ? <button type="button" onClick={onRetry}>Retry connection</button> : null}</p> : null}
+    <button type="button" className={styles.mobileOptionsButton} aria-label="Chat options and attachments" onClick={() => setOptionsOpen(true)} disabled={busy}><Plus size={22}/></button>
+    {mode !== 'ask' || gear !== 'Quick' ? <button type="button" className={styles.mobileModeBadge} onClick={() => setOptionsOpen(true)}>{CHAT_MODES.find(option => option.value === mode)?.label} · {gear}</button> : null}
     <textarea ref={textarea} id="chat-message" value={value} maxLength={4000}
       placeholder={
         mode === 'quiz'
@@ -152,8 +162,8 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy && !unavailable) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />
-    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || Boolean(unavailable) || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div>
+    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><div className="flex items-center gap-2">{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || Boolean(unavailable) || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div></div>
     {hasLink && <p className={styles.composerNote}>Public links are imported as readable source material when you send.</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
-  </form>;
+  </form><Sheet open={optionsOpen} onOpenChange={setOptionsOpen}><SheetContent side="bottom" className={styles.mobileOptionsSheet}><SheetHeader><SheetTitle>Chat options</SheetTitle><SheetDescription>Choose how your Buddy helps, or attach material.</SheetDescription></SheetHeader><div className={styles.mobileOptionsContent}><Button variant="outline" disabled={busy} onClick={() => { setOptionsOpen(false); input.current?.click(); }}><Plus size={18}/>Attach a file or image</Button><div><span>Conversation mode</span><ChatModeSelector conversation={conversation} onConversation={() => { onConversation?.(); setOptionsOpen(false); }} mode={mode} onModeChange={next => { onModeChange?.(next); setOptionsOpen(false); }} disabled={busy}/></div><div><span>Explanation depth</span><Select value={gear} onValueChange={next => onGearChange(next as Gear)} disabled={busy}><SelectTrigger aria-label="Mobile explanation depth"><SelectValue/></SelectTrigger><SelectContent>{(['Quick','Guided','Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><p>Use @ in your message to mention a note.</p></div></SheetContent></Sheet></>;
 }
