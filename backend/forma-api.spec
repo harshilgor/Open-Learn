@@ -42,6 +42,8 @@ a = Analysis(
     pathex=[str(root.parent)],
     hiddenimports=hidden,
     datas=[
+        (str(root / "app" / "flashcards" / "skill.json"), "backend/app/flashcards"),
+        (str(root / "app" / "flashcards" / "instructions.txt"), "backend/app/flashcards"),
         (str(root / "migrations"), "backend/migrations"),
         (str(root / "alembic.ini"), "backend"),
         (str(root / "app" / "browser_assistant" / "observer.js"), "backend/app/browser_assistant"),

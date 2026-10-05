@@ -662,6 +662,8 @@ class WorkspaceNoteService:
         with self.store.transaction() as connection:
             changed=connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id AND revision=:revision"), {"id": note_id, "learner_id": learner_id,'revision':expected_revision})
             if changed.rowcount!=1:raise WorkspaceNoteError('revision_conflict','The note changed; reload before deleting.',409)
+            from .flashcards.class_adapter import invalidate_source
+            invalidate_source(self.store,connection,learner_id,note_id)
 
     def reindex(self, learner_id: str) -> WorkspaceNoteReindexResponse:
         from .identity import hosted
@@ -692,6 +694,8 @@ class WorkspaceNoteService:
             removed = 0
             for note_id in existing:
                 if note_id not in observed:
+                    from .flashcards.class_adapter import invalidate_source
+                    invalidate_source(self.store,connection,learner_id,note_id)
                     removed += connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id}).rowcount
         return WorkspaceNoteReindexResponse(indexed=indexed, skipped=skipped, removed=removed)
 

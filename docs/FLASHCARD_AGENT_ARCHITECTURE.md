@@ -1,6 +1,6 @@
 # Shared flashcard agent: architecture and rendering
 
-Proposal — 4 October 2026. Based on inspection of the current checkout. No flashcard implementation, migration, provider provisioning, or UI changes are delivered by this document. Conversation and In-Class remain product directions in the redesign brief, not assumed existing runtime modes.
+Architecture — 4 October 2026. The shared capability, deck/editor/review services, migrations and web/native interfaces are now implemented. See [implementation status and verification](FLASHCARD_IMPLEMENTATION.md) for delivered behavior and environment checks. The integration tables below preserve the original design reference.
 
 Follow the [behavior and recovery contract](BUDDY_BEHAVIOR_AND_RECOVERY_CONTRACT.md) for memory retrieval, proactive draft creation, duplicate commands, offline ratings, and interrupted work. Buddy is companion identity; Conversation is the default mode.
 

@@ -11,7 +11,7 @@ function save(owner: string, commands: PendingCommand[]) {
 }
 export function rememberCommand(owner: string, url: string, init: RequestInit): PendingCommand | undefined {
   const method = (init.method || 'GET').toUpperCase();
-  const path = new URL(url).pathname;
+  const path = new URL(url, window.location.origin).pathname;
   const isNote = method === 'PATCH' && /\/workspace-notes\/[^/]+$/.test(path);
   const isQuiz = method === 'POST' && /\/quizzes\/[^/]+\/(answer|answers|hint|pause|resume)$/.test(path);
   const isFlashcard = method === 'POST' && /\/flashcard-(decks|review-sessions)\/[^/]+\/(commands|publish)$/.test(path);

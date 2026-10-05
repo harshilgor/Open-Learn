@@ -1,11 +1,11 @@
 import {request} from './api';
 import type {Admission} from './assistant-client';
-export type FlashcardSourceRef={kind:'note'|'lesson'|'material'|'quiz_attempt'|'lecture';id:string;revision:number;startOffset?:number;endOffset?:number;spanId?:string;recordingId?:string};
-export type FlashcardContent={type:'qa'|'cloze';prompt:string;answer:string;explanation:string;sourceIds:string[];supportQuote:string;conceptIds?:string[]};
+export type FlashcardSourceRef={kind:'note'|'lesson'|'material'|'quiz_attempt'|'lecture';id:string;revision:number;startOffset?:number;endOffset?:number;spanId?:string;recordingId?:string;startMs?:number;endMs?:number};
+export type FlashcardContent={type:'qa'|'cloze'|'image_label'|'image_occlusion';image?:{versionId:string;altText:string;rightsConfirmed:boolean;masks:{x:number;y:number;width:number;height:number}[]}|null;prompt:string;answer:string;explanation:string;sourceIds:string[];supportQuote:string;conceptIds?:string[]};
 export type Flashcard={id:string;versionId:string;publishedVersionId:string|null;state:string;stale:boolean;content:FlashcardContent};
-export type Deck={id:string;revision:number;title:string;status:string;courseId?:string|null;sessionId?:string|null;cards:Flashcard[];cardCount:number;dueCount?:number;nextOffset?:number|null;coverage:{partial:boolean;sources:{id:string;title:string;ref:FlashcardSourceRef;hash:string}[]};candidates:{id:string;reason:string;validationReason?:string;content:FlashcardContent}[]};
+export type Deck={id:string;revision:number;title:string;status:string;courseId?:string|null;sessionId?:string|null;classId?:string|null;cards:Flashcard[];cardCount:number;dueCount?:number;nextOffset?:number|null;coverage:{partial:boolean;sources:{id:string;title:string;ref:FlashcardSourceRef;hash:string}[]};candidates:{id:string;reason:string;validationReason?:string;content:FlashcardContent}[]};
 export type FlashcardView={deckId?:string;view?:'editor'|'review'|'library';reviewSessionId?:string;sessionId?:string;courseId?:string;sourceRefs?:FlashcardSourceRef[]};
-export type FlashcardReview={id:string;revision:number;status:string;cursor:number;total:number;practice:boolean;current:null|{cardId:string;deckId:string;versionId:string;attemptId:string;type:string;prompt:string;revealed:boolean;answer?:string;explanation?:string;response?:string}};
+export type FlashcardReview={id:string;revision:number;status:string;cursor:number;total:number;practice:boolean;current:null|{cardId:string;deckId:string;versionId:string;attemptId:string;type:string;prompt:string;image?:FlashcardContent['image'];revealed:boolean;answer?:string;explanation?:string;response?:string}};
 export type FlashcardSummary={dueCount:number;courses:Record<string,number>;sessions:{id:string;status:string;cursor:number;total:number;createdAt:number}[]};
 export type FlashcardGeneration={sessionId:string;courseId?:string;origin:'conversation'|'ask'|'learn'|'quiz'|'in_class'|'review';sourceRefs:FlashcardSourceRef[];objective?:string;requestedCount?:number;cardTypes?:('qa'|'cloze')[];targetDeckId?:string;expectedDeckRevision?:number;clientCommandId:string};
 export const flashcardsApi={
@@ -28,6 +28,6 @@ export async function routeFlashcardRequest(text:string,sessionId:string,courseI
  if(!selected?.length){const {learningApi}=await import('./api');const note=await learningApi.getStudyNote(sessionId).catch(()=>null);if(note){const value=await learningApi.getWorkspaceNote(note.noteId);selected=[{kind:'lesson',id:value.id,revision:value.revision}];}}
  const {openWorkspaceFlashcards}=await import('./workspace-events');
  if(!selected?.length){openWorkspaceFlashcards({view:'library',sessionId,courseId});return true;}
- await flashcardsApi.generate({sessionId,courseId,origin:'conversation',sourceRefs:selected,objective:text,clientCommandId:crypto.randomUUID()});
+ const identity=await request<{ownerId:string}>('/v1/account');const key='openlearn-flashcard-chat-v1:'+identity.ownerId+':'+sessionId;const saved=localStorage.getItem(key);const intent:FlashcardGeneration=saved?JSON.parse(saved):{sessionId,courseId,origin:'conversation',sourceRefs:selected,objective:text,clientCommandId:crypto.randomUUID()};localStorage.setItem(key,JSON.stringify(intent));await flashcardsApi.generate(intent);localStorage.removeItem(key);
  openWorkspaceFlashcards({view:'library',sessionId,courseId,sourceRefs:selected});return true;
 }

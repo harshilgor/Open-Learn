@@ -111,7 +111,7 @@
 .sourceChip{display:block;margin:6px 0;border:1px solid #dce5d6;border-radius:6px;padding:5px 7px;background:#f8fbf6;color:#53614c;font-size:11px;text-align:left}.sourceChip:hover{background:#edf3e9}
 
 /* Fixed chat surface: responses scroll while the composer remains in reach. */
-.chatShell{position:relative;flex:1;min-width:0;width:100%;display:grid;grid-template-rows:minmax(0,1fr) auto;height:100%;min-height:0;overflow:hidden;background:#fff}
+.chatShell{position:relative;flex:1;min-width:0;width:100%;display:grid;grid-template-rows:minmax(0,1fr);height:100%;min-height:0;overflow:hidden;background:#fff}
 /* scroll-padding keeps scrollIntoView / “stick to bottom” above the floating composer. */
 .chatScroll{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:0 24px;scroll-padding-bottom:var(--composer-clearance, 168px)}
 /* Bottom padding clears the floating composer (~120px) plus room so the last
@@ -320,3 +320,15 @@ does not read as a solid white empty slab. */
 .composerDock { position: relative; background: var(--background); }
 .chatScroll { scroll-padding-bottom: 24px; }
 .chatShell .page { padding-bottom: 24px; }
+
+/* Compose stays inside the available chat area, including short screens. */
+.chatShell { min-height: 180px; }
+.chatShell .empty { min-height: 100%; padding-bottom: var(--composer-clearance, 168px); }
+.composerDock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+.connectionNotice { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 10px; font-size:12px; line-height:1.5; color:var(--muted-foreground); }
+.connectionNotice button { text-decoration:underline; min-height:32px; font-weight:600; }
+.composerTools { min-width:0; flex-wrap:wrap; }
+.composerBottom { align-items:flex-end; gap:8px; }
+.composer textarea { font-size:max(16px,var(--type-body,16px)); }
+@media (max-width:420px) { .composerDock { padding-left:10px; padding-right:10px; } .composerTools { gap:2px; } .composerTools button,.composerTools [role=combobox] { max-width:100%; } }
+@media (max-height:650px) { .chatShell .empty { justify-content:flex-start; padding-top:16px; } .greeting { font-size:18px; } }

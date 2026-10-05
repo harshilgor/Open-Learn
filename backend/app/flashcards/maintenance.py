@@ -35,6 +35,7 @@ class FlashcardMaintenance:
         for assessment in assessments:
             if assessment.get('kind')!='assessment':continue
             facts=assessment.get('facts',{});due=facts.get('due',{}).get('value') or facts.get('date',{}).get('value')
+            if facts.get('due',{}).get('conflict') or facts.get('date',{}).get('conflict'):continue
             if not due or facts.get('completed',{}).get('value') or facts.get('cancelled',{}).get('value'):continue
             raw=due.get('value') if isinstance(due,dict) else due
             try:

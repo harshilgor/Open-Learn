@@ -81,11 +81,12 @@ export function ChatModeSelector({ mode, onModeChange, disabled, conversation, o
 export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
-export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext }: {
+export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry }: {
   value: string; onChange: (value: string) => void; attachments: ChatAttachment[];
   onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
   mode?: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
   noteMentions?: ChatNoteMention[]; onAddNoteMention?: (note: WorkspaceNoteSummary) => void; onRemoveNoteMention?: (noteId: string) => void; onOpenNoteMention?: (noteId: string) => void;
+  unavailable?: string; onRetry?: () => void;
   variant?: 'main' | 'compact'; contextConcept?: { id: string; title: string } | null; onRemoveContext?: () => void;
 }) {
   const reduceMotion = useAppReducedMotion();
@@ -127,7 +128,7 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
   useLayoutEffect(() => { resizeTextarea(); }, [resizeTextarea, value]);
 
   return <form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : ''} ${dragging ? styles.dragging : ''}`}
-    onSubmit={event => { event.preventDefault(); onSubmit(); }}
+    onSubmit={event => { event.preventDefault(); if (!busy && !unavailable) onSubmit(); }}
     onDragEnter={event => { if (!busy && event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDragging(true); } }}
     onDragOver={event => { if (event.dataTransfer.types.some(type => ['Files', 'text/uri-list'].includes(type))) { event.preventDefault(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; } }}
     onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
@@ -137,7 +138,8 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     {contextConcept ? <div className={styles.contextRow}><span>Asking about: {contextConcept.title}<button type="button" aria-label={`Remove ${contextConcept.title} context`} onClick={onRemoveContext}><X size={13}/></button></span></div> : null}
     {noteMentions.length > 0 ? <div className={styles.noteReceipt} aria-label="Learner note context"><AnimatePresence initial={false}>{noteMentions.map(note => <motion.span key={note.noteId} layout={!reduceMotion} initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }} transition={{ duration: 0.16 }}><button type="button" onClick={() => onOpenNoteMention?.(note.noteId)} title="Open note in workspace">@{note.title}</button><details><summary>{note.endOffset - note.startOffset} characters</summary><pre>{note.excerpt}</pre></details><button type="button" aria-label={`Remove ${note.title} from context`} onClick={() => onRemoveNoteMention?.(note.noteId)}><X size={12} /></button></motion.span>)}</AnimatePresence><p>Learner-provided context only. It is not a verified source.</p></div> : null}
     <label htmlFor="chat-message" className="sr-only">Message your tutor</label>
-    <textarea ref={textarea} id="chat-message" disabled={busy} value={value} maxLength={4000}
+    {unavailable ? <p className={styles.connectionNotice} role="status">{unavailable}{onRetry ? <button type="button" onClick={onRetry}>Retry connection</button> : null}</p> : null}
+    <textarea ref={textarea} id="chat-message" value={value} maxLength={4000}
       placeholder={
         mode === 'quiz'
           ? (followup ? 'Answer the question, or ask for a hint…' : 'Quiz a topic, or ask for practice questions…')
@@ -147,10 +149,10 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
       }
       rows={1} onChange={event => onChange(event.target.value)}
       onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); add(Array.from(event.clipboardData.files)); } }}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy) { event.preventDefault(); onSubmit(); } }} />
+      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy && !unavailable) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />
-    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div>
+    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div>{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || Boolean(unavailable) || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div>
     {hasLink && <p className={styles.composerNote}>Public links are imported as readable source material when you send.</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
   </form>;

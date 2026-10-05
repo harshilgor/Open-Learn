@@ -122,7 +122,7 @@ class MaterialService:
             mat_row = c.execute(text("SELECT course_id FROM materials WHERE id=:id"), {"id": mid}).mappings().first()
             course_id = mat_row["course_id"] if mat_row else None
         payload = json.loads(v["payload"])
-        return {"id": mid, "title": v["title"], "role": v["role"], "courseId": course_id, "versionId": v["id"], "status": v["status"], "mediaType": v["media_type"], "byteCount": v["byte_count"], "jobId": job["id"] if job else None, **payload}
+        return {"id": mid, "title": v["title"], "role": v["role"], "courseId": course_id, "versionId": v["id"], "revision": v["version"], "status": v["status"], "mediaType": v["media_type"], "byteCount": v["byte_count"], "jobId": job["id"] if job else None, **payload}
 
     def list(self, owner, course_id: str | None = None):
         with self.store.engine.connect() as c:
@@ -308,7 +308,9 @@ class MaterialService:
             from .agent_execution.sandbox_inputs import erase_versions
             erase_versions(c,owner,{v['id'] for v in versions})
             c.execute(text("UPDATE materials SET deleted=true WHERE id=:id AND owner_id=:owner"), {"id": mid, "owner": owner})
+            from .flashcards.class_adapter import invalidate_source
             for v in versions:
+                invalidate_source(self.store,c,owner,v["id"])
                 c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
                 c.execute(text("DELETE FROM material_attachments WHERE version_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_jobs SET status='cancelled' WHERE target_id=:id"), {"id": v["id"]})

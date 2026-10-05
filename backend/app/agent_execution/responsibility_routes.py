@@ -51,7 +51,7 @@ def build_responsibility_router(get_store):
         learner=owner();store=get_store()
         with store.transaction() as conn:
             assert_owner_active(conn,learner)
-            rows=conn.execute(text("SELECT * FROM notification_deliveries WHERE owner_id=:owner AND channel='inbox' AND id LIKE 'responsibility_notice_%' ORDER BY created_at DESC LIMIT 100"),{'owner':learner}).mappings().all()
+            rows=conn.execute(text("SELECT * FROM notification_deliveries WHERE owner_id=:owner AND channel='inbox' AND (id LIKE 'responsibility_notice_%' OR id LIKE 'fc_notice_%') ORDER BY created_at DESC LIMIT 100"),{'owner':learner}).mappings().all()
             deliveries=conn.execute(text("SELECT reminder_id,status FROM notification_deliveries WHERE owner_id=:owner AND channel='expo'"),{'owner':learner}).mappings().all()
             delivery={r['reminder_id']:r['status'] for r in deliveries}
             return {'notifications':[{'id':r['id'],'status':r['status'],'pushStatus':delivery.get(r['reminder_id'],'disabled'),**json.loads(r['payload'])} for r in rows]}

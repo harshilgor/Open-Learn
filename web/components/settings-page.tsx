@@ -23,7 +23,7 @@ const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 
   { id: 'learning', label: 'Learning', icon: BookOpen },
   { id: 'audio', label: 'Audio & recordings', icon: Headphones },
   { id: 'usage', label: 'Usage', icon: Gauge },
-  { id: 'api-keys', label: 'API keys', icon: KeyRound },
+  { id: 'api-keys', label: 'AI service', icon: KeyRound },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'data', label: 'Data & privacy', icon: Database },
   { id: 'about', label: 'About', icon: CircleHelp },
@@ -179,9 +179,9 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
             </section>
           ) : null}
           {category === 'api-keys' ? (
-            <section aria-label="API key settings">
-              <h1>API keys</h1>
-              <p className={styles.lede}>Connect a model provider for AI-powered lessons, quizzes, and lecture transcription. Provider credentials are stored by this app’s local service.</p>
+            <section aria-label="AI service settings">
+              <h1>AI service</h1>
+              <p className={styles.lede}>AI access is included with Open Learn. Check service availability without managing provider credentials.</p>
               <div className={styles.group}>
                 <div className={styles.card}>
                   <ProviderSettings />
@@ -212,16 +212,13 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'about' ? (
             <section aria-label="About Open Learn">
               <h1>About</h1>
-              <p className={styles.lede}>A local-first learning environment for guided study, practice, and review.</p>
+              <p className={styles.lede}>Your learning environment for guided study, practice, and review across devices.</p>
               <div className={styles.card}>
-                <div className={styles.aboutRow}><strong>Open Learn</strong><span>Personal · On this device</span></div>
-                <dl className={styles.aboutFacts}><div><dt>Version</dt><dd>{appVersion}</dd></div><div><dt>Platform</dt><dd>{platform}</dd></div><div><dt>Storage</dt><dd>{desktop ? 'Desktop app data folder' : 'Connected local service'}</dd></div></dl>
-                <p className={styles.muted}>Preferences are saved on this device. Model credentials stay in the desktop credential store or local service configuration and are never included in learning backups.</p>
+                <div className={styles.aboutRow}><strong>Open Learn</strong><span>Your Open Learn account</span></div>
+                <dl className={styles.aboutFacts}><div><dt>Version</dt><dd>{appVersion}</dd></div><div><dt>Platform</dt><dd>{platform}</dd></div><div><dt>Storage</dt><dd>Account service and device drafts</dd></div></dl>
+                <p className={styles.muted}>Preferences are saved on this device. AI credentials are managed securely by Open Learn and are never included in app downloads or learning backups.</p>
                 <div className={styles.aboutActions}>
                   <Button variant="outline" onClick={() => downloadDiagnostics(preferences, appVersion, platform)}><Download size={15} />Download diagnostics</Button>
-                  <a href="https://github.com/harshilgor/Open-Learn/blob/main/CHANGELOG.md" target="_blank" rel="noreferrer">Release notes<ExternalLink size={14} /></a>
-                  <a href="https://github.com/harshilgor/Open-Learn/blob/main/docs/INSTALL.md" target="_blank" rel="noreferrer">Help and setup<ExternalLink size={14} /></a>
-                  <a href="https://github.com/harshilgor/Open-Learn/issues/new" target="_blank" rel="noreferrer">Send feedback<ExternalLink size={14} /></a>
                 </div>
               </div>
             </section>

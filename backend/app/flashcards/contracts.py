@@ -2,7 +2,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 class Contract(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra='forbid')
+    model_config = ConfigDict(populate_by_name=True, extra='forbid', str_strip_whitespace=True)
 
 class SourceRef(Contract):
     kind: Literal['note','lesson','material','quiz_attempt','lecture']
@@ -25,20 +25,40 @@ class FlashcardRequest(Contract):
     expected_deck_revision: int | None = Field(default=None,alias='expectedDeckRevision',ge=1)
     client_command_id: str = Field(alias='clientCommandId',min_length=1,max_length=160)
 
+class ImageMask(Contract):
+    x: float = Field(ge=0,le=1)
+    y: float = Field(ge=0,le=1)
+    width: float = Field(gt=0,le=1)
+    height: float = Field(gt=0,le=1)
+    @model_validator(mode='after')
+    def bounds(self):
+        if self.x+self.width>1 or self.y+self.height>1:raise ValueError('Image mask must stay within the image.')
+        return self
+
+class CardImage(Contract):
+    version_id: str = Field(alias='versionId',min_length=1,max_length=160)
+    alt_text: str = Field(alias='altText',min_length=3,max_length=500)
+    rights_confirmed: bool = Field(alias='rightsConfirmed')
+    masks: list[ImageMask] = Field(default_factory=list,max_length=20)
+
 class CardContent(Contract):
-    type: Literal['qa','cloze'] = 'qa'
+    type: Literal['qa','cloze','image_label','image_occlusion'] = 'qa'
     prompt: str = Field(min_length=3,max_length=1000)
     answer: str = Field(min_length=1,max_length=2000)
     explanation: str = Field(default='',max_length=3000)
     source_ids: list[str] = Field(alias='sourceIds',min_length=1,max_length=20)
     support_quote: str = Field(alias='supportQuote',min_length=1,max_length=2500)
     concept_ids: list[str] = Field(default_factory=list,alias='conceptIds',max_length=20)
+    image: CardImage | None = None
     @model_validator(mode='after')
     def cloze(self):
         if self.type=='cloze':
             import re
             matches=re.findall(r'\{\{c1::([^{}]+)\}\}',self.prompt)
             if len(matches)!=1 or matches[0].strip()!=self.answer.strip():raise ValueError('Cloze requires one c1 deletion matching the answer.')
+        if self.type in {'image_label','image_occlusion'}:
+            if not self.image or not self.image.rights_confirmed:raise ValueError('Visual cards require an owned image, alternative description and source-use confirmation.')
+            if self.type=='image_occlusion' and not self.image.masks:raise ValueError('Occlusion cards require a mask.')
         return self
 
 class Generated(Contract):
@@ -47,7 +67,7 @@ class Generated(Contract):
 class DeckCommand(Contract):
     command_id: str = Field(alias='commandId',min_length=1,max_length=160)
     expected_revision: int = Field(alias='expectedRevision',ge=1)
-    action: Literal['edit','publish','archive','restore','delete','suspend','activate','remove','reset_schedule','accept_candidate','dismiss_candidate','rename']
+    action: Literal['create','edit','publish','archive','restore','delete','suspend','activate','remove','reset_schedule','accept_candidate','dismiss_candidate','rename']
     card_id: str | None = Field(default=None,alias='cardId',max_length=160)
     candidate_id: str | None = Field(default=None,alias='candidateId',max_length=160)
     card_ids: list[str] = Field(default_factory=list,alias='cardIds',max_length=200)

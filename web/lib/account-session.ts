@@ -68,7 +68,7 @@ export async function authenticatedFetch(input: string, init: RequestInit = {}):
       const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)))).map(byte => byte.toString(16).padStart(2, '0')).join('');
       const saved = sessionStorage.getItem(`openlearn-account-owner:${hash}`);
       if (saved) account = { token, ownerId: saved };
-      const endpoint = new URL('/v1/account', input);
+      const endpoint = new URL('/v1/account', new URL(input, window.location.origin));
       const identityHeaders = new Headers(headers);
       identityHeaders.delete('Content-Type');
       const response = await fetch(endpoint, { headers: identityHeaders, signal: init.signal }).catch(error => {

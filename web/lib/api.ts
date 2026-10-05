@@ -1,3 +1,4 @@
+import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
 import { authenticatedFetch } from './account-session';
 /**
  * Browser client for the learning-kernel API.
@@ -368,9 +369,14 @@ export function apiBaseUrl(): string {
   const desktop = typeof window === 'undefined'
     ? undefined
     : (window as Window & { formaDesktop?: { apiBaseUrl?: string } }).formaDesktop?.apiBaseUrl;
-  // The local backend is the default while the hosted API is being wired.
-  // Deployments can set NEXT_PUBLIC_LEARNING_API_URL to their API origin.
-  return (configured || desktop || 'http://127.0.0.1:8000').replace(/\/$/, '');
+  if (desktop) return desktop.replace(/\/$/, '');
+  if (configured) {
+    try {
+      const parsed = new URL(configured);
+      if (parsed.protocol === 'https:' || (isLocalWeb() && parsed.protocol === 'http:')) return configured.replace(/\/$/, '');
+    } catch { /* Use the same-origin hosted API route. */ }
+  }
+  return isLocalWeb() ? 'http://127.0.0.1:8000' : '';
 }
 
 function desktopToken(): string | undefined {
@@ -394,7 +400,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     response = await authenticatedFetch(url(path), { ...init, headers });
   } catch (cause) {
     if (init.signal?.aborted) throw cause;
-    throw new Error('Cannot connect to the tutor service. Your message is still here. Start the local app with start-local.ps1, then try again.');
+    throw new LearningApiError(503, 'service_unavailable', serviceConnectionMessage());
   }
   const text = await response.text();
   let body: unknown = null;
@@ -440,13 +446,13 @@ export function friendlyServiceError(cause: unknown, service: string): FriendlyS
   if (cause instanceof LearningApiError && (cause.status === 404 || cause.status === 405)) {
     return {
       message: `${service} needs the latest tutor service.`,
-      detail: 'Restart the local API with start-local.ps1, then return here.',
+      detail: isDesktopApp() ? 'Restart the app and retry.' : 'Please retry in a moment. Your saved work is retained.',
     };
   }
-  if (raw.startsWith('Cannot connect to the tutor service')) {
+  if ((cause instanceof LearningApiError && cause.status >= 500) || raw.startsWith('Cannot connect to the tutor service')) {
     return {
-      message: 'Could not reach the tutor service.',
-      detail: 'Start the local app with start-local.ps1, then try again.',
+      message: 'Open Learn is temporarily unavailable.',
+      detail: isDesktopApp() ? 'Check your connection or restart the app, then retry.' : 'Please retry. Your saved work and current draft are retained.',
     };
   }
   return { message: `${service} could not be loaded.`, detail: raw };
@@ -535,6 +541,8 @@ export type NoteProposalRecord = {
 };
 
 export type ProviderSettingsStatus = {
+  managed?: boolean;
+  available?: boolean;
   provider: string;
   openRouterConfigured: boolean;
   openAiConfigured: boolean;

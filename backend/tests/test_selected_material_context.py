@@ -5,6 +5,7 @@ from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.app.identity_middleware import IdentityMiddleware
 from backend.app.graph_generator import GraphGenerator
 from backend.app.material_routes import build_material_router
 from backend.app.models import TopicScope, utc_now
@@ -23,7 +24,7 @@ def test_selected_owned_passage_is_the_entire_manifest(monkeypatch):
         scope = TopicScope(id="scope-selected", topic="Calculus", resolved_meaning="Calculus", objective="Learn", depth="introductory", created_at=utc_now())
         graph = GraphGenerator().generate(scope); store.save_scope(scope); store.save_graph(graph)
         store.save_session(LearningSession(id="session-selected", graph_id=graph.id, created_at=utc_now(), updated_at=utc_now()))
-        app = FastAPI(); app.include_router(build_material_router(lambda: store))
+        app = FastAPI(); app.add_middleware(IdentityMiddleware, store_provider=lambda: store); app.include_router(build_material_router(lambda: store))
         with TestClient(app) as client:
             chosen = client.post("/v1/materials/text", json={"title": "Chosen", "text": "A derivative measures a local rate of change."}).json()
             other = client.post("/v1/materials/text", json={"title": "Other", "text": "An integral accumulates quantities."}).json()
