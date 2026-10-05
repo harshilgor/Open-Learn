@@ -32,8 +32,6 @@ class AgentWorker:
             from ..flashcards.maintenance import FlashcardMaintenance
             FlashcardMaintenance(self.store).tick()
             self._flashcard_maintenance_at=time.time()
-        from ..in_class_service import InClassService
-        InClassService(self.store,self.provider_getter()).tick(min(limit,4))
         from .delegation import Delegation
         from .connected_actions import ConnectedActions
         Delegation(self.store).tick(limit)

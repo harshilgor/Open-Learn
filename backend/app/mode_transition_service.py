@@ -565,36 +565,37 @@ class ModeTransitionService:
         if not self.store:
             return {"recent": [], "misses": []}
         with self.store.engine.connect() as conn:
-            quiz_rows = conn.execute(text("SELECT payload FROM practice_records WHERE owner_id=:owner AND parent_id=:sid AND kind='quiz'"),
-                {"owner": owner, "sid": session_id}).fetchall()
-            quiz_ids = []
-            attempt_ids = []
-            for row in quiz_rows:
-                quiz = json.loads(row[0])
-                quiz_ids.append(quiz.get("id"))
-                attempt_ids.extend(quiz.get("attempts", []))
-            attempts = []
-            for attempt_id in dict.fromkeys(attempt_ids):
-                row = conn.execute(text("SELECT payload FROM practice_records WHERE id=:id AND owner_id=:owner AND kind='attempt'"),
-                    {"id": attempt_id, "owner": owner}).first()
-                if row:
-                    attempt = json.loads(row[0])
-                    if attempt.get("conceptId") == concept_id and attempt.get("quizId") in quiz_ids:
-                        attempts.append(attempt)
-        # One observation per original presentation. Retries are assistance, not
-        # independent failures, and a flagged attempt is excluded from evidence.
-        originals = {}
-        for attempt in attempts:
-            if attempt.get("retryOf") or attempt.get("assisted") or attempt.get("status") == "contested":
-                continue
-            if attempt.get("outcome") == "skip":
-                continue
-            key = attempt.get("presentationId")
-            if key:
-                previous = originals.get(key)
-                if previous is None or attempt.get("createdAt", "") > previous.get("createdAt", ""):
-                    originals[key] = attempt
-        recent = sorted(originals.values(), key=lambda item: item.get("createdAt", ""))[-3:]
+            rows = conn.execute(text("""
+                WITH ranked_attempts AS (
+                    SELECT a.id,a.payload,a.history_created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY a.history_presentation_id
+                            ORDER BY a.history_created_at DESC,a.id DESC
+                        ) AS presentation_rank
+                    FROM practice_records AS a
+                    JOIN practice_records AS q
+                      ON q.id=a.parent_id AND q.owner_id=a.owner_id AND q.kind='quiz'
+                    WHERE a.owner_id=:owner AND a.kind='attempt'
+                      AND q.history_session_id=:session AND a.history_concept_id=:concept
+                      AND a.history_presentation_id IS NOT NULL AND a.history_created_at IS NOT NULL
+                      AND a.history_is_retry=false AND a.history_assisted=false
+                      AND COALESCE(a.history_outcome,'')<>'skip'
+                      AND (a.history_status IS NULL OR a.history_status<>'contested')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM practice_records AS c
+                          WHERE c.owner_id=a.owner_id AND c.kind='challenge' AND c.parent_id=q.id
+                            AND c.history_presentation_id=a.history_presentation_id
+                            AND c.history_status='excluded_pending_review'
+                      )
+                )
+                SELECT id,payload,history_created_at FROM ranked_attempts
+                WHERE presentation_rank=1
+                ORDER BY history_created_at DESC,id DESC LIMIT 3
+            """), {"owner": owner, "session": session_id, "concept": concept_id}).mappings().all()
+        # The database returns one original, independent observation per
+        # presentation. Keeping only the newest three makes this bounded even
+        # for long-running quiz histories.
+        recent = [json.loads(row["payload"]) for row in reversed(rows)]
         misses = [item for item in recent if item.get("outcome") == "dont_know" or (item.get("score") is not None and item.get("score") < 0.5)]
         return {"recent": recent, "misses": misses}
 

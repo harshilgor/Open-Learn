@@ -309,6 +309,8 @@ class CourseService:
 
         with self.store.transaction() as conn:
             # Unlink associated sessions, notes, and materials rather than deleting them
+            from .in_class_service import invalidate_material_access
+            invalidate_material_access(conn,course_id=course_id,owner=owner_id,clear_class_course=True)
             session_rows = conn.execute(
                 text("SELECT id, payload FROM learning_sessions WHERE course_id = :id AND learner_id = :owner"),
                 {"id": course_id, "owner": owner_id},
@@ -367,6 +369,11 @@ class CourseService:
             if not row or (remove and row["course_id"] != course_id):
                 return False
             next_course_id = None if remove else course_id
+            from .in_class_service import invalidate_material_access
+            invalidate_material_access(
+                conn, session_id=session_id, owner=owner_id,
+                session_course_id=next_course_id, update_session_course=True,
+            )
             payload = json.loads(row["payload"])
             now = utc_now()
             payload["courseId"] = next_course_id
@@ -410,6 +417,7 @@ class CourseService:
         if not course:
             return False
         with self.store.transaction() as conn:
+            previous_course_id=conn.execute(text("SELECT course_id FROM materials WHERE id=:mid AND owner_id=:owner AND deleted=false"),{"mid":material_id,"owner":owner_id}).scalar_one_or_none()
             result = conn.execute(
                 text("UPDATE materials SET course_id = :cid WHERE id = :mid AND owner_id = :owner AND deleted = false"),
                 {"cid": course_id, "mid": material_id, "owner": owner_id},
@@ -419,6 +427,8 @@ class CourseService:
                     text("UPDATE courses SET updated_at = :now WHERE id = :cid"),
                     {"now": utc_now(), "cid": course_id},
                 )
+                from .in_class_service import invalidate_material_access
+                invalidate_material_access(conn,course_ids=[value for value in {previous_course_id,course_id} if value],material_id=material_id,owner=owner_id)
                 return True
         return False
 
@@ -436,6 +446,8 @@ class CourseService:
                     text("UPDATE courses SET updated_at = :now WHERE id = :cid"),
                     {"now": utc_now(), "cid": course_id},
                 )
+                from .in_class_service import invalidate_material_access
+                invalidate_material_access(conn,course_id=course_id,material_id=material_id,owner=owner_id)
                 return True
         return False
 

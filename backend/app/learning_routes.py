@@ -1,6 +1,6 @@
 """Local authorized workflow endpoints; jobs survive process and page restarts."""
 from .execution import schedule_local
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 import logging
 from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, RevisionCommand
 from .material_routes import material_owner
@@ -18,6 +18,9 @@ from .mode_transition_service import ModeTransitionService
 
 
 def run_job(store, provider, job_id):
+    from sqlalchemy import text
+    with store.engine.connect() as conn:
+        kind = conn.execute(text('SELECT kind FROM learning_jobs WHERE id=:id'), {'id': job_id}).scalar_one_or_none()
     records = WorkflowStore(store)
     job = records.claim(job_id)
     if not job:
@@ -207,8 +210,10 @@ def build_learning_router(store_provider, provider_getter):
         with db.transaction() as conn:
             return service.discard(conn, owner, draft_id)
     @router.get("/quizzes")
-    def listing(session_id: str | None = None, lesson_note_id: str | None = None, owner=Depends(material_owner), db=Depends(store_provider)):
-        return {"quizzes": QuizService(db, None).history(owner, session_id=session_id, lesson_note_id=lesson_note_id)}
+    def listing(session_id: str | None = None, lesson_note_id: str | None = None,
+                limit: int = Query(25, ge=1, le=100), cursor: str | None = Query(None, max_length=512),
+                owner=Depends(material_owner), db=Depends(store_provider)):
+        return QuizService(db, None).history(owner, session_id=session_id, lesson_note_id=lesson_note_id, limit=limit, cursor=cursor)
 
     @router.post("/quizzes", status_code=202)
     def create(command: QuizCreate, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):

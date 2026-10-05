@@ -52,7 +52,7 @@ def retrieve(store, owner, sid, query, byte_budget=16000, selected_span_ids=None
                 problem("source_outside_course", "Select material from this course or general references.", 409)
             if version["role"] in {"answer_key", "sample_paper"} or version["status"] not in {"ready", "partially_ready"} or block["kind"] == "private_solution":
                 problem("source_unavailable", "That passage cannot support teaching or assessment.", 409)
-            selected.append({"spanId": block["id"], "versionId": block["versionId"], "pageIndex": block["pageIndex"], "title": version["title"], "text": block["text"], "retrieval": "explicit_selection", "relevanceScore": 1.0})
+            selected.append({"spanId": block["id"], "versionId": block["versionId"], "pageIndex": block["pageIndex"], "pageLabel": block.get("pageLabel"), "geometry": block.get("geometry"), "extractionStatus": block.get("extractionStatus"), "ocrConfidence": block.get("ocrConfidence"), "title": version["title"], "text": block["text"], "retrieval": "explicit_selection", "relevanceScore": 1.0})
         if sum(len(item["text"].encode("utf-8")) for item in selected) > byte_budget:
             problem("source_budget_exceeded", "Selected passages exceed the context budget. Choose fewer passages.")
         return selected
@@ -94,10 +94,13 @@ def retrieve(store, owner, sid, query, byte_budget=16000, selected_span_ids=None
     ranked = rerank_passages(ranked, query, semantic_scores, metadata_scope)
     selected, used = [], 0
     for _, block, title, score, semantic_score, metadata_score in ranked:
-        cost = len(block["text"].encode("utf-8")) + len(title.encode("utf-8")) + 200
+        geometry = block.get("geometry")
+        cost = (len(block["text"].encode("utf-8")) + len(title.encode("utf-8"))
+                + (len(json.dumps(geometry, separators=(",", ":"))) if geometry else 0)
+                + len(str(block.get("pageLabel") or "")) + 200)
         if used + cost > byte_budget:
             continue
-        selected.append({"spanId": block["id"], "versionId": block["versionId"], "pageIndex": block["pageIndex"], "title": title, "text": block["text"],
+        selected.append({"spanId": block["id"], "versionId": block["versionId"], "pageIndex": block["pageIndex"], "pageLabel": block.get("pageLabel"), "geometry": geometry, "extractionStatus": block.get("extractionStatus"), "ocrConfidence": block.get("ocrConfidence"), "title": title, "text": block["text"],
                          "retrieval": "hybrid_embedding" if semantic_scores else "lexical_ranked",
                          "lexicalScore": round(score, 4), "semanticScore": round(semantic_score, 4) if semantic_scores else None,
                          "metadataScore": round(metadata_score, 4),

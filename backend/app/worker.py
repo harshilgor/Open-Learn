@@ -91,7 +91,7 @@ def tick(store, provider_getter):
     did_work = Outbox(store).deliver_one({"learning.command.completed": dispatch_learning_completion, "execution.job.requested": dispatch_job(store)})
     with store.engine.connect() as conn:
         pending = conn.execute(text("""SELECT id,kind FROM learning_jobs WHERE cancellation_requested=false
-            AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY id LIMIT 100"""), {"now": time.time()}).all()
+            AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY priority DESC,created_at,id LIMIT 100"""), {"now": time.time()}).all()
     for job_id, kind in pending:
         if kind in LEARNING_KINDS:
             run_job(store, provider_getter(), job_id)
@@ -105,7 +105,7 @@ def tick(store, provider_getter):
             run_hypothesis(store, provider_getter(), job_id)
             did_work = True
             break
-    if LectureWorker(store, provider_getter).drain(limit=1):
+    if LectureWorker(store, provider_getter).drain(limit=4):
         did_work = True
     if MaterialService(store).process_one():
         did_work = True

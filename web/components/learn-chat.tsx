@@ -33,6 +33,7 @@ import { MessageActionBar, VerificationBadge, type MessageVerification } from '.
 import {useBrowserAssistant} from '@/lib/browser-assistant';
 import {BrowserTaskCard} from './browser-task-card';
 import {ExecutionPanel} from './assistant/execution-panel';
+import {parseClassReferenceOpenRequest,requestClassReferenceOpen} from '@/lib/in-class';
 
 type NoteContextReceipt = { label: string; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[]; totalCharacters: number };
 type ReplacementTarget = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number };
@@ -141,6 +142,16 @@ export function LearnChat({
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  const [reminderReply, setReminderReply] = useState('');
+  const [classActionReply,setClassActionReply]=useState('');
+  const [scheduledMessages,setScheduledMessages]=useState<{id:string;title:string;body:string;url:string}[]>([]);
+  useEffect(()=>{
+    if(!sessionId)return;
+    let live=true;
+    const load=()=>void request<{messages:{id:string;title:string;body:string;url:string}[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId)).then(result=>{if(live)setScheduledMessages(result.messages);}).catch(()=>{});
+    load();const timer=window.setInterval(load,15000);
+    return()=>{live=false;window.clearInterval(timer);};
+  },[sessionId]);
   const [selection, setSelection] = useState<SelectedPassage | null>(null);
   const [selectionPanel, setSelectionPanel] = useState<SelectionPanel | null>(null);
   const [selectionFollowup, setSelectionFollowup] = useState('');
@@ -816,7 +827,13 @@ export function LearnChat({
     if (!text || busy) return;
     if (!buddies.active) { setError('Reconnect to Open Learn before sending. Your draft is still here.'); void buddies.refresh(); return; }
     if (buddies.active.archived && !sessionId) { setError('Choose an active Buddy to start a new conversation.'); return; }
+    setClassActionReply('');
     if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}
+    if(!attachments.length){
+      const intent=parseClassReferenceOpenRequest(text);
+      const opened=intent?await requestClassReferenceOpen(intent,initialSessionId||sessionId):null;
+      if(opened){clearSubmittedDraft();setClassActionReply(`Opened ${opened.title} · Page ${opened.pageIndex+1} in your live class.`);setProgress('');return;}
+    }
     if (quizClarification) {
       const pending = quizClarification;
       setQuizClarification(null);
@@ -850,7 +867,11 @@ export function LearnChat({
       if (!sessionId) setSessionId(currentSession.id);
       rememberSessionHint(currentSession.id);
       navigateToSession(currentSession.id, !sessionId);
-      if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {clearSubmittedDraft();setProgress('');return;}
+        if (!attachments.length && /^(?:remind me|quiz me (?:every|weekdays)|every\b|schedule\b|show my reminders|list (?:my )?reminders|cancel .*reminder|snooze)/i.test(text)) {
+          const result = await request<{handled:boolean;message?:string}>('/v1/reminder-chat-command', {method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,sessionId:currentSession.id,buddyId:buddies.active.id,courseId:courseId||undefined})});
+          if (result.handled) {setReminderReply(result.message||'Reminder updated.');clearSubmittedDraft();setProgress('');return;}
+        }
+        if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {clearSubmittedDraft();setProgress('');return;}
       if (chatMode !== 'quiz' && !attachments.length && await browserAssistant.tryStart(text, currentSession.id)) {
         clearSubmittedDraft(); setProgress('');
         return;
@@ -976,6 +997,9 @@ export function LearnChat({
     {chatMode !== 'quiz' ? <ExecutionPanel sessionId={sessionId} courseId={courseId} onSession={id => { setSessionId(id); rememberSessionHint(id); navigateToSession(id, !sessionId); }} /> : null}
     {browserAssistant.tasks.map(task=><BrowserTaskCard key={task.id} task={task} onCommand={browserAssistant.command}/>)}
     {browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
+    {reminderReply ? <div className="buddy-preview" role="status"><p style={{whiteSpace:'pre-line'}}>{reminderReply}</p><Button variant="ghost" onClick={()=>{window.location.href='/chat?view=reminders';}}>Open reminders</Button></div> : null}
+    {classActionReply ? <div className="buddy-preview" role="status"><p>{classActionReply}</p></div> : null}
+    {scheduledMessages.map(message=><article key={message.id} className="buddy-preview"><strong>{message.title}</strong><p>{message.body}</p><a href={message.url}>Open activity</a></article>)}
     {quizClarification ? <div className={styles.turnStatus} role="status"><strong>What topic should I quiz you on?</strong><p>Reply in Ask chat with the topic, then I’ll start your quiz.</p><Button type="button" variant="ghost" size="sm" onClick={() => { if (quizClarification.sourceTransitionId && quizClarification.sessionId) void learningApi.recordTransitionInteraction(quizClarification.sourceTransitionId, 'failed', 'quiz', quizClarification.sessionId).catch(() => undefined); setQuizClarification(null); }}>Cancel</Button></div> : null}
     {!turns.length && busy && !streaming && !activity ? <div className={styles.loading} role="status"><LoaderCircle className={styles.spinner} size={22} /><h2>{progress}</h2><p>{prompt}</p><span>A thoughtful answer takes a little time.</span></div> : null}
     {!turns.length && activity ? <AnimatePresence mode="wait">{activity && <WebResearchActivity activity={activity} />}</AnimatePresence> : null}

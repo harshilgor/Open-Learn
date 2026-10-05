@@ -16,6 +16,22 @@ contextBridge.exposeInMainWorld('formaDesktop', Object.freeze({
     get: () => ipcRenderer.invoke('preferences:get'),
     set: values => ipcRenderer.invoke('preferences:set', values)
   }),
+  classCapture: Object.freeze({
+    setOwnership: (active, consentGranted) => ipcRenderer.invoke('class-capture:ownership', active, consentGranted),
+    onLifecycle: callback => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('forma:class-lifecycle', listener);
+      return () => ipcRenderer.removeListener('forma:class-lifecycle', listener);
+    },
+    displaySleepStatus: () => ipcRenderer.invoke('class-capture:display-sleep-status'),
+    beginDisplaySleepPrevention: consentGranted => ipcRenderer.invoke('class-capture:display-sleep-begin', consentGranted),
+    endDisplaySleepPrevention: () => ipcRenderer.invoke('class-capture:display-sleep-end'),
+    onDisplaySleepStatus: callback => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('forma:class-display-sleep-status', listener);
+      return () => ipcRenderer.removeListener('forma:class-display-sleep-status', listener);
+    }
+  }),
   updates: Object.freeze({
     status: () => ipcRenderer.invoke('updates:status'),
     check: () => ipcRenderer.invoke('updates:check'),

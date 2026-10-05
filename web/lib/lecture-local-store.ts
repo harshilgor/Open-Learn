@@ -1,7 +1,7 @@
 /** Durable browser manifest and independently playable audio slices. */
 export type LocalLecturePhase = 'recording' | 'paused' | 'stop_requested' | 'interrupted' | 'completed';
 export type LocalChunkState = 'persisted' | 'uploading' | 'server_confirmed' | 'failed';
-export type LecturePreferences = { depth: 'concise' | 'standard' | 'detailed'; definitions: boolean; examples: boolean; equations: boolean; derivations: boolean; studentQuestions: boolean; professorEmphasis: boolean; examHints: boolean; administrative: boolean; keepAudio: boolean };
+export type LecturePreferences = { depth: 'concise' | 'standard' | 'detailed'; definitions: boolean; examples: boolean; equations: boolean; derivations: boolean; studentQuestions: boolean; professorEmphasis: boolean; examHints: boolean; administrative: boolean; keepAudio: boolean; captureSystemAudio?: boolean };
 
 export const defaultLecturePreferences: LecturePreferences = { depth: 'standard', definitions: true, examples: true, equations: true, derivations: true, studentQuestions: true, professorEmphasis: true, examHints: true, administrative: false, keepAudio: true };
 
@@ -170,7 +170,10 @@ export async function exportLocalLecture(id: string): Promise<void> {
   const session = await getLocalLecture(id);
   if (!session) throw new Error('The saved recording manifest is unavailable.');
   const chunks = await listLocalChunks(id);
-  const entries = [{name: 'manifest.json', blob: new Blob([JSON.stringify({session, chunks: chunks.map(({blob: _blob, ...metadata}) => metadata)}, null, 2)], {type: 'application/json'})}, ...chunks.map(c => ({name: `audio/${String(c.sequenceNumber).padStart(6,'0')}.${c.mimeType === 'audio/mp4' ? 'm4a' : c.mimeType === 'audio/ogg' ? 'ogg' : 'webm'}`, blob: c.blob}))];
+  const exportedSession = session.classSetup?.captureCapability
+    ? {...session, classSetup: {...session.classSetup, captureCapability: undefined}}
+    : session;
+  const entries = [{name: 'manifest.json', blob: new Blob([JSON.stringify({session: exportedSession, chunks: chunks.map(({blob: _blob, ...metadata}) => metadata)}, null, 2)], {type: 'application/json'})}, ...chunks.map(c => ({name: `audio/${String(c.sequenceNumber).padStart(6,'0')}.${c.mimeType === 'audio/mp4' ? 'm4a' : c.mimeType === 'audio/ogg' ? 'ogg' : 'webm'}`, blob: c.blob}))];
   const parts: BlobPart[] = [];
   for (const entry of entries) {
     const header = new Uint8Array(512);

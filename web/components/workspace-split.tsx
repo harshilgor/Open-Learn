@@ -9,7 +9,7 @@ import styles from './workspace-split.module.css';
 import {WORKSPACE_FLASHCARDS_OPEN_EVENT} from '@/lib/workspace-events';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import type {FlashcardView} from '@/lib/flashcards-client';
-import {CLASS_OPEN_EVENT} from '@/lib/in-class';
+import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
 const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes'], activeTab: 'notes' };
@@ -48,14 +48,14 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   const [sourceToOpen, setSourceToOpen] = useState<{ spanId: string; versionId?: string } | null>(null);
   const [quizToOpen, setQuizToOpen] = useState<WorkspaceQuizOpen | null>(null);
   const [flashcardLaunch,setFlashcardLaunch]=useState<FlashcardView|null>(null);
+  const [classId,setClassId]=useState<string|null>(null);
   useEffect(()=>{
     const open=(event:Event)=>{const detail=(event as CustomEvent<FlashcardView>).detail;if(!detail)return;setFlashcardLaunch(detail);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('flashcards')?current.tabs:[...current.tabs,'flashcards'],activeTab:'flashcards'}));const url=new URL(window.location.href);url.searchParams.set('flashcards',detail.deckId||'library');if(detail.reviewSessionId)url.searchParams.set('flashcardReview',detail.reviewSessionId);else url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     const restore=()=>{const query=new URLSearchParams(window.location.search);const deckId=query.get('flashcards'),reviewSessionId=query.get('flashcardReview');if(deckId||reviewSessionId)open(new CustomEvent(WORKSPACE_FLASHCARDS_OPEN_EVENT,{detail:{deckId:deckId==='library'?undefined:deckId||undefined,view:reviewSessionId?'review':deckId==='library'?'library':'editor',reviewSessionId:reviewSessionId||undefined}}));};
-    const clear=()=>{setFlashcardLaunch(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
+    const clear=()=>{setFlashcardLaunch(null);setClassId(null);setActiveClassContext(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     window.addEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.addEventListener('popstate',restore);window.addEventListener(ACCOUNT_CHANGED,clear);restore();return()=>{window.removeEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.removeEventListener('popstate',restore);window.removeEventListener(ACCOUNT_CHANGED,clear);};
   },[]);
-  const [classId,setClassId]=useState<string|null>(null);
-  useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
+  useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setActiveClassContext(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
   const groupRef = useRef<HTMLDivElement | null>(null);
   const resizing = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);

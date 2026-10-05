@@ -6,11 +6,12 @@ import { runInNewContext } from 'node:vm';
 import { randomUUID } from 'node:crypto';
 import ts from 'typescript';
 
-function captureHarness({ failPersist = false } = {}) {
+function captureHarness({ failPersist = false, denyResume = false } = {}) {
   const sessions = new Map();
   const events = [];
   const stoppedTracks = [];
   const syncCalls = [];
+  let microphoneRequests = 0;
   const localStore = {
     defaultLecturePreferences: { depth: 'standard', keepAudio: true },
     async createLocalLecture(input) {
@@ -49,18 +50,28 @@ function captureHarness({ failPersist = false } = {}) {
     require(name) {
       if (name === '@/lib/lecture-local-store') return localStore;
       if (name === '@/lib/lecture-upload-queue') return { syncLecture: async id => { syncCalls.push(id); } };
+      if (name === './account-session') return { ACCOUNT_CHANGED: 'account-changed' };
+      if (name === './live-lecture-transcription') return { LiveLectureTranscription: class {} };
       throw new Error(`Unexpected import: ${name}`);
     },
-    navigator: { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [{ stop: () => stoppedTracks.push(true) }] }) }, storage: { persist: async () => true } },
+    navigator: { mediaDevices: { getUserMedia: async () => {
+      microphoneRequests++;
+      if (denyResume && microphoneRequests > 1) throw new Error('Microphone permission denied.');
+      const track = {readyState: 'live', addEventListener() {}, stop() { if (this.readyState === 'live') stoppedTracks.push(true); this.readyState = 'ended'; }};
+      return {getTracks: () => [track], getAudioTracks: () => [track]};
+    } }, storage: { persist: async () => true } },
     MediaRecorder: FakeMediaRecorder,
-    window: { dispatchEvent: event => events.push(event.detail) },
+    window: { dispatchEvent: event => events.push(event.detail), addEventListener() {} },
     CustomEvent: class { constructor(_name, options) { this.detail = options.detail; } },
     crypto: { randomUUID },
     performance,
     Date,
+    Error,
     Blob,
     setTimeout,
     clearTimeout,
+    setInterval,
+    clearInterval,
   };
   runInNewContext(compiled, context, { filename });
   return { capture: exports.lectureCapture, sessions, events, stoppedTracks, syncCalls };
@@ -80,6 +91,25 @@ test('a stopped recording is saved after its final audio slice is persisted', as
   assert.equal(sessions.get(id).nextSequenceNumber, 1);
   assert.equal(events.at(-1).phase, 'saved');
   assert.equal(stoppedTracks.length, 1);
+});
+
+test('pause releases microphone and explicit resume reacquires it without replacing manifest', async () => {
+  const {capture, sessions, stoppedTracks} = captureHarness();
+  const id = await capture.start({title: 'Biology'});
+  await capture.pause(); await settle();
+  assert.equal(capture.phase, 'paused'); assert.equal(capture.mediaStream, null); assert.equal(stoppedTracks.length, 1);
+  await capture.resume(); assert.equal(capture.phase, 'recording'); assert.equal(capture.recordingId, id);
+  await capture.stop(); await settle();
+  assert.equal(stoppedTracks.length, 2); assert.equal(sessions.get(id).nextSequenceNumber, 2);
+});
+
+test('denied resume stays paused with no live microphone and saved audio can still finish', async () => {
+  const {capture, sessions, stoppedTracks} = captureHarness({denyResume: true});
+  const id = await capture.start({title: 'Biology'});
+  await capture.pause(); await settle(); await capture.resume();
+  assert.equal(capture.phase, 'paused'); assert.equal(capture.mediaStream, null);
+  assert.match(capture.error, /permission denied/); assert.equal(stoppedTracks.length, 1);
+  await capture.stop(); await settle(); assert.equal(sessions.get(id).phase, 'stop_requested');
 });
 
 test('a failed local slice save leaves an interrupted session for recovery', async () => {

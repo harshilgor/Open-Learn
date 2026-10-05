@@ -96,6 +96,7 @@ app.add_middleware(
     allow_origins=[local_web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
     allow_credentials=True,
 )
 generator = GraphGenerator()
@@ -146,6 +147,8 @@ from .flashcards.routes import build_flashcard_router
 app.include_router(build_flashcard_router(get_store))
 from .in_class_routes import build_in_class_router
 app.include_router(build_in_class_router(get_store, lambda: lesson_provider))
+from .class_youtube_routes import build_class_youtube_router
+app.include_router(build_class_youtube_router(get_store))
 app.include_router(build_academic_router(get_store))
 app.include_router(build_canvas_router(get_store))
 from .browser_assistant.routes import build_assistant_router
@@ -156,6 +159,8 @@ from .mobile_routes import build_mobile_router
 app.include_router(build_mobile_router(get_store))
 from .buddy_routes import build_buddy_router
 app.include_router(build_buddy_router(get_store))
+from .reminder_routes import build_reminder_router
+app.include_router(build_reminder_router(get_store,lambda:lesson_provider))
 from .agent_execution.research_routes import build_research_router
 app.include_router(build_research_router(get_store))
 from .agent_execution.connected_routes import build_connected_router
@@ -179,6 +184,25 @@ def stop_agent_execution_worker():
     if hasattr(app.state, 'agent_stop'):
         app.state.agent_stop.set()
         app.state.agent_thread.join(timeout=5)
+
+
+@app.on_event('startup')
+def start_in_class_worker():
+    from .agent_execution.config import worker_mode
+    if worker_mode() != 'embedded': return
+    from threading import Event
+    from .in_class_worker import InClassWorker
+    app.state.class_stop = Event()
+    app.state.class_thread = Thread(target=InClassWorker(store, lambda: lesson_provider).run,
+                                    args=(app.state.class_stop,), daemon=True)
+    app.state.class_thread.start()
+
+
+@app.on_event('shutdown')
+def stop_in_class_worker():
+    if hasattr(app.state, 'class_stop'):
+        app.state.class_stop.set()
+        app.state.class_thread.join(timeout=5)
 
 
 @app.on_event('startup')

@@ -12,7 +12,7 @@ let root:Root, container:HTMLDivElement;
 beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();vi.clearAllMocks();container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);mocks.local.mockResolvedValue(null);});
 afterEach(()=>{act(()=>root.unmount());container.remove();vi.useRealTimers();});
 it('shows a processing failure only in the note banner and retries from there',async()=>{
-  mocks.status.mockResolvedValue({noteId:'n1',recordingStatus:'failed',captureComplete:true,error:'Transcription failed',chunks:{serverConfirmed:1,expected:1,transcribed:0},preferences:{}});mocks.retry.mockResolvedValue({});
+  mocks.status.mockResolvedValue({noteId:'n1',recordingStatus:'failed',captureComplete:true,error:'Transcription failed',chunks:{serverConfirmed:1,expected:1,transcribed:0},preferences:{keepAudio:true},counts:{audioRetention:'kept'},stages:[]});mocks.retry.mockResolvedValue({});
   act(()=>root.render(<><ClassRecorder setupOpen={false} onSetupOpenChange={()=>{}} folder={null} onNoteCreated={()=>{}}/><LectureNotesView recordingId="r1"/></>));
   await act(async()=>{await vi.advanceTimersByTimeAsync(1);window.dispatchEvent(new CustomEvent('test-sync',{detail:{id:'r1',status:await mocks.status()}}));});
   expect(container.textContent?.match(/Transcription failed/g)).toHaveLength(1);

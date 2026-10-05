@@ -4,22 +4,49 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import text
 
 from .lecture_models import EntityBatch, LecturePreferences, SectionBatch, SectionProposal, VerificationBatch
-from .lecture_provider import TranscriptionFailure, configured_transcription_provider, normalize_text
+from .lecture_provider import OpenAITranscriptionProvider, TranscriptionFailure, configured_transcription_provider, normalize_text
 from .lecture_service import LectureError, LectureService, encoded, uid
 from .workflow_store import WorkflowStore
-from .execution import active_job, LeaseHeartbeat
+from .execution import job_scope, LeaseHeartbeat
 
 log = logging.getLogger(__name__)
 _worker_lock = threading.Lock()
-JOB_KINDS = ("lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate")
+JOB_KINDS = ("lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention")
+_CLASS_TRANSCRIPTION_MODELS = frozenset({"gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"})
+
+
+def configured_class_transcription_provider():
+    """Use the class recording's supported OpenAI speech-to-text configuration.
+
+    Text generation may use OpenRouter, but authoritative class transcription
+    is intentionally pinned to OpenAI. Keep the legacy ``auto`` setting
+    compatible while preventing an explicit OpenRouter selection from silently
+    changing providers.
+    """
+    selected = os.getenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", "auto").strip().lower()
+    if selected not in {"auto", "openai"}:
+        raise TranscriptionFailure(
+            "Class transcription only supports OpenAI; set AI_TUTOR_TRANSCRIPTION_PROVIDER=openai."
+        )
+    model = os.getenv("AI_TUTOR_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe").strip()
+    if not model:
+        model = "gpt-4o-mini-transcribe"
+    if model not in _CLASS_TRANSCRIPTION_MODELS:
+        supported = ", ".join(sorted(_CLASS_TRANSCRIPTION_MODELS))
+        raise TranscriptionFailure(
+            f"AI_TUTOR_TRANSCRIPTION_MODEL must be one of: {supported}."
+        )
+    return OpenAITranscriptionProvider(model=model)
 
 
 def _stage(store, recording_id: str, stage: str, status: str, *, error: str | None = None):
@@ -59,30 +86,38 @@ def _course_vocabulary(store, owner: str, course_id: str | None) -> str:
     return ", ".join(dict.fromkeys(rows))[:350]
 
 
-def transcribe_chunk(store, owner: str, recording_id: str, sequence: int, transcriber=None):
+def transcribe_chunk(store, owner: str, recording_id: str, sequence: int, transcriber=None, job=None):
     service = LectureService(store)
     recording = service._row(owner, recording_id)
     with store.engine.connect() as conn:
         chunk = conn.execute(text("SELECT * FROM lecture_audio_chunks WHERE recording_id=:id AND sequence_number=:seq"), {"id": recording_id, "seq": sequence}).mappings().first()
+        is_class_session = bool(conn.execute(text("SELECT 1 FROM class_sessions WHERE recording_id=:id AND owner_id=:owner LIMIT 1"), {"id": recording_id, "owner": owner}).first())
     if not chunk:
         raise LectureError("chunk_not_found", "Audio slice not found.", 404)
     if chunk["transcription_status"] == "completed":
         service.maybe_enqueue_finalize(owner, recording_id)
         return {"alreadyTranscribed": True}
+    queued_at = chunk["updated_at"]
+    started_at = time.time()
     with store.transaction() as conn:
         claimed = conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='running',transcription_attempts=transcription_attempts+1,transcription_error=NULL,updated_at=:now WHERE id=:id AND transcription_status IN ('pending','failed','running')"), {"now": time.time(), "id": chunk["id"]})
         if claimed.rowcount != 1:
             return {"alreadyTranscribed": True}
+        attempt = conn.execute(text("SELECT transcription_attempts FROM lecture_audio_chunks WHERE id=:id"), {"id": chunk["id"]}).scalar_one()
     _stage(store, recording_id, "transcription", "processing")
     try:
         content = service.objects.read(owner, recording_id, chunk["storage_key"])
         if hashlib.sha256(content).hexdigest() != chunk["sha256"]:
             raise TranscriptionFailure("The audio slice failed its server integrity check.")
-        tail = _context_tail(store, recording_id, sequence)
+        # Chunks are independent media units and may finish in any order. Do
+        # not make provider context or normalization depend on which earlier
+        # chunks happened to commit first; raw_text remains the evidence source.
+        tail = ""
         vocabulary = _course_vocabulary(store, owner, recording["course_id"])
-        context = (tail + ("\nCourse terms: " + vocabulary if vocabulary else ""))[-500:]
+        context = ("Course terms: " + vocabulary if vocabulary else "")[-500:]
         start = time.monotonic()
-        result = (transcriber or configured_transcription_provider()).transcribe_chunk(content, chunk["media_type"], chunk["end_ms"] - chunk["start_ms"], context)
+        provider = transcriber or (configured_class_transcription_provider() if is_class_session else configured_transcription_provider())
+        result = provider.transcribe_chunk(content, chunk["media_type"], chunk["end_ms"] - chunk["start_ms"], context)
         if len(result.spans) > 200:
             raise TranscriptionFailure("The provider returned too many transcript segments for one slice.")
         previous = tail
@@ -99,17 +134,48 @@ def transcribe_chunk(store, owner: str, recording_id: str, sequence: int, transc
             if normalized:
                 previous = normalized
         with store.transaction() as conn:
+            if job is not None:
+                WorkflowStore(store).validate_lease(conn, job)
+            owned_chunk = conn.execute(text("""UPDATE lecture_audio_chunks
+                SET transcription_status='completed',transcription_error=NULL,updated_at=:now
+                WHERE id=:id AND transcription_attempts=:attempt AND transcription_status='running'"""),
+                {"now": time.time(), "id": chunk["id"], "attempt": attempt})
+            if owned_chunk.rowcount != 1:
+                raise LectureError("transcription_lease_lost", "This audio slice is being transcribed by a newer attempt.", 409)
             for values in prepared:
                 conn.execute(text("""INSERT INTO lecture_transcript_segments(id,recording_id,chunk_id,ordinal,start_ms,end_ms,speaker,speaker_confidence,raw_text,normalized_text,confidence,provider,model,transcription_version,normalization_version,created_at)
                     VALUES (:id,:recording,:chunk,:ordinal,:start,:end,:speaker,:speaker_confidence,:raw,:normalized,:confidence,:provider,:model,1,1,:now)"""), values)
-            conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='completed',transcription_error=NULL,updated_at=:now WHERE id=:id"), {"now": time.time(), "id": chunk["id"]})
+            finished_at = time.time()
+            class_id = conn.execute(text('SELECT id FROM class_sessions WHERE recording_id=:recording AND owner_id=:owner'), {'recording': recording_id, 'owner': owner}).scalar_one_or_none()
+            if class_id:
+                coverage = conn.execute(text('''UPDATE class_sessions
+                    SET completed_chunk_count=completed_chunk_count+1,
+                        chunk_coverage_revision=chunk_coverage_revision+1
+                    WHERE id=:class AND owner_id=:owner'''), {'class': class_id, 'owner': owner})
+                if coverage.rowcount != 1:
+                    raise LectureError("class_coverage_update_failed", "The class recording state changed during transcription.", 409)
+                from .in_class_metrics import record as record_metric
+                record_metric(conn,owner=owner,class_id=class_id,stage='transcription',correlation_id=chunk['id']+':'+str(attempt),queued_at=queued_at,started_at=started_at,finished_at=finished_at,counters={'bytes':chunk['byte_count'],'segments':len(prepared)})
             from .in_class_service import handoff
             handoff(conn,owner,recording_id,'transcript:'+chunk['id'])
+            if class_id:
+                from .class_live_notes import ClassLiveNoteService
+                ClassLiveNoteService.emit_reconcile(conn,owner,recording_id,chunk['start_ms'],chunk['end_ms'],'chunk:'+chunk['id']+':'+str(attempt))
         log.info("lecture.transcribed recording_id=%s sequence=%s segments=%s latency_ms=%s", recording_id, sequence, len(prepared), int((time.monotonic() - start) * 1000))
     except Exception as exc:
         message = str(exc) if isinstance(exc, TranscriptionFailure) else "Transcription failed; the saved audio can be retried."
         with store.transaction() as conn:
-            conn.execute(text("UPDATE lecture_audio_chunks SET transcription_status='failed',transcription_error=:error,updated_at=:now WHERE id=:id"), {"error": message[:500], "now": time.time(), "id": chunk["id"]})
+            finished_at = time.time()
+            failed = conn.execute(text("""UPDATE lecture_audio_chunks
+                SET transcription_status='failed',transcription_error=:error,updated_at=:now
+                WHERE id=:id AND transcription_attempts=:attempt AND transcription_status='running'"""),
+                {"error": message[:500], "now": finished_at, "id": chunk["id"], "attempt": attempt})
+            if failed.rowcount != 1:
+                raise
+            class_id = conn.execute(text('SELECT id FROM class_sessions WHERE recording_id=:recording AND owner_id=:owner'), {'recording': recording_id, 'owner': owner}).scalar_one_or_none()
+            if class_id:
+                from .in_class_metrics import record as record_metric
+                record_metric(conn,owner=owner,class_id=class_id,stage='transcription',correlation_id=chunk['id']+':'+str(attempt),queued_at=queued_at,started_at=started_at,finished_at=finished_at,outcome='error',counters={'bytes':chunk['byte_count']})
         _stage(store, recording_id, "transcription", "failed", error=message[:500])
         log.warning("lecture.transcription_failed recording_id=%s sequence=%s category=%s", recording_id, sequence, type(exc).__name__)
         raise
@@ -403,11 +469,17 @@ def generate_blocks(store, owner: str, recording_id: str, version: int):
 
 
 class LectureWorker:
-    def __init__(self, store, provider_getter, transcriber=None):
+    def __init__(self, store, provider_getter, transcriber=None, transcription_workers=None):
         self.store = store
         self.provider_getter = provider_getter
         self.transcriber = transcriber
         self.jobs = WorkflowStore(store)
+        if transcription_workers is None:
+            try:
+                transcription_workers = int(os.getenv("OPENLEARN_TRANSCRIPTION_WORKERS", "4"))
+            except ValueError:
+                transcription_workers = 4
+        self.transcription_workers = max(4, min(8, transcription_workers))
 
     def reconcile(self):
         """Repair the DB-to-job gap after a crash between chunk commit and enqueue."""
@@ -421,63 +493,91 @@ class LectureWorker:
         for recording_id, owner in recordings:
             LectureService(self.store).maybe_enqueue_finalize(owner, recording_id)
 
-    def _pending_id(self):
-        with self.store.engine.connect() as conn:
-            return conn.execute(text("""SELECT id FROM learning_jobs WHERE kind LIKE 'lecture_%' AND cancellation_requested=false AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY id LIMIT 1"""), {"now": time.time()}).scalar_one_or_none()
+    def _process(self, job):
+        owner, recording_id, payload, kind = job["owner_id"], job["target_id"], job["payload"], job["kind"]
+        heartbeat = LeaseHeartbeat(self.store, job)
+        succeeded = False
+        try:
+            with job_scope(job):
+                if kind == "lecture_transcribe":
+                    result = transcribe_chunk(self.store, owner, recording_id, payload["sequence"], self.transcriber, job)
+                elif kind == "lecture_segment":
+                    result = segment_lecture(self.store, owner, recording_id, self.provider_getter())
+                elif kind == "lecture_section":
+                    result = analyze_section(self.store, owner, recording_id, payload["section_id"], self.provider_getter())
+                elif kind == "lecture_verify":
+                    result = verify_section(self.store, owner, recording_id, payload["section_id"], self.provider_getter())
+                elif kind == "lecture_generate":
+                    result = generate_blocks(self.store, owner, recording_id, payload["version"])
+                elif kind == "lecture_audio_retention":
+                    result = LectureService(self.store).remove_audio_page(owner, recording_id, payload["after_sequence"], payload["generation"])
+                else:
+                    raise ValueError("Unsupported lecture job kind.")
+                with self.store.transaction() as conn:
+                    self.jobs.finish(conn, job, result)
+                succeeded = True
+        except Exception as exc:
+            if kind == "lecture_audio_retention":
+                log.warning("lecture.audio_retention.page_failed recording_id=%s category=%s", recording_id, type(exc).__name__)
+                try:
+                    changed = self.jobs.fail(job, "worker_failed", retryable=True)
+                    if changed and job["attempt_count"] >= job["max_attempts"]:
+                        LectureService(self.store).mark_audio_retention_failed(owner, recording_id, payload["generation"])
+                except Exception:
+                    pass
+                return
+            message = str(exc) if isinstance(exc, (LectureError, TranscriptionFailure)) else "This lecture stage failed. Saved work can be retried."
+            log.warning("lecture.job.failed recording_id=%s kind=%s category=%s", recording_id, kind, type(exc).__name__)
+            changed = False
+            try:
+                from .execution import failure_policy
+                code, retryable = failure_policy(exc)
+                changed = self.jobs.fail(job, code, retryable=retryable)
+            except Exception:
+                pass
+            # A stale lease must not overwrite the stage state published by a
+            # newer attempt. The transcriber already records owned failures.
+            if changed and kind != "lecture_transcribe":
+                stage = "semanticAnalysis" if kind in {"lecture_segment", "lecture_section"} else "verification" if kind == "lecture_verify" else "noteGeneration"
+                if kind == "lecture_section":
+                    try:
+                        with self.store.transaction() as conn:
+                            conn.execute(text("UPDATE lecture_sections SET analysis_status='failed' WHERE id=:id AND analysis_status!='completed'"), {"id": payload["section_id"]})
+                    except Exception:
+                        pass
+                _stage(self.store, recording_id, stage, "failed", error=message[:500])
+        finally:
+            heartbeat.close()
+        if succeeded and kind == "lecture_verify":
+            maybe_enqueue_generation(self.store, owner, recording_id)
 
     def drain(self, limit: int = 10000):
+        if limit <= 0:
+            return 0
         if not _worker_lock.acquire(blocking=False):
             return 0
         processed = 0
         try:
             while processed < limit:
-                job_id = self._pending_id()
-                if not job_id:
-                    break
-                job = self.jobs.claim(job_id)
-                if not job:
+                remaining = limit - processed
+                claimed = self.jobs.claim_many("batch", {"lecture_transcribe"}, min(self.transcription_workers, remaining))
+                if claimed:
+                    with ThreadPoolExecutor(max_workers=min(self.transcription_workers, len(claimed)), thread_name_prefix="lecture-transcribe") as pool:
+                        futures = [pool.submit(self._process, job) for job in claimed]
+                        for future in futures:
+                            future.result()
+                    processed += len(claimed)
                     continue
+                other_kinds = set(JOB_KINDS) - {"lecture_transcribe"}
+                ready = self.jobs.ready_ids("batch", other_kinds, 1)
+                if not ready:
+                    break
+                job = self.jobs.claim(ready[0])
+                if job is None:
+                    # Another process claimed it between discovery and CAS.
+                    break
                 processed += 1
-                owner, recording_id, payload, kind = job["owner_id"], job["target_id"], job["payload"], job["kind"]
-                token = active_job.set(job)
-                heartbeat = LeaseHeartbeat(self.store, job)
-                try:
-                    if kind == "lecture_transcribe":
-                        result = transcribe_chunk(self.store, owner, recording_id, payload["sequence"], self.transcriber)
-                    elif kind == "lecture_segment":
-                        result = segment_lecture(self.store, owner, recording_id, self.provider_getter())
-                    elif kind == "lecture_section":
-                        result = analyze_section(self.store, owner, recording_id, payload["section_id"], self.provider_getter())
-                    elif kind == "lecture_verify":
-                        result = verify_section(self.store, owner, recording_id, payload["section_id"], self.provider_getter())
-                    elif kind == "lecture_generate":
-                        result = generate_blocks(self.store, owner, recording_id, payload["version"])
-                    else:
-                        raise ValueError("Unsupported lecture job kind.")
-                    with self.store.transaction() as conn:
-                        self.jobs.finish(conn, job, result)
-                    active_job.reset(token)
-                    token = None
-                    if kind == "lecture_verify":
-                        maybe_enqueue_generation(self.store, owner, recording_id)
-                except Exception as exc:
-                    message = str(exc) if isinstance(exc, (LectureError, TranscriptionFailure)) else "This lecture stage failed. Saved work can be retried."
-                    stage = "transcription" if kind == "lecture_transcribe" else "semanticAnalysis" if kind in {"lecture_segment", "lecture_section"} else "verification" if kind == "lecture_verify" else "noteGeneration"
-                    if kind == "lecture_section":
-                        with self.store.transaction() as conn:
-                            conn.execute(text("UPDATE lecture_sections SET analysis_status='failed' WHERE id=:id AND analysis_status!='completed'"), {"id": payload["section_id"]})
-                    _stage(self.store, recording_id, stage, "failed", error=message[:500])
-                    log.warning("lecture.job.failed recording_id=%s kind=%s category=%s", recording_id, kind, type(exc).__name__)
-                    try:
-                        from .execution import failure_policy
-                        code, retryable = failure_policy(exc)
-                        self.jobs.fail(job, code, retryable=retryable)
-                    except Exception:
-                        pass
-                finally:
-                    heartbeat.close()
-                    if token is not None:
-                        active_job.reset(token)
+                self._process(job)
             return processed
         finally:
             _worker_lock.release()

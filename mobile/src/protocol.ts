@@ -1,5 +1,5 @@
 export type Segment={sequence:number;uri:string;startMs:number;endMs:number;sha256?:string;acknowledged?:boolean};
-export type Recording={id:string;owner:string;title:string;courseId:string;startedAtMs:number;directory:string;segments:Segment[];durationMs:number;interrupted:boolean;paused?:boolean;stopped:boolean;created:boolean;finalized:boolean};
+export type Recording={id:string;owner:string;title:string;courseId:string;startedAtMs:number;directory:string;segments:Segment[];durationMs:number;interrupted:boolean;paused?:boolean;stopped:boolean;created:boolean;finalized:boolean;markersMs?:number[];classSetup?:{deviceId:string;captureEpoch:number}};
 export type PendingMessage={key:string;owner:string;path?:string;body:Record<string,unknown>;state:'pending'|'conflict'};
 export interface JsonStore {read<T>(key:string):Promise<T|null>;write(key:string,value:unknown):Promise<void>}
 export interface Transport {json<T>(path:string,init?:RequestInit):Promise<T>;binary<T>(path:string,bytes:Uint8Array,headers:Record<string,string>):Promise<T>}
@@ -11,7 +11,7 @@ export function safeDeepLink(value:string):{session:string;task?:string}|null {
 export async function syncRecording(record:Recording,currentOwner:string,api:Transport,save:(r:Recording)=>Promise<void>,read:(uri:string)=>Promise<Uint8Array>,hash:(bytes:Uint8Array)=>Promise<string>):Promise<void>{
   if(record.owner!==currentOwner)throw Error('This recording belongs to another account.');
   const base=`/v1/learners/${encodeURIComponent(currentOwner)}/lecture-recordings`;
-  if(!record.created){await api.json(base,{method:'POST',body:JSON.stringify({id:record.id,title:record.title,courseId:record.courseId,startedAtMs:record.startedAtMs})});record.created=true;await save(record);}
+  if(!record.created){const recording={id:record.id,title:record.title,courseId:record.courseId||null,startedAtMs:record.startedAtMs};await api.json(record.classSetup?'/v1/class-sessions':base,{method:'POST',body:JSON.stringify(record.classSetup?{recording,deviceId:record.classSetup.deviceId,policy:{notes:true,keepAudio:true}}:recording)});record.created=true;await save(record);}
   for(const segment of record.segments){
     if(segment.acknowledged)continue;
     const bytes=await read(segment.uri);
@@ -19,13 +19,13 @@ export async function syncRecording(record:Recording,currentOwner:string,api:Tra
     const checksum=await hash(bytes);
     if(segment.sha256 && segment.sha256!==checksum)throw Error('Saved audio changed; upload stopped.');
     segment.sha256=checksum;await save(record);
-    await api.binary(`${base}/${record.id}/chunks/${segment.sequence}`,bytes,{'Content-Type':'audio/wav','X-Chunk-Start-Ms':String(segment.startMs),'X-Chunk-End-Ms':String(segment.endMs),'X-Chunk-Sha256':checksum});
+    await api.binary(`${base}/${record.id}/chunks/${segment.sequence}`,bytes,{'Content-Type':'audio/wav','X-Chunk-Start-Ms':String(segment.startMs),'X-Chunk-End-Ms':String(segment.endMs),'X-Chunk-Sha256':checksum,...(record.classSetup?{'X-Capture-Device':record.classSetup.deviceId,'X-Capture-Epoch':String(record.classSetup.captureEpoch)}:{})});
     segment.acknowledged=true;await save(record);
   }
   if(record.stopped && !record.finalized && record.segments.length){
     const ordered=[...record.segments].sort((a,b)=>a.sequence-b.sequence);
     if(ordered.some((s,i)=>s.sequence!==i || !s.acknowledged))throw Error('Missing segment; cannot finalize this recording.');
-    await api.json(`${base}/${record.id}/finalize`,{method:'POST',body:JSON.stringify({expectedChunkCount:ordered.length,durationMs:record.durationMs,captureInterrupted:record.interrupted,markersMs:[]})});
+    await api.json(`${base}/${record.id}/finalize`,{method:'POST',body:JSON.stringify({expectedChunkCount:ordered.length,durationMs:record.durationMs,captureInterrupted:record.interrupted,markersMs:record.markersMs||[]})});
     record.finalized=true;await save(record);
   }
 }

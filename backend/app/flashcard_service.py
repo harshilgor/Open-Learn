@@ -13,7 +13,9 @@ class FlashcardService:
         deck['windows'][window_id]=items
         active=conn.execute(text('SELECT payload FROM class_sessions WHERE id=:id AND owner_id=:owner'),{'id':class_id,'owner':owner}).scalar_one()
         import json
-        active=json.loads(active)['activeWindows']
+        session=json.loads(active);active_set=session.get('activeWindowSetId')
+        active=conn.execute(text("SELECT window_id FROM class_session_window_membership WHERE owner_id=:owner AND class_id=:class AND set_id=:set AND purpose='transcript'"),{'owner':owner,'class':class_id,'set':active_set}).scalars().all() if active_set else session.get('activeWindows',[])
+        active=set(active)
         deck['cards']=[card for wid,cards in deck['windows'].items() if wid in active for card in cards]
         self.records.put(conn,owner,'flashcard_deck',deck,parent=class_id,expected=deck['revision'] if exists else None)
         return identifier

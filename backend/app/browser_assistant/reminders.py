@@ -36,7 +36,7 @@ def event_instant(entity, policy):
 
 def rebuild(store, conn, owner, entity):
     assert_owner_active(conn, owner)
-    rows = conn.execute(text('SELECT id,revision,payload FROM reminder_policies WHERE owner_id=:owner AND active=true'), {'owner': owner}).mappings().all()
+    rows = conn.execute(text("SELECT id,revision,payload FROM reminder_policies WHERE owner_id=:owner AND active=true AND kind='academic'"), {'owner': owner}).mappings().all()
     for row in rows:
         policy = json.loads(row['payload'])
         if policy.get('courseId') and policy['courseId'] != entity['courseId']: continue
@@ -109,6 +109,7 @@ def create_policy(store, owner, command, identifier=None):
 
 def valid_reminder(conn, row):
     assert_owner_active(conn, row['owner_id'])
+    if row.get('kind', 'academic') != 'academic': return row['status'] not in {'cancelled','expired'}
     entity = conn.execute(text('SELECT revision FROM academic_entities WHERE owner_id=:owner AND id=:id'), {'owner': row['owner_id'], 'id': row['entity_id']}).scalar_one_or_none()
     policy = conn.execute(text('SELECT revision FROM reminder_policies WHERE owner_id=:owner AND id=:id AND active=true'), {'owner': row['owner_id'], 'id': row['policy_id']}).scalar_one_or_none()
     return entity == row['entity_revision'] and policy == row['policy_revision']
@@ -122,7 +123,7 @@ def tick_reminders(store):
     ExecutionOutbox(store).drain({'assistant.reminder.rebuild': deliver}, 50)
     with store.transaction() as conn:
         suffix = ' FOR UPDATE SKIP LOCKED' if conn.dialect.name == 'postgresql' else ''
-        rows = conn.execute(text("SELECT * FROM reminders WHERE status='pending' AND due_at<=:now ORDER BY due_at LIMIT 30" + suffix), {'now': time.time()}).mappings().all()
+        rows = conn.execute(text("SELECT * FROM reminders WHERE kind='academic' AND status='pending' AND due_at<=:now ORDER BY due_at LIMIT 30" + suffix), {'now': time.time()}).mappings().all()
         for r in rows:
             row = dict(r); payload = json.loads(row['payload'])
             if not valid_reminder(conn, row): status = 'cancelled'

@@ -154,7 +154,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Recording defaults</h2>
                 <label className={styles.selectRow}>Default note detail<select value={preferences.lectureDepth} onChange={event => updatePreference('lectureDepth', event.target.value as SettingsPreferences['lectureDepth'])}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
-                <label className={styles.checkRow}><input type="checkbox" checked={preferences.keepLectureAudio} onChange={event => updatePreference('keepLectureAudio', event.target.checked)} /><span><strong>Keep class audio for playback</strong><small>When off, the app removes server audio after notes are generated. Unsynced browser audio remains until processing completes.</small></span></label>
+                <label className={styles.checkRow}><input type="checkbox" checked={preferences.keepLectureAudio} onChange={event => updatePreference('keepLectureAudio', event.target.checked)} /><span><strong>Keep class audio for playback</strong><small>When off, local recovery audio stays until upload and transcription finish; then the server copy is removed. Notes and transcript remain.</small></span></label>
                 <p className={styles.muted}>Microphone access is requested only when you start a recording. Use the recording note to review or remove audio kept for playback.</p>
               </div>
             </section>

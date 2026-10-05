@@ -101,7 +101,7 @@ private final class SegmentedCapture {
   func inspect(_ value:String)throws->[String:Any] {
     try queue.sync {
       let directory=try self.directory(value)
-      if engine != nil,folder==directory{return journal}
+      if engine != nil,folder==directory{var current=journal;if file != nil{current["durationMs"]=segmentStart+size*1000/(rate*2)};return current}
       var saved=try JSONSerialization.jsonObject(with:Data(contentsOf:directory.appendingPathComponent("capture.json"))) as! [String:Any]
       if ["recording","interrupted"].contains(saved["status"] as? String ?? "") {
         guard engine==nil else{throw NSError(domain:"capture",code:7)}

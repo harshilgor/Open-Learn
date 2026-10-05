@@ -1,4 +1,5 @@
-const { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } = require('electron');
+const { app, autoUpdater, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, Notification, powerSaveBlocker, powerMonitor, Tray, nativeImage, safeStorage, session, shell } = require('electron');
+const { installClassLifecycle } = require('./class-lifecycle.cjs');
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { readFileSync, writeFileSync, mkdirSync } = require('node:fs');
@@ -36,6 +37,9 @@ let restartAttempts = 0;
 let restartTimer;
 let reviewTimer;
 let academicTimer;
+let classDisplaySleepBlocker;
+let classDisplaySleepStatus = { state: 'inactive' };
+let classLifecycle;
 const updateRepository = 'harshilgor/AI-Tutor-Harness-';
 let updateStatus = { state: 'unavailable', currentVersion: app.getVersion() };
 
@@ -83,13 +87,13 @@ async function checkForUpdates() {
   try {
     publishUpdateStatus({ state: 'checking', detail: 'Checking for a new version…' });
     const release = await latestReleaseFeed();
-    if (!release) return publishUpdateStatus({ state: 'up-to-date', detail: 'You have the latest Forma version.' });
+    if (!release) return publishUpdateStatus({ state: 'up-to-date', detail: 'You have the latest Open Learn version.' });
     autoUpdater.setFeedURL({ url: release.url });
-    publishUpdateStatus({ state: 'checking', availableVersion: release.version, detail: `Preparing Forma ${release.version}…` });
+    publishUpdateStatus({ state: 'checking', availableVersion: release.version, detail: `Preparing Open Learn ${release.version}…` });
     autoUpdater.checkForUpdates();
     return updateStatus;
   } catch (error) {
-    return publishUpdateStatus({ state: 'error', detail: error instanceof Error ? error.message : 'Forma could not check for updates.' });
+    return publishUpdateStatus({ state: 'error', detail: error instanceof Error ? error.message : 'Open Learn could not check for updates.' });
   }
 }
 
@@ -104,10 +108,10 @@ function configureUpdates() {
   if (!canCheckForUpdates()) return;
   updateStatus = { state: 'idle', currentVersion: app.getVersion() };
   autoUpdater.on('checking-for-update', () => publishUpdateStatus({ state: 'checking', detail: 'Checking for a new version…' }));
-  autoUpdater.on('update-available', event => publishUpdateStatus({ state: 'downloading', availableVersion: event.version, detail: `Downloading Forma ${event.version}…` }));
-  autoUpdater.on('update-not-available', () => publishUpdateStatus({ state: 'up-to-date', detail: 'You have the latest Forma version.' }));
-  autoUpdater.on('update-downloaded', event => publishUpdateStatus({ state: 'ready', availableVersion: event.version, detail: `Forma ${event.version} is ready to install.` }));
-  autoUpdater.on('error', error => publishUpdateStatus({ state: 'error', detail: error.message || 'Forma could not download the update.' }));
+  autoUpdater.on('update-available', event => publishUpdateStatus({ state: 'downloading', availableVersion: event.version, detail: `Downloading Open Learn ${event.version}…` }));
+  autoUpdater.on('update-not-available', () => publishUpdateStatus({ state: 'up-to-date', detail: 'You have the latest Open Learn version.' }));
+  autoUpdater.on('update-downloaded', event => publishUpdateStatus({ state: 'ready', availableVersion: event.version, detail: `Open Learn ${event.version} is ready to install.` }));
+  autoUpdater.on('error', error => publishUpdateStatus({ state: 'error', detail: error.message || 'Open Learn could not download the update.' }));
 }
 
 function runtimePaths() {
@@ -228,7 +232,7 @@ async function notifyDueReviews() {
     for (const review of due) {
       const key = `${review.id}:${review.due_at}`;
       if (notified[key]) continue;
-      new Notification({ title: 'A Forma review is ready', body: `Revisit ${review.concept_id.replace(/[_-]/g, ' ')} while it is fresh.` }).show();
+      new Notification({ title: 'An Open Learn review is ready', body: `Revisit ${review.concept_id.replace(/[_-]/g, ' ')} while it is fresh.` }).show();
       notified[key] = new Date().toISOString(); changed = true;
     }
     if (changed) writePreferences({ ...preferences, notifiedReviewKeys: notified });
@@ -255,7 +259,7 @@ async function notifyAcademicReminders() {
     let changed = false;
     for (const item of notifications) {
       if (item.status !== 'available' || !item.deliverable || !item.channels?.includes('desktop') || shown[item.id]) continue;
-      new Notification({title:'OpenLearn academic reminder',body:item.title,tag:item.id}).show();
+      new Notification({title:'Open Learn reminder',body:item.body || item.title,tag:item.id}).show();
       shown[item.id] = Date.now(); changed = true;
     }
     if (changed) writePreferences({...preferences,notifiedAcademicKeys:shown});
@@ -386,6 +390,12 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.cjs')
     }
   });
+  window.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame && !_isInPlace) { classLifecycle?.reset(); endClassDisplaySleepPrevention(); }
+  });
+  window.webContents.on('render-process-gone', () => { classLifecycle?.reset(); endClassDisplaySleepPrevention(); });
+  window.on('close', event => classLifecycle?.close(event));
+  window.once('closed', () => endClassDisplaySleepPrevention());
   window.once('ready-to-show', () => window.show());
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://') || url.startsWith('http://')) void shell.openExternal(url);
@@ -399,16 +409,136 @@ async function createWindow() {
   }
 }
 
+function trustedDesktopOrigin() {
+  if (cloudMode) return new URL(cloudWebUrl).origin;
+  if (isDev) return new URL(process.env.FORMA_WEB_URL || 'http://127.0.0.1:3000').origin;
+  return webPort ? `http://127.0.0.1:${webPort}` : null;
+}
+
+function publishClassDisplaySleepStatus(next) {
+  classDisplaySleepStatus = next;
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
+    window.webContents.send('forma:class-display-sleep-status', classDisplaySleepStatus);
+  }
+  return classDisplaySleepStatus;
+}
+
+function endClassDisplaySleepPrevention() {
+  if (classDisplaySleepBlocker !== undefined) {
+    try {
+      if (powerSaveBlocker.isStarted(classDisplaySleepBlocker)) powerSaveBlocker.stop(classDisplaySleepBlocker);
+    } catch (error) {
+      console.error('Could not release the class display-sleep blocker', error);
+    }
+    classDisplaySleepBlocker = undefined;
+  }
+  return publishClassDisplaySleepStatus({ state: 'inactive' });
+}
+
+function configureClassCaptureBridge() {
+  const trusted = event => {
+    if (!window || event.sender !== window.webContents || event.senderFrame !== event.sender.mainFrame) return false;
+    const expectedOrigin = trustedDesktopOrigin();
+    try { return Boolean(expectedOrigin) && new URL(event.senderFrame.url).origin === expectedOrigin; }
+    catch { return false; }
+  };
+  ipcMain.handle('class-capture:display-sleep-status', event => trusted(event) ? classDisplaySleepStatus : { state: 'unavailable' });
+  ipcMain.handle('class-capture:ownership', (event, active, consentGranted) => {
+    if (!trusted(event) || (active === true && consentGranted !== true)) throw new Error('Recording permission is required.');
+    classLifecycle?.setActive(active);
+    if (!active) endClassDisplaySleepPrevention();
+    return { wakeSupported: false, lockBehavior: 'stop-and-save', closeBehavior: 'tray-while-recording' };
+  });
+  ipcMain.handle('class-capture:display-sleep-begin', (event, consentGranted) => {
+    if (!trusted(event)) throw new Error('Class capture is available only to the Open Learn window.');
+    if (consentGranted !== true) throw new Error('Recording permission is required before class display controls can start.');
+    try {
+      if (classDisplaySleepBlocker === undefined || !powerSaveBlocker.isStarted(classDisplaySleepBlocker)) {
+        classDisplaySleepBlocker = powerSaveBlocker.start('prevent-display-sleep');
+      }
+      return publishClassDisplaySleepStatus({ state: 'active' });
+    } catch (error) {
+      classDisplaySleepBlocker = undefined;
+      const status = publishClassDisplaySleepStatus({ state: 'unavailable' });
+      console.error('Could not prevent display sleep during class capture', error);
+      return status;
+    }
+  });
+  ipcMain.handle('class-capture:display-sleep-end', event => {
+    if (!trusted(event)) return { state: 'unavailable' };
+    return endClassDisplaySleepPrevention();
+  });
+}
+
+function configureDisplayMediaCapture() {
+  if (process.platform !== 'win32') return;
+  let pickerOpen = false;
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    let completed = false;
+    const finish = selection => {
+      if (completed) return;
+      completed = true;
+      callback(selection);
+    };
+    const owner = window;
+    const trustedOrigin = trustedDesktopOrigin();
+    if (!owner || owner.isDestroyed() || owner.webContents.isDestroyed() || !trustedOrigin ||
+      request.frame !== owner.webContents.mainFrame || request.securityOrigin !== trustedOrigin ||
+      request.userGesture !== true || request.videoRequested !== true || request.audioRequested !== true || pickerOpen) {
+      finish();
+      return;
+    }
+
+    pickerOpen = true;
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen', 'window'],
+        thumbnailSize: { width: 0, height: 0 },
+        fetchWindowIcons: false
+      });
+      if (!sources.length || owner.isDestroyed()) {
+        finish();
+        return;
+      }
+      const sourceNames = sources.map((source, index) => `${index + 1}. ${source.name.replace(/[\r\n\t]/g, ' ').slice(0, 100)}`);
+      const cancelId = sources.length;
+      const { response } = await dialog.showMessageBox(owner, {
+        type: 'question',
+        title: 'Choose a screen or window',
+        message: 'Choose a display source to enable computer audio capture.',
+        detail: `${sourceNames.join('\n')}\n\nOpen Learn stops the temporary video track immediately and records audio only.`,
+        buttons: [...sources.map((_, index) => `Select ${index + 1}`), 'Cancel'],
+        cancelId,
+        defaultId: cancelId,
+        noLink: true
+      });
+      if (response < 0 || response >= sources.length) {
+        finish();
+        return;
+      }
+      finish({ video: sources[response], audio: 'loopback' });
+    } catch (error) {
+      console.error('Display audio source selection failed', error);
+      finish();
+    } finally {
+      pickerOpen = false;
+    }
+  });
+}
+
 app.whenReady().then(() => {
   if (!hasSingleInstanceLock) return;
   configureCredentialBridge();
   configureUpdates();
   configureApplicationMenu();
+  classLifecycle = installClassLifecycle({ app, powerMonitor, Tray, Menu, nativeImage, getWindow: () => window, releasePower: endClassDisplaySleepPrevention });
+  configureClassCaptureBridge();
+  configureDisplayMediaCapture();
   return createWindow().then(() => { startReviewNotifications(); if (canCheckForUpdates()) setTimeout(() => void checkForUpdates(), 8000); }).catch(error => {
-    dialog.showErrorBox('Forma could not start', error.message);
+    dialog.showErrorBox('Open Learn could not start', error.message);
     app.quit();
   });
 });
-app.on('window-all-closed', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', () => { shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); });
+app.on('window-all-closed', () => { endClassDisplaySleepPrevention(); shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', event => { classLifecycle?.beforeQuit(event); if (event.defaultPrevented) return; endClassDisplaySleepPrevention(); shuttingDown = true; stopApi(); clearInterval(reviewTimer); clearInterval(academicTimer); webProcess?.close(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) void createWindow(); });

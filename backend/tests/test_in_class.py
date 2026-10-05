@@ -2,7 +2,7 @@ import hashlib,json
 from pathlib import Path
 from uuid import uuid4
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event,text
 from fastapi import HTTPException
 from backend.app.storage import Store
 from backend.app.in_class_models import ClassCreate,ClassCommand
@@ -106,9 +106,11 @@ def test_duplicate_handoffs_do_not_duplicate_presentations_or_events(env):
     from backend.app.in_class_service import handoff
     with db.transaction() as conn:handoff(conn,'alice',body.recording.id,'setup')
     drain(svc)
-    second=svc.snapshot('alice',created['session']['id'],first['cursor'])
-    assert second['events']==[] and second['cursor']==first['cursor']
-    assert [(o['id'],o['revision']) for o in second['outputs']]==[(o['id'],o['revision']) for o in first['outputs']]
+    second=svc.snapshot('alice',created['session']['id'],first['cursor'],initialized=True)
+    assert second['delta'] and second['events']==[] and second['cursor']==first['cursor']
+    assert second['outputs']==[]
+    current=svc.snapshot('alice',created['session']['id'])
+    assert [(o['id'],o['revision']) for o in current['outputs']]==[(o['id'],o['revision']) for o in first['outputs']]
 
 
 def test_correction_during_provider_call_cannot_publish_stale_notes(env):
@@ -155,6 +157,24 @@ def test_missing_audio_requires_explicit_partial_and_retains_gap(env):
     result=svc.snapshot('alice',snap['session']['id'])
     assert result['session']['processing']=='completed-partial'
     assert result['recording']['chunks']['missing']==[0]
+    statements=[]
+    def capture_statement(conn,cursor,statement,parameters,context,executemany):statements.append(statement.lower())
+    event.listen(db.engine,'before_cursor_execute',capture_statement)
+    try:
+        audio(env,0,0,30000);drain(svc);drain(svc)
+    finally:
+        event.remove(db.engine,'before_cursor_execute',capture_statement)
+    assert not any('select sequence_number from lecture_audio_chunks where recording_id' in statement for statement in statements)
+    completed=svc.snapshot('alice',snap['session']['id'])
+    assert completed['session']['watermark']==1
+    assert completed['recording']['chunks']['missing']==[]
+    assert completed['session']['partial'] is False
+    with db.engine.connect() as conn:
+        coverage=conn.execute(text('SELECT completed_chunk_count,chunk_coverage_revision FROM class_sessions WHERE id=:id'),{'id':snap['session']['id']}).one()
+    assert tuple(coverage)==(2,2)
+    transcribe_chunk(db,'alice',body.recording.id,0,Transcriber())
+    with db.engine.connect() as conn:
+        assert tuple(conn.execute(text('SELECT completed_chunk_count,chunk_coverage_revision FROM class_sessions WHERE id=:id'),{'id':snap['session']['id']}).one())==(2,2)
 
 
 def test_expired_lease_cannot_publish(env):
@@ -176,7 +196,7 @@ def test_material_revocation_hides_copied_passages(env,monkeypatch):
     from backend.app.material_service import MaterialService
     def unavailable(*args,**kwargs):raise HTTPException(404,'unavailable')
     monkeypatch.setattr(MaterialService,'version',unavailable)
-    assert next(o for o in svc.snapshot('alice',created['session']['id'])['outputs'] if o['kind']=='materials')['result']['sources']==[]
+    assert not any(o['kind']=='materials' for o in svc.snapshot('alice',created['session']['id'])['outputs'])
 
 
 def test_owner_export_and_recording_delete_include_class_artifacts(env):
@@ -201,12 +221,15 @@ def test_import_remaps_class_and_deck_without_restarting_capture(env):
     plan=inventory(db,'bob',profile='alice')
     import_profile(db,'bob',plan['checksum'],profile='alice')
     with db.engine.connect() as conn:
-        identifier=conn.execute(text("SELECT id FROM class_sessions WHERE owner_id='bob'")).scalar_one()
+        row=conn.execute(text("SELECT id,payload FROM class_sessions WHERE owner_id='bob'")).one()
+        identifier=row[0]
+        active_set=json.loads(row[1]).get('activeWindowSetId')
+        active_windows=set(conn.execute(text("SELECT window_id FROM class_session_window_membership WHERE owner_id='bob' AND class_id=:class AND set_id=:set AND purpose='transcript'"),{'class':identifier,'set':active_set}).scalars())
         deck=json.loads(conn.execute(text("SELECT payload FROM practice_records WHERE owner_id='bob' AND kind='flashcard_deck'")).scalar_one())
     copied=svc.snapshot('bob',identifier)
     assert copied['session']['cancelled'] and copied['session']['id']!=created['session']['id']
     assert copied['outputs'] and not deck['scheduled']
-    assert set(deck['windows'])==set(copied['session']['activeWindows'])
+    assert set(deck['windows'])==active_windows
     assert svc.snapshot('alice',created['session']['id'])['session']['id']==created['session']['id']
 
 

@@ -58,7 +58,11 @@ object Capture {
     journal=JSONObject().put("recordingId",id).put("directory",android.net.Uri.fromFile(directory).toString()).put("status","recording").put("startedAtMs",System.currentTimeMillis()).put("durationMs",0).put("interrupted",false).put("segments",JSONArray())
     persist()
   }
-  @Synchronized fun snapshot():Map<String,Any?> = jsonMap(journal)
+  @Synchronized fun snapshot():Map<String,Any?> {
+    val result=JSONObject(journal.toString())
+    if(running && output!=null)result.put("durationMs",start+size*1000L/(rate*2))
+    return jsonMap(result)
+  }
   private fun jsonMap(value:JSONObject):Map<String,Any?> = value.keys().asSequence().associateWith {key ->
     when(val v=value.get(key)){is JSONObject->jsonMap(v);is JSONArray->(0 until v.length()).map{val x=v.get(it);if(x is JSONObject)jsonMap(x) else x};JSONObject.NULL->null;else->v}
   }

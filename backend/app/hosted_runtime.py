@@ -25,7 +25,7 @@ def configuration_errors(env=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('role',choices=['check','migrate','api','api-free','learning','agent','browser'])
+    parser.add_argument('role',choices=['check','migrate','api','api-free','learning','agent','class','browser','notifications'])
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args()
     errors=configuration_errors()
@@ -54,9 +54,15 @@ def main():
         if args.role=='learning':
             from .worker import run
             run(store,configured_lesson_provider,stop,args.once)
+        elif args.role=='notifications':
+            from .reminder_worker import NotificationsWorker
+            NotificationsWorker(store,configured_lesson_provider).run(stop,args.once)
         elif args.role=='browser':
             from .browser_assistant.workers import AssistantWorker
             AssistantWorker(store,configured_lesson_provider).run(stop,args.once)
+        elif args.role=='class':
+            from .in_class_worker import InClassWorker
+            InClassWorker(store,configured_lesson_provider).run(stop,args.once)
         else:
             from .agent_execution.worker import AgentWorker
             provider=configured_lesson_provider();worker=AgentWorker(store,lambda:provider)

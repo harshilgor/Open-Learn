@@ -6,6 +6,7 @@ External work is represented by another durable job in that transaction.
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
+import logging
 import os
 import time
 import threading
@@ -73,8 +74,11 @@ def job_scope(job):
 
 
 class Outbox:
+    MAX_DELIVERY_ATTEMPTS = 5
+
     def __init__(self, store):
         self.store = store
+        self._last_target = None
 
     @staticmethod
     def emit(conn, owner, topic, target, key, payload):
@@ -88,7 +92,7 @@ class Outbox:
         if tuple(existing) != (topic, target, data):
             raise ValueError("Outbox idempotency key was reused with different input")
 
-    def deliver_one(self, handlers):
+    def deliver_one(self, handlers, rotate_targets=False):
         if not handlers:
             return False
         with self.store.transaction() as conn:
@@ -99,10 +103,42 @@ class Outbox:
             names = {"topic" + str(i): name for i, name in enumerate(handlers)}
             topics = ",".join(":" + key for key in names)
             lock = " FOR UPDATE SKIP LOCKED" if conn.dialect.name == "postgresql" else ""
-            row = conn.execute(text(f"SELECT * FROM execution_outbox WHERE delivered_at IS NULL AND topic IN ({topics}) ORDER BY created_at,id LIMIT 1" + lock), names).mappings().first()
+            now=time.time()
+            names['now']=now
+            eligible=f"delivered_at IS NULL AND failed_at IS NULL AND next_attempt_at<=:now AND topic IN ({topics})"
+            if rotate_targets:
+                row=None
+                if self._last_target is not None:
+                    row=conn.execute(text(f"SELECT * FROM execution_outbox WHERE {eligible} AND target_id>:after ORDER BY target_id,created_at,id LIMIT 1"+lock),{**names,'after':self._last_target}).mappings().first()
+                if row is None:
+                    wrap_clause=' AND target_id<=:after' if self._last_target is not None else ''
+                    row=conn.execute(text(f"SELECT * FROM execution_outbox WHERE {eligible}{wrap_clause} ORDER BY target_id,created_at,id LIMIT 1"+lock),{**names,**({'after':self._last_target} if self._last_target is not None else {})}).mappings().first()
+            else:
+                row = conn.execute(text(f"SELECT * FROM execution_outbox WHERE {eligible} ORDER BY created_at,id LIMIT 1" + lock), names).mappings().first()
             if row is None:
                 return False
-            handlers[row["topic"]](conn, row, json.loads(row["payload"]))
+            if rotate_targets:self._last_target=row['target_id']
+            try:
+                # A handler may perform several writes before raising. Keep
+                # those writes atomic while recording retry state outside the
+                # savepoint so one bad event cannot starve later deliveries.
+                with conn.begin_nested():
+                    handlers[row["topic"]](conn, row, json.loads(row["payload"]))
+            except Exception as exc:
+                attempt=int(row['attempt_count'])+1
+                failed=attempt>=self.MAX_DELIVERY_ATTEMPTS
+                next_attempt=0.0 if failed else time.time()+min(300.0,2.0**attempt)
+                error=type(exc).__name__[:200]
+                conn.execute(text('''UPDATE execution_outbox SET attempt_count=:attempt,next_attempt_at=:next_attempt,
+                    failed_at=:failed_at,last_error=:error WHERE id=:id AND delivered_at IS NULL'''),{
+                    'attempt':attempt,'next_attempt':next_attempt,'failed_at':time.time() if failed else None,
+                    'error':error,'id':row['id'],
+                })
+                logging.getLogger(__name__).error(
+                    'Outbox handler failed topic=%s target=%s attempt=%s terminal=%s error=%s',
+                    row['topic'],row['target_id'],attempt,failed,error,
+                )
+                return True
             conn.execute(text("UPDATE execution_outbox SET delivered_at=:now WHERE id=:id"), {"now": time.time(), "id": row["id"]})
         return True
 
