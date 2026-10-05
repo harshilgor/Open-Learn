@@ -1,12 +1,12 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
-import { AuthForm, SignOutScreen } from '@/components/auth-flow';
-const auth = vi.hoisted(()=>({signInWithOtp:vi.fn(),signInWithOAuth:vi.fn(),getSession:vi.fn(),onAuthStateChange:vi.fn()}));
+import { AuthForm, SignOutScreen, AuthCallbackScreen } from '@/components/auth-flow';
+const auth = vi.hoisted(()=>({signInWithOtp:vi.fn(),signInWithOAuth:vi.fn(),callback:vi.fn(),getSession:vi.fn(),onAuthStateChange:vi.fn()}));
 vi.mock('@/lib/supabase-account',()=>({supabaseAccount:()=>({auth})}));
 vi.mock('next/navigation',()=>({usePathname:()=>'/'}));
 vi.mock('@/components/buddies',()=>({BuddyProvider:({children}:{children:React.ReactNode})=><>{children}</>}));
-vi.mock('@/lib/account-session',()=>({signOut:vi.fn()}));
+vi.mock('@/lib/account-session',()=>({signOut:vi.fn(),accountManager:()=>({signinRedirectCallback:auth.callback})}));
 let root:ReturnType<typeof createRoot>,container:HTMLDivElement;
 afterEach(()=>{act(()=>root.unmount());container.remove();vi.clearAllMocks();});
 async function render(element:React.ReactNode){
@@ -48,4 +48,9 @@ it('shows guest onboarding instead of authenticated workspace contents',async()=
  await render(<AccountWorkspace><p>Private saved history</p></AccountWorkspace>);
  expect(container.textContent).toContain('Start learning for free');expect(container.textContent).not.toContain('Private saved history');
  vi.unstubAllEnvs();
+});
+
+it('offers an expired-link recovery path when callback exchange fails',async()=>{
+ auth.callback.mockRejectedValue(new Error('expired code'));await render(<AuthCallbackScreen/>);
+ expect(container.textContent).toContain('Let’s try that again');expect(container.querySelector('a[href="/auth/sign-in"]')).toBeTruthy();expect(auth.callback).toHaveBeenCalledTimes(1);
 });
