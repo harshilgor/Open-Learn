@@ -92,7 +92,7 @@ class ContextCompiler:
             watermark=conn.execute(text('SELECT sequence FROM learning_event_sequences WHERE owner_id=:owner'),{'owner':owner}).scalar_one_or_none() or 0
             prefs=conn.execute(text('SELECT revision,payload FROM identity_preferences WHERE owner_id=:owner'),{'owner':owner}).mappings().first()
             academic=[]
-            for row in conn.execute(text('SELECT id,revision,payload FROM academic_entities WHERE owner_id=:owner AND (:course IS NULL OR course_id=:course)'),{'owner':owner,'course':course_id}).mappings():
+            for row in conn.execute(text('SELECT id,revision,payload FROM academic_entities WHERE owner_id=:owner AND (CAST(:course AS VARCHAR) IS NULL OR course_id=:course)'),{'owner':owner,'course':course_id}).mappings():
                 academic.append({'id':row['id'],'revision':row['revision'],'value':json.loads(row['payload'])})
             # Keep the request, workflow, and declared scope as the required
             # core. Learner history and academic records are useful additions,
@@ -230,11 +230,11 @@ class ContextCompiler:
             for block,score in matched:
                 candidates.append({**block,'sourceId':sid,'revision':revision,'kind':kind,'score':score,'required':sid in required,'dependency':dep,'historicalSnapshotId':archive_id,'memorySourceId':archive_id,'memoryRevision':1,'metadata':metadata or {}})
         params={'owner':owner,'course':course}
-        for row in conn.execute(text('SELECT id,revision,search_text,content_hash FROM workspace_notes WHERE learner_id=:owner AND (:course IS NULL OR course_id=:course)'),params).mappings():
+        for row in conn.execute(text('SELECT id,revision,search_text,content_hash FROM workspace_notes WHERE learner_id=:owner AND (CAST(:course AS VARCHAR) IS NULL OR course_id=:course)'),params).mappings():
             add(row['id'],row['revision'],row['search_text'],'note',{'kind':'workspace_note','record_id':row['id'],'revision':row['revision']})
-        for row in conn.execute(text('SELECT s.*,r.generation_version FROM lecture_transcript_segments s JOIN lecture_recordings r ON r.id=s.recording_id WHERE r.learner_id=:owner AND (:course IS NULL OR r.course_id=:course)'),params).mappings():
+        for row in conn.execute(text('SELECT s.*,r.generation_version FROM lecture_transcript_segments s JOIN lecture_recordings r ON r.id=s.recording_id WHERE r.learner_id=:owner AND (CAST(:course AS VARCHAR) IS NULL OR r.course_id=:course)'),params).mappings():
             add(row['recording_id'],row['generation_version']+1,row['normalized_text'],'lecture',{'kind':'lecture_segment','record_id':row['id'],'revision':max(row['normalization_version'],row['transcription_version']),'sha256':hashlib.sha256(row['normalized_text'].encode()).hexdigest()},{'segmentId':row['id'],'startMs':row['start_ms'],'endMs':row['end_ms']})
-        for row in conn.execute(text('SELECT b.*,v.version FROM material_blocks b JOIN material_versions v ON v.id=b.version_id JOIN materials m ON m.id=v.material_id WHERE m.owner_id=:owner AND m.deleted=false AND (:course IS NULL OR m.course_id=:course) AND v.version=(SELECT MAX(v2.version) FROM material_versions v2 WHERE v2.material_id=m.id)'),params).mappings():
+        for row in conn.execute(text('SELECT b.*,v.version FROM material_blocks b JOIN material_versions v ON v.id=b.version_id JOIN materials m ON m.id=v.material_id WHERE m.owner_id=:owner AND m.deleted=false AND (CAST(:course AS VARCHAR) IS NULL OR m.course_id=:course) AND v.version=(SELECT MAX(v2.version) FROM material_versions v2 WHERE v2.material_id=m.id)'),params).mappings():
             add(row['version_id'],row['version'],row['text'],'material',{'kind':'material_version','record_id':row['version_id'],'revision':row['version'],'blockId':row['id'],'sha256':hashlib.sha256(row['text'].encode()).hexdigest()},{'blockId':row['id'],'pageIndex':row['page_index']})
         # Conversation snapshots are deliberately absent here. Quiz context
         # should come from assigned notes/material and lecture intervals.
@@ -247,7 +247,7 @@ class ContextCompiler:
         if current!=packet['watermarks']['eventWatermark']: fail('context_evidence_changed','Learning evidence changed during generation.',409)
         preferences_revision=conn.execute(text('SELECT revision FROM identity_preferences WHERE owner_id=:owner'),{'owner':owner}).scalar_one_or_none() or 0
         if preferences_revision!=packet.get('preferencesRevision',0): fail('context_preferences_changed','Your preferences changed during generation.',409)
-        academic_rows=conn.execute(text('SELECT id,revision FROM academic_entities WHERE owner_id=:owner AND (:course IS NULL OR course_id=:course)'),{'owner':owner,'course':packet.get('courseId')}).all()
+        academic_rows=conn.execute(text('SELECT id,revision FROM academic_entities WHERE owner_id=:owner AND (CAST(:course AS VARCHAR) IS NULL OR course_id=:course)'),{'owner':owner,'course':packet.get('courseId')}).all()
         academic_digest=hashlib.sha256(json.dumps(sorted([tuple(row) for row in academic_rows])).encode()).hexdigest()
         if academic_digest!=packet.get('academicDigest'): fail('context_academic_changed','Academic scope changed during generation.',409)
         for dep in packet['dependencies']:
