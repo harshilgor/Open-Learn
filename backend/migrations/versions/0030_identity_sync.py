@@ -68,7 +68,7 @@ def upgrade():
     for row in connection.execute(sa.text('SELECT graph_id,learner_id FROM learning_sessions')).mappings():
         connection.execute(sa.text("INSERT INTO identity_resources(kind,id,owner_id) VALUES('graph_versions',:id,:owner) ON CONFLICT DO NOTHING"), {'id': row['graph_id'], 'owner': row['learner_id']})
     for table in ('graph_versions', 'topic_scopes', 'graph_jobs'):
-        connection.execute(sa.text(f"INSERT INTO identity_resources(kind,id,owner_id) SELECT :kind,id,'local' FROM {table} WHERE id NOT IN (SELECT id FROM identity_resources WHERE kind=:kind)"), {'kind': table})
+        connection.execute(sa.text(f"INSERT INTO identity_resources(kind,id,owner_id) SELECT CAST(:kind AS VARCHAR),id,'local' FROM {table} WHERE id NOT IN (SELECT id FROM identity_resources WHERE kind=CAST(:kind AS VARCHAR))"), {'kind': table})
 
 
 def downgrade():
