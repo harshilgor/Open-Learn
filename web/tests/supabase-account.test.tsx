@@ -40,3 +40,24 @@ it('exchanges the callback code and signs out only this device', async () => {
   expect(sdk.signOut).toHaveBeenCalledWith({ scope: 'local' });
   history.replaceState(null, '', '/');
 });
+
+
+it('ignores repeated sign-in events and token refreshes for the same account', async () => {
+  configure();
+  vi.useFakeTimers();
+  const listener = vi.fn();
+  window.addEventListener('openlearn-account-changed', listener);
+  const { supabaseAccount } = await import('@/lib/supabase-account');
+  supabaseAccount();
+  const notify = sdk.onAuthStateChange.mock.calls[0][0];
+  notify('INITIAL_SESSION', { user: { id: 'alice' } });
+  notify('SIGNED_IN', { user: { id: 'alice' } });
+  notify('TOKEN_REFRESHED', { user: { id: 'alice' } });
+  vi.runAllTimers();
+  expect(listener).not.toHaveBeenCalled();
+  notify('SIGNED_IN', { user: { id: 'bob' } });
+  vi.runAllTimers();
+  expect(listener).toHaveBeenCalledTimes(1);
+  window.removeEventListener('openlearn-account-changed', listener);
+  vi.useRealTimers();
+});
