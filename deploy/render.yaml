@@ -1,40 +1,27 @@
-# Deploy manually after supplying the shared environment group. No secret values here.
+# Free development deployment. Upgrade only when the owner opts into paid compute.
 services:
   - type: web
     name: openlearn-api
     runtime: docker
+    plan: free
     dockerfilePath: deploy/Dockerfile
     dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime api
-    preDeployCommand: python -m backend.app.hosted_runtime migrate
+    dockerCommand: python -m backend.app.hosted_runtime api-free
     healthCheckPath: /ready
     autoDeployTrigger: off
     envVars:
       - fromGroup: openlearn-production
-  - type: worker
-    name: openlearn-learning
-    runtime: docker
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime learning
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-  - type: worker
-    name: openlearn-agent
-    runtime: docker
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime agent
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-  - type: worker
-    name: openlearn-browser
-    runtime: docker
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime browser
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
+      - key: OPENLEARN_WORKER_MODE
+        value: embedded
+      - key: OPENLEARN_MIGRATE_ON_START
+        value: 'false'
+      - key: AI_TUTOR_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_MODEL
+        value: openrouter/free
+      - key: OPENLEARN_SANDBOX_ENABLED
+        value: 'false'
+      - key: OPENLEARN_BROWSER_ASSISTANT_ENABLED
+        value: 'false'
+      - key: OPENLEARN_AGENT_ADMISSION_ENABLED
+        value: 'false'
