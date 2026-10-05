@@ -1,6 +1,6 @@
 # Hosted and phone setup
 
-The first hosting target is a **free Render API with Supabase PostgreSQL**, while development continues. No API deployment or signed phone release has been created. Paid compute is deferred until the owner chooses to upgrade.
+The first hosting target is a **free Render API with Supabase PostgreSQL**, while development continues. The API is configured on Render and hosted web authentication uses Supabase email links. Signed phone releases remain separate. Paid compute is deferred until the owner chooses to upgrade.
 
 ## Free development deployment
 
@@ -18,13 +18,21 @@ Create a dedicated **Open Learn** project on a free plan. Use the exact session-
 
 Disable the Supabase Data API and automatic exposure of new tables for this backend-only database; Open Learn serves its data through the authenticated Python API. Supabase database selection alone does not configure the existing native OIDC flow or private S3 storage. Configure those separately; do not weaken authentication or use ephemeral local files to bypass missing setup.
 
-## Account inspection — 4 October 2026
+## Hosted account configuration - 4 October 2026
 
-The owner confirmed Render **Harshil's workspace** (`tea-d4j0f6h5pdvs7386n2r0`). It contains only InsiderInfo, from a separate repository, and no Render PostgreSQL instances. No existing service was changed. The Open Learn repository is `https://github.com/harshilgor/Open-Learn`; its Blueprint path is `deploy/render.yaml`. The Dashboard found the earlier paid Blueprint on `main`, but no Blueprint was applied.
+Render uses **Harshil's workspace** (`tea-d4j0f6h5pdvs7386n2r0`), service **openlearn-api** (`srv-db1jh5c9v7es73fseqv0`), Free Docker compute in Oregon. API URL: `https://openlearn-api-saku.onrender.com`. Its deployment branch is `codex/free-render-backend`; auto-deploy is off. InsiderInfo is unrelated and was left untouched.
 
-Supabase is signed in to `harshilgor's Org`. Its two existing projects are **Morni Mumbai** and **our dates**. The new-project page initially blocked creation at the two-active-free-project limit. The owner authorized pausing **our dates**; the pause was submitted and the new-project form subsequently became available. The form is prepared as **Open Learn** with Data API and automatic table exposure disabled, awaiting owner password entry and submission. No project was deleted or upgraded. The organization also reports storage over its free quota.
+Supabase **Open Learn** (`apxwjejimdzcvyosejzy`) is a dedicated Free project in US East. The owner authorized pausing **our dates** to free a project slot. Data API is disabled. Private storage bucket `openlearn-private` uses the Supabase S3 endpoint, with its approved server credentials stored only in Render. The database password is percent-encoded within Render's `DATABASE_URL`.
 
-Local configuration has an OpenRouter key and `openrouter/free`, but lacks the hosted PostgreSQL URL, private S3 settings, and OIDC issuer/audience/JWKS settings. Existing frontend URL: `https://open-learn-eta.vercel.app`; confirm it remains the production origin when configuring Render.
+The production web origin is `https://open-learn-eta.vercel.app`. Vercel production has `NEXT_PUBLIC_LEARNING_API_URL`, `NEXT_PUBLIC_SUPABASE_URL`, and the browser-safe `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`. Supabase Site URL is that origin and the exact redirect allow-list entry is `/auth/callback`. Web sign-in uses an email link with PKCE; tokens are verified by the backend against Supabase's issuer, authenticated audience, and public JWKS. Native mobile OIDC configuration still requires its own provider/client integration.
+
+The organization reports existing storage over its free quota and a potential restriction date of 27 October 2026. Resolve unrelated storage usage before then without automatically upgrading or deleting data. Supabase's default email sender is suitable for initial project-team testing; configure a sender before broad public sign-up.
+
+## Live verification
+
+Render deployment `06c50af` completed successfully. `/ready` returned HTTP 200 with `status=ready`; `/health` reported PostgreSQL/schema checks passing and `lesson_provider=openrouter/openrouter/free`. An unauthenticated `/v1/account` returned 401, CORS allowed the production web origin, and Supabase JWKS advertised ES256. Vercel production deployment `dpl_4qDLwD5WW3tH5ynpZLLdGFsp2zVJ` is READY and serves `/auth/sign-in`. Seven backend migration/runtime tests passed; five web account tests passed before deployment. A post-deployment Vercel error-log scan found no entries.
+
+Real-account sign-in, lesson generation, private upload/download and cross-owner isolation still require live authenticated acceptance. Health checks prove configuration and database readiness, not a completed AI request or storage write. Free service sleeping and native phone acceptance remain subject to the limits above.
 
 ## Deploy and verify
 
