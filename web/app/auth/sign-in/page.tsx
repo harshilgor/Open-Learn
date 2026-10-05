@@ -21,9 +21,28 @@ export default function SignInPage() {
       setMessage(error instanceof Error ? error.message : 'Could not send the sign-in link.');
     } finally { setBusy(false); }
   }
+  async function googleSignIn() {
+    setBusy(true);
+    setMessage('');
+    try {
+      const client = supabaseAccount();
+      if (!client) throw new Error('Account sign-in is not configured yet.');
+      const { error } = await client.auth.signInWithOAuth({ provider: 'google',
+        options: { redirectTo: `${window.location.origin}/auth/callback` } });
+      if (error) throw error;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not start Google sign-in.');
+      setBusy(false);
+    }
+  }
   return <main style={{ maxWidth: 480, margin: '80px auto', padding: 24 }}>
     <h1>Sign in to Open Learn</h1>
-    <p>Use your email to access your learning across devices.</p>
+    <p>Access your learning across devices.</p>
+    <button type="button" disabled={busy} onClick={() => void googleSignIn()}
+      style={{ width: '100%', padding: 12, margin: '16px 0', border: '1px solid currentColor', borderRadius: 8 }}>
+      Continue with Google
+    </button>
+    <p>Or use an email link</p>
     <form onSubmit={event => void submit(event)} style={{ display: 'grid', gap: 16 }}>
       <label>Email address<input type="email" autoComplete="email" required value={email}
         onChange={event => setEmail(event.target.value)} disabled={busy}
