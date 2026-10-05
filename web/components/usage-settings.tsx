@@ -42,7 +42,7 @@ function shortModel(model: string): string {
 export function UsageSettings() {
   const [tab, setTab] = useState<'overview' | 'analytics'>('overview');
   return (
-    <div className={styles.usage}>
+    <div className={styles.usage}><p className={styles.muted}>Completed tutor generations recorded for this account. Other inference activity may not yet be included. Provider costs below are service diagnostics, not charges to you.</p>
       <div className={styles.tabs} role="tablist" aria-label="Usage views">
         {(['overview', 'analytics'] as const).map(item => (
           <button

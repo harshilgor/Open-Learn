@@ -24,17 +24,18 @@ export function UpdateSection() {
 
   useEffect(() => {
     if (!updates) return;
-    void updates.status().then(setUpdate);
+    void updates.status().then(setUpdate).catch(()=>setUpdate({state:'error',currentVersion:'',detail:'Update status could not load. Please retry.'}));
     return updates.onStatus(setUpdate);
   }, [updates]);
 
-  if (!updates || !update) return null;
+  if (!updates) return <p>Update checks are unavailable in this build.</p>;
+  if (!update) return <p role="status">Loading update status…</p>;
 
-  async function checkForUpdate() { if (updates) setUpdate(await updates.check()); }
-  async function installUpdate() { if (updates) await updates.install(); }
+  async function checkForUpdate() { if (updates) { try { setUpdate(await updates.check()); } catch { setUpdate(current=>({...current!,state:'error',detail:'Could not check for updates. Check your connection and retry.'})); } } }
+  async function installUpdate() { if (updates) { try { const installed=await updates.install(); if(!installed)setUpdate(current=>({...current!,state:'error',detail:'The update could not be installed. Please retry.'})); } catch { setUpdate(current=>({...current!,state:'error',detail:'The update could not be installed. Please retry.'})); } } }
 
   return <section className={styles.update} aria-label="Application updates">
-    <div><strong>Open Learn {update.currentVersion}</strong><p>{update.detail || 'Keep Open Learn current with verified GitHub releases.'}</p></div>
+    <div><strong>Open Learn {update.currentVersion}</strong><p>{update.detail || 'Check for the latest available app version.'}</p></div>
     {update.state === 'ready' ? <Button onClick={installUpdate}>Restart and install {update.availableVersion}</Button> : <Button variant="outline" disabled={update.state === 'checking' || update.state === 'downloading'} onClick={checkForUpdate}><RefreshCw size={15} />{update.state === 'checking' ? 'Checking…' : update.state === 'downloading' ? 'Downloading…' : 'Check for updates'}</Button>}
   </section>;
 }
