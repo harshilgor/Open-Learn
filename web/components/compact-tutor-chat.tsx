@@ -69,7 +69,7 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
         setSessionId(sid);
         try { localStorage.setItem(storageKey, sid); } catch { /* Server conversation is still durable. */ }
       }
-      if (!attachments.length && await routeFlashcardRequest(question,sid,context.courseId)) {setPrompt('');setPending(null);return;}
+      if (!attachments.length && await routeFlashcardRequest(question,sid,context.courseId ?? undefined)) {setPrompt('');setPending(null);return;}
       if (!attachments.length && await browserAssistant.tryStart(question, sid)) {
         setPrompt(''); setPending(null); return;
       }
