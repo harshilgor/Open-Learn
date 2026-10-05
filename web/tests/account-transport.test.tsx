@@ -15,3 +15,14 @@ it('verifies account identity and rewrites local aliases over same-origin transp
   expect(String(fetch.mock.calls[0][0])).toBe(new URL('/v1/account',window.location.origin).href);
   expect(String(fetch.mock.calls[1][0])).toBe('/v1/learners/alice/workspace-notes');
 });
+
+
+it('does not announce an account change for an already signed-out request', async () => {
+  const { authenticatedFetch, ACCOUNT_CHANGED } = await import('@/lib/account-session');
+  const listener = vi.fn();
+  window.addEventListener(ACCOUNT_CHANGED, listener);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 401 })));
+  await authenticatedFetch('/v1/buddies');
+  expect(listener).not.toHaveBeenCalled();
+  window.removeEventListener(ACCOUNT_CHANGED, listener);
+});

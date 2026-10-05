@@ -96,7 +96,7 @@ export async function authenticatedFetch(input: string, init: RequestInit = {}):
   const response = await fetch(target, { ...init, headers });
   if (pending && response.ok) forgetCommand(owner, pending.id);
   else if (pending && response.status === 409) markConflict(owner, pending.id);
-  if (response.status === 401) {
+  if (response.status === 401 && token) {
     account = undefined;
     window.dispatchEvent(new Event(ACCOUNT_CHANGED));
   }
