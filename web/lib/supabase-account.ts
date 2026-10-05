@@ -12,8 +12,12 @@ export function supabaseAccount(): SupabaseClient | undefined {
       flowType: 'pkce', detectSessionInUrl: false,
       persistSession: true, autoRefreshToken: true,
     } });
-    client.auth.onAuthStateChange(event => {
-      if (event !== 'INITIAL_SESSION') window.setTimeout(() => {
+    let accountId: string | undefined;
+    client.auth.onAuthStateChange((event, session) => {
+      const nextId = session?.user.id;
+      const changed = nextId !== accountId;
+      accountId = nextId;
+      if (event !== 'INITIAL_SESSION' && changed) window.setTimeout(() => {
         window.dispatchEvent(new Event('openlearn-account-changed'));
       }, 0);
     });
