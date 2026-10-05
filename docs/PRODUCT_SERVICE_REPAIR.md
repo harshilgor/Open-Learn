@@ -18,7 +18,7 @@ The Vercel web app used `http://127.0.0.1:8000` whenever a public API URL was mi
 
 ## Deployment requirements
 
-The code has been changed and checked locally. It has **not been deployed**, and no working hosted Python API origin was provided or found in the checkout. The existing `deploy/render.yaml` defines an API and three workers; it does not prove those services already exist.
+The web changes were deployed to **production** on October 4, 2026 at https://open-learn-eta.vercel.app from commit `756382c` (deployment `dpl_DReCeueVXtm8qN3rZGbUzfoRXSj1`, status READY). The source was pushed to `codex/openlearn-2-local-checkpoint-20261003`. No working hosted Python API origin was provided or found; Vercel production has no configured environment variables. Backend and native/desktop releases have not been deployed. The existing `deploy/render.yaml` defines an API and three workers; it does not prove those services already exist.
 
 1. Provision the existing Render API/worker blueprint with PostgreSQL, private object storage and the account issuer settings in `deploy/hosted.env.example`. Keep production authentication enabled. API and workers must use the same database, object storage, account configuration and provider configuration.
 2. Store the existing OpenRouter key in the backend hosting secret store as `OPENROUTER_API_KEY`, with `AI_TUTOR_PROVIDER=openrouter`. Select the existing approved model through `OPENROUTER_MODEL`. Never use a `NEXT_PUBLIC_` or `EXPO_PUBLIC_` variable for provider credentials.
@@ -36,3 +36,7 @@ Six provider-settings tests pass, including production mutation denial and secre
 Hosted end-to-end delivery, native device interaction and packaged desktop launch remain deployment/device acceptance checks; they are not claimed from local browser or unit tests.
 
 Local production screenshot: `work/product-service-desktop.png`. Production-build chart sizing warnings come from existing prerendered charts; the build completed successfully.
+
+## Production release verification
+
+The public homepage returns HTTP 200. Browser verification confirms the composer accepts typing during the outage and no longer displays local startup instructions. `/v1/account` returns the expected clean HTTP 503 while `OPENLEARN_API_ORIGIN` is missing; live sign-in, chat responses and backend flashcard operations remain unavailable. A bounded Vercel error-level log query returned no entries; this does not establish backend availability. Screenshot: `work/product-service-live.png`. The deployment upload was checked to include only web source and exclude private environment files, backend data and build output.
