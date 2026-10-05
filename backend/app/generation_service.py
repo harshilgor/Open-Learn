@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import os
 import time
 from collections import deque
@@ -360,6 +361,7 @@ class GenerationManager:
             await self._cancel(generation_id)
             raise
         except Exception as exc:
+            logging.getLogger(__name__).exception("Generation %s failed", generation_id)
             code = error_code(exc)
             record = self.records.get(owner, generation_id)
             if record["status"] not in TERMINAL:

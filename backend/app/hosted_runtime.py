@@ -25,7 +25,7 @@ def configuration_errors(env=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('role',choices=['check','migrate','api','learning','agent','browser'])
+    parser.add_argument('role',choices=['check','migrate','api','api-free','learning','agent','browser'])
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args()
     errors=configuration_errors()
@@ -33,7 +33,15 @@ def main():
     if args.role=='check':print('Hosted configuration shape valid; connectivity not checked.');return
     from .database import database_url,run_migrations
     if args.role=='migrate':run_migrations(database_url());return
-    if args.role=='api':
+    if args.role=='api-free':
+        if os.getenv('OPENLEARN_WORKER_MODE') != 'embedded':
+            raise SystemExit('api-free requires OPENLEARN_WORKER_MODE=embedded')
+        # Free Render has no pre-deploy command. Complete the migration before
+        # importing the app or starting its embedded workers. Concurrent boots
+        # share a PostgreSQL lock, including during deploy overlap.
+        from .database import run_serialized_migrations
+        run_serialized_migrations(database_url())
+    if args.role in {'api','api-free'}:
         import uvicorn
         uvicorn.run('backend.app.main:app',host='0.0.0.0',port=int(os.getenv('PORT','8000')),workers=1)
         return

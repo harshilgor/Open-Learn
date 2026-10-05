@@ -1,12 +1,15 @@
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
 import { rememberCommand, forgetCommand, markConflict } from './offline-commands';
+import { supabaseAccount, supabaseManager } from './supabase-account';
 
 let manager: UserManager | undefined;
 let account: { token: string; ownerId: string } | undefined;
 export const ACCOUNT_CHANGED = 'openlearn-account-changed';
+if (typeof window !== 'undefined') window.addEventListener(ACCOUNT_CHANGED, () => { account = undefined; });
 
-export function accountManager(): UserManager | undefined {
+export function accountManager(): UserManager | typeof supabaseManager | undefined {
   if (typeof window === 'undefined') return undefined;
+  if (supabaseAccount()) return supabaseManager;
   const authority = process.env.NEXT_PUBLIC_OPENLEARN_OIDC_ISSUER;
   const client_id = process.env.NEXT_PUBLIC_OPENLEARN_OIDC_CLIENT_ID;
   if (!authority || !client_id) return undefined;
@@ -93,7 +96,7 @@ export async function authenticatedFetch(input: string, init: RequestInit = {}):
   const response = await fetch(target, { ...init, headers });
   if (pending && response.ok) forgetCommand(owner, pending.id);
   else if (pending && response.status === 409) markConflict(owner, pending.id);
-  if (response.status === 401) {
+  if (response.status === 401 && token) {
     account = undefined;
     window.dispatchEvent(new Event(ACCOUNT_CHANGED));
   }

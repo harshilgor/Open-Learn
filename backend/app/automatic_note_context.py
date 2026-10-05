@@ -72,7 +72,7 @@ def retrieve_relevant_notes(store, owner: str, query: str, course_id: str | None
                 FROM lecture_note_blocks b JOIN lecture_recordings r ON r.id=b.recording_id
                 JOIN workspace_notes n ON n.id=r.note_id AND n.learner_id=r.learner_id
                 WHERE r.learner_id=:owner AND r.status='completed' AND r.generation_version=b.generation_version
-                  AND ((:course IS NULL AND r.course_id IS NULL) OR r.course_id=:course)
+                  AND ((CAST(:course AS VARCHAR) IS NULL AND r.course_id IS NULL) OR r.course_id=:course)
                 ORDER BY r.updated_at DESC,b.ordinal LIMIT 500"""), {"owner": owner, "course": course_id}).mappings().all()
         ranked = sorted(((sum(term in (row["title"] + " " + row["content"]).lower() for term in terms), row) for row in blocks), key=lambda item: item[0], reverse=True)
         used = {item["noteId"] for item in results} | explicit_ids

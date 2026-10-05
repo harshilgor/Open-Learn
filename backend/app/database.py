@@ -72,3 +72,21 @@ def require_current_schema(url: str) -> None:
             if set(MigrationContext.configure(conn).get_current_heads())!=expected:
                 raise RuntimeError('Database schema is not current. Run the release migration before starting services.')
     finally:engine.dispose()
+
+
+def run_serialized_migrations(url: str) -> None:
+    """Serialize single-service bootstrap migrations on PostgreSQL."""
+    from sqlalchemy import text
+
+    if not url.startswith('postgresql'):
+        raise RuntimeError('Hosted bootstrap requires PostgreSQL.')
+    engine = create_database_engine(url)
+    try:
+        with engine.begin() as connection:
+            # Keep this transaction and its lock alive while Alembic uses its
+            # own connection. Rollback/close also releases the lock on failure.
+            connection.execute(text("SET LOCAL statement_timeout = '60s'"))
+            connection.execute(text('SELECT pg_advisory_xact_lock(728194602113)'))
+            run_migrations(url)
+    finally:
+        engine.dispose()
