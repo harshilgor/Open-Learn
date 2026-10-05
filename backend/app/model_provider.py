@@ -232,7 +232,7 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         return self._parse_blocks(parsed)
 
     def complete_json(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, allow_text: bool = False,
-                      request_timeout: float | None = None) -> dict:
+                      request_timeout: float | None = None, images: list[ImageInput] | None = None) -> dict:
         """Shared provider transport; assessment callers require strict JSON."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -277,6 +277,17 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                 "max_output_tokens": max_tokens,
                 "reasoning": {"effort": "low"},
             }
+        if images:
+            if isinstance(prompt, GenerationContext):
+                raise ModelProviderError('Structured context images must use the existing streaming path.')
+            encoded_images = [f'data:{im.media_type};base64,' + base64.b64encode(im.data).decode() for im in images]
+            if getattr(self, 'is_openai', False):
+                payload['input'] = [{'role': 'user', 'content': [
+                    {'type': 'input_text', 'text': 'Respond with valid JSON only.\n' + prompt},
+                    *[{'type': 'input_image', 'image_url': data} for data in encoded_images]]}]
+            else:
+                payload['messages'][1]['content'] = [{'type': 'text', 'text': prompt},
+                    *[{'type': 'image_url', 'image_url': {'url': data}} for data in encoded_images]]
         if self.model == "nvidia/nemotron-3-ultra-550b-a55b:free":
             # This endpoint accepts text output but not response_format.
             payload.pop("response_format")

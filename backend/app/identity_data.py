@@ -3,7 +3,8 @@ import json
 from sqlalchemy import MetaData, select, or_, and_, text
 from .identity import assert_owner_active
 
-PRIVATE_TABLES = {'identity_devices', 'identity_accounts'}
+PRIVATE_TABLES = {'identity_devices', 'identity_accounts', 'browser_session_leases', 'browser_provider_cleanup', 'notification_subscriptions', 'assistant_steps','agent_sandbox_cleanup','agent_sandbox_leases'}
+PRIVATE_TABLES.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions'})
 
 
 def owned_rows(connection, owner):
@@ -73,6 +74,13 @@ def export_owner(store, owner):
         payload.pop('grantHash',None)
         payload['status']='exported_disconnected'
         row['payload']=json.dumps(payload)
+    for row in exported['tables'].get('site_connections', []):
+        payload = json.loads(row['payload'])
+        for key in ('providerContextId', 'loginSessionId', 'deviceId', 'connectUrl', 'liveViewUrl'):
+            payload.pop(key, None)
+        payload['status'] = 'exported_disconnected'
+        row['device_id'] = None
+        row['payload'] = json.dumps(payload)
     exported['readme'] = 'Tables retain original IDs and relationships. Files contain base64 originals with SHA-256. Transcript and note text are in their source tables; derived rows are not evidence of mastery.'
     return exported
 
@@ -88,19 +96,36 @@ def object_manifest(records, owner):
         items.append({'owner_id': owner, 'kind': 'note', 'recording_id': None, 'object_key': row['id']})
     for row in records.get('lecture_audio_chunks', []):
         items.append({'owner_id': owner, 'kind': 'lecture', 'recording_id': row['recording_id'], 'object_key': row['storage_key']})
+    for row in records.get('assistant_objects', []):
+        items.append({'owner_id': owner, 'kind': 'assistant', 'recording_id': None, 'object_key': row['object_key']})
+    for row in records.get('agent_artifacts', []):
+        if row.get('status') != 'deleted':
+            items.append({'owner_id': owner, 'kind': 'assistant', 'recording_id': None, 'object_key': row['object_key']})
+    for row in records.get('agent_sandbox_leases',[]):
+        for output in json.loads(row['payload']).get('outputs',{}).values():
+            items.append({'owner_id':owner,'kind':'assistant','recording_id':None,'object_key':output['key']})
     return items
 
 
 def object_operation(store, item, delete):
+    if item['kind'] == 'assistant':
+        from .browser_assistant.evidence import evidence_objects
+        objects = evidence_objects(store)
+        return objects.delete(item['owner_id'], item['object_key']) if delete else objects.read(item['owner_id'], item['object_key'])
     if item['kind'] == 'lecture':
         from .lecture_storage import LectureObjectStore
         objects = LectureObjectStore()
         return objects.delete(item['owner_id'], item['recording_id'], item['object_key']) if delete else objects.read(item['owner_id'], item['recording_id'], item['object_key'])
     if item['kind'] == 'material':
         from .material_service import MaterialService
-        path = MaterialService(store).object_path(item['object_key'])
+        objects=MaterialService(store).objects
+        return objects.delete(item['object_key']) if delete else objects.read(item['object_key'])
     elif item['kind'] == 'note':
         from .workspace_note_service import WorkspaceNoteService
+        from .identity import hosted
+        if hosted() and not delete:
+            service=WorkspaceNoteService(store)
+            service._read_file(item['owner_id'],item['object_key'])
         path = WorkspaceNoteService(store).note_path(item['owner_id'], item['object_key'])
     else:
         from .class_recording_service import ClassRecordingService
@@ -132,15 +157,31 @@ def _erase_owner(store, owner):
         conn.execute(text('UPDATE identity_devices SET revoked_at=:now WHERE owner_id=:owner'), {'now': time.time(), 'owner': owner})
         conn.execute(text("UPDATE learning_jobs SET status='cancelled',lease=NULL,expires=NULL,cancellation_requested=true WHERE owner_id=:owner"), {'owner': owner})
         metadata, records = owned_rows(conn, owner)
+        if 'agent_sandbox_budgets' in metadata.tables:
+            from .agent_execution.repository import digest as agent_digest
+            conn.execute(text('DELETE FROM agent_sandbox_budgets WHERE scope=:scope'),{'scope':'owner:'+agent_digest(owner)})
         from uuid import uuid4
         objects = object_manifest(records, owner)
+        for lease in records.get('agent_sandbox_leases',[]):
+            if lease['status'] not in {'released','deleted'}:
+                conn.execute(text('INSERT INTO agent_sandbox_cleanup(id,owner_id,creation_key,provider_id,created_at) VALUES(:id,:owner,:key,:provider,:now)'),
+                    {'id':uuid4().hex,'owner':owner,'key':lease['creation_key'],'provider':lease['provider_id'],'now':time.time()})
+        for connection in records.get('site_connections', []):
+            payload = json.loads(connection['payload'])
+            if payload.get('providerContextId'):
+                conn.execute(text('INSERT INTO browser_provider_cleanup(id,owner_id,context_id,session_id,created_at) VALUES(:id,:owner,:context,NULL,:now)'),
+                             {'id': uuid4().hex, 'owner': owner, 'context': payload['providerContextId'], 'now': time.time()})
+        for session in records.get('browser_session_leases', []):
+            if session['status'] in {'active','login'}:
+                conn.execute(text('INSERT INTO browser_provider_cleanup(id,owner_id,context_id,session_id,created_at) VALUES(:id,:owner,NULL,:session,:now)'),
+                             {'id': uuid4().hex, 'owner': owner, 'session': session['provider_session'], 'now': time.time()})
         for checkpoint in records.get('identity_imports', []):
             if checkpoint['status'] == 'copying':
                 objects.extend(json.loads(checkpoint['objects']))
         for item in objects:
             conn.execute(text('INSERT INTO identity_object_cleanup(id,owner_id,kind,recording_id,object_key) VALUES(:id,:owner_id,:kind,:recording_id,:object_key)'), {'id': uuid4().hex, **item})
         for table in reversed(metadata.sorted_tables):
-            if table.name in {'identity_accounts', 'identity_object_cleanup'}:
+            if table.name in {'identity_accounts', 'identity_object_cleanup', 'browser_provider_cleanup','agent_sandbox_cleanup'}:
                 continue
             for row in records[table.name]:
                 # Shared immutable legacy graph records remain for their other owner.

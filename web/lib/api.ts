@@ -698,7 +698,7 @@ export const learningApi = {
     return request<KnowledgeGraph>(`/v1/graphs/${encodeURIComponent(graphId)}${suffix}`, { signal: params.signal });
   },
 
-  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null }): Promise<LearningSession> {
+  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null; buddyId?: string }): Promise<LearningSession> {
     return request<LearningSession>('/v1/sessions', {
       method: 'POST',
       body: JSON.stringify({
@@ -1138,7 +1138,7 @@ export const learningApi = {
     });
   },
 
-  createLectureRecording(input: { id: string; title: string; courseId?: string | null; startedAtMs: number; noteFolder?: string | null; preferences: Record<string, unknown> }, learnerId = 'local'): Promise<LectureStatus> {
+  createLectureRecording(input: { id: string; title: string; courseId?: string | null; buddyId?:string; startedAtMs: number; noteFolder?: string | null; preferences: Record<string, unknown> }, learnerId = 'local'): Promise<LectureStatus> {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId }, body: JSON.stringify(input) });
   },
 
@@ -1150,9 +1150,9 @@ export const learningApi = {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}`, { headers: { 'X-Dev-Learner-Id': learnerId } });
   },
 
-  uploadLectureChunk(id: string, chunk: { sequenceNumber: number; startMs: number; endMs: number; mimeType: string; sha256: string; blob: Blob }, learnerId = 'local'): Promise<{ recordingId: string; sequenceNumber: number; sha256: string; duplicate: boolean }> {
+  uploadLectureChunk(id: string, chunk: { sequenceNumber: number; startMs: number; endMs: number; mimeType: string; sha256: string; blob: Blob;captureDeviceId?:string }, learnerId = 'local'): Promise<{ recordingId: string; sequenceNumber: number; sha256: string; duplicate: boolean }> {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/chunks/${chunk.sequenceNumber}`, {
-      method: 'PUT', headers: { 'X-Dev-Learner-Id': learnerId, 'Content-Type': chunk.mimeType, 'X-Chunk-Start-Ms': String(chunk.startMs), 'X-Chunk-End-Ms': String(chunk.endMs), 'X-Chunk-Sha256': chunk.sha256 }, body: chunk.blob,
+      method: 'PUT', headers: { 'X-Dev-Learner-Id': learnerId, 'Content-Type': chunk.mimeType, 'X-Chunk-Start-Ms': String(chunk.startMs), 'X-Chunk-End-Ms': String(chunk.endMs), 'X-Chunk-Sha256': chunk.sha256,...(chunk.captureDeviceId?{'X-Capture-Device':chunk.captureDeviceId,'X-Capture-Epoch':'1'}:{}) }, body: chunk.blob,
     });
   },
 

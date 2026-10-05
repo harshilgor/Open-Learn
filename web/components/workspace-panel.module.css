@@ -9,6 +9,13 @@
   color: var(--foreground);
 }
 
+.returnBar { display: none; }
+@media (max-width: 1220px) {
+  .returnBar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: max(8px, env(safe-area-inset-top)) 10px 8px; border-bottom: 1px solid var(--border); }
+  .returnBar span { font-size: 11px; color: var(--muted-foreground); }
+  .panel { padding-bottom: env(safe-area-inset-bottom); }
+}
+
 .collapsed {
   display: none;
 }

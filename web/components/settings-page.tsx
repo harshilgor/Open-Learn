@@ -8,14 +8,17 @@ import { Button } from '@/components/ui/button';
 import { ProviderSettings } from './provider-settings';
 import { UsageSettings } from './usage-settings';
 import { ReviewNotificationSettings } from './review-notification-settings';
+import {SiteConnections} from './site-connections';
+import {AcademicReminderSettings} from './academic-reminder-settings';
 import { DataActionsSection, UpdateSection } from './local-data-settings';
 import styles from './settings-page.module.css';
 import { DEFAULT_SETTINGS, readSettingsPreferences, saveSettingsPreferences, SETTINGS_CHANGED_EVENT, type SettingsPreferences } from '@/lib/settings-preferences';
 
-export type SettingsCategory = 'account' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about';
+export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about';
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 }[] = [
   { id: 'account', label: 'Account & devices', icon: Monitor },
+  { id: 'websites', label: 'Connected websites', icon: ExternalLink },
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'learning', label: 'Learning', icon: BookOpen },
   { id: 'audio', label: 'Audio & recordings', icon: Headphones },
@@ -95,6 +98,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
       <div className={styles.content}>
         <div className={styles.inner} data-density={preferences.density} style={{ '--settings-scale': preferences.textSize === 'large' ? 1.08 : 1 } as CSSProperties}>
           {category === 'account' && <AccountSettings />}
+          {category === 'websites' && <SiteConnections />}
           {category === 'general' ? (
             <section aria-label="General settings">
               <h1>General</h1>
@@ -191,6 +195,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               <p className={styles.lede}>Reminders that help you return to scheduled reviews.</p>
               <div className={styles.card}>
                 <ReviewNotificationSettings />
+                <AcademicReminderSettings />
                 {!desktop ? <p className={styles.muted}>Review reminders are available in the desktop app. Notifications stay on this device.</p> : null}
               </div>
             </section>

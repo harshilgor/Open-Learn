@@ -1,0 +1,12 @@
+"use client";
+import { useCallback, useEffect, useState } from 'react';
+import { request } from '@/lib/api';
+import { Button } from './ui/button';
+import { useBuddies } from './buddies';
+type Reminder={id:string;dueAt:number;status:string;title:string;courseId:string|null;buddyId:string};
+export function BuddyReminders({initialReminderId,onCourse}:{initialReminderId?:string|null;onCourse?:(id:string)=>void}){const [items,setItems]=useState<Reminder[]>([]),[error,setError]=useState(''),[loading,setLoading]=useState(true);
+ const {snapshot,refresh}=useBuddies();const [filter,setFilter]=useState('');const [selected,setSelected]=useState(initialReminderId||'');
+ const load=useCallback(async()=>{setLoading(true);try{const result=await request<{reminders:Reminder[]}>('/v1/buddies/reminders');setItems(result.reminders);setError('');await request('/v1/buddies/reminders/read',{method:'POST',body:JSON.stringify({reminderIds:result.reminders.filter(item=>!initialReminderId||item.id===initialReminderId).slice(0,1000).map(item=>item.id)})});await refresh();}catch(e){setError(e instanceof Error?e.message:'Could not load reminders.');}finally{setLoading(false);}},[refresh,initialReminderId]);
+ useEffect(()=>{const timer=setTimeout(()=>void load(),0);return()=>clearTimeout(timer);},[load]);
+ return <section className="buddy-home"><h2>Reminders</h2><p>Shared across your Buddies and chats.</p><label>Companion <select value={filter} onChange={e=>setFilter(e.target.value)}><option value="">All Buddies</option>{snapshot?.profiles.map(buddy=><option key={buddy.id} value={buddy.id}>{buddy.name}</option>)}</select></label>{selected?<Button variant="ghost" onClick={()=>setSelected('')}>Show all reminders</Button>:null}{loading?<p role="status">Loading reminders…</p>:null}{error?<p role="alert">{error}<Button onClick={()=>void load()}>Retry</Button></p>:null}{!loading&&!error&&!items.length?<p>No reminders yet. Course reminder settings are available in your courses.</p>:null}{items.filter(item=>(!filter||item.buddyId===filter)&&(!selected||item.id===selected)).map(item=><article key={item.id} className="buddy-preview"><small>{snapshot?.profiles.find(p=>p.id===item.buddyId)?.name||'Buddy'}</small><strong>{item.title}</strong><p>{new Date(item.dueAt*1000).toLocaleString()} · {item.status}</p>{item.courseId&&onCourse?<Button variant="outline" onClick={()=>onCourse(item.courseId!)}>Open course</Button>:null}</article>)}</section>;
+}

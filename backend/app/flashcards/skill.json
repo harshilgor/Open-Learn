@@ -1,0 +1,12 @@
+{
+  "version": "flashcard-skill-v1",
+  "promptVersion": "flashcard-author-v1",
+  "validatorVersion": "flashcard-validator-v1",
+  "inputs": ["note", "lesson", "material", "quiz_attempt", "lecture"],
+  "cardTypes": ["qa", "cloze"],
+  "maxSources": 20,
+  "maxSourceCharacters": 24000,
+  "batchSize": 12,
+  "maxCards": 60,
+  "permittedTools": ["authorized_source_resolver", "structured_model_provider"]
+}

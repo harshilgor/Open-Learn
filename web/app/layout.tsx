@@ -2,8 +2,12 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
+import { AppInstall } from "@/components/app-install";
+import { BuddyProvider } from "@/components/buddies";
 
 export const metadata: Metadata = {
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "Open Learn", statusBarStyle: "default" },
   title: "Forma — A space to understand",
   description: "Explore connected ideas and follow your curiosity without losing your place.",
   other: {
@@ -12,6 +16,7 @@ export const metadata: Metadata = {
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
+    apple: "/app-icon-192.png",
   },
 };
 
@@ -24,7 +29,8 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className="antialiased" suppressHydrationWarning>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-          {children}
+          <BuddyProvider>{children}</BuddyProvider>
+          <AppInstall />
           <Toaster />
         </ThemeProvider>
       </body>

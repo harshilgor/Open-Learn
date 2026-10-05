@@ -50,6 +50,7 @@
 }
 
 .collapsed {
+  display: none;
   flex-basis: 0px !important;
   width: 0px !important;
   border-left: none !important;

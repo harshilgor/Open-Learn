@@ -69,10 +69,10 @@
 .dialog p { font-size: 16px; line-height: 1.85; white-space: pre-wrap; }
 .quote { max-height: 110px; overflow-y: auto; border-left: 2px solid #c3c8b8; padding-left: 12px; margin-top: 12px; overflow-wrap: anywhere; }
 .turn { margin-bottom: 28px; }
-.userPrompt { display: flex; gap: 12px; align-items: flex-start; margin: 10px 0 20px; padding: 10px 14px; border-radius: 14px; background: #f3f4ef; }
+.userPrompt { display: flex; gap: 12px; align-items: flex-start; margin: 10px 0 20px auto; max-width:85%; width:fit-content; padding: 12px 16px; border-radius: 20px 20px 5px 20px; background: var(--muted); }
 .userPrompt span { color: #68715e; font-size: 12px; font-weight: 600; padding-top: 3px; }
 .userPrompt p { margin: 0; font-size: 15px; line-height: 1.55; overflow-wrap: anywhere; }
-.lessonArticle { font-size: 15px; line-height: 1.65; color: #33372f; }
+.lessonArticle { font-size: 15px; line-height: 1.65; color: var(--foreground); background:var(--muted); padding:16px 20px; border-radius:20px 20px 20px 5px; }
 .lessonArticle section { margin: 22px 0; }
 .lessonArticle p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .followupComposer { width: 100%; max-width: 100%; margin-top: 46px; border: 1px solid #d8dbd1; border-radius: 18px; padding: 12px 14px; background: #fff; box-shadow: 0 5px 24px #00000008; }
@@ -292,3 +292,31 @@ does not read as a solid white empty slab. */
 .quickActions button{border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--surface-2,#f4f5f2);color:var(--foreground);font-size:12px}
 .quickActions button:hover{background:var(--accent)}
 @media(max-width:390px){.composerTools{gap:2px}.modeTrigger{gap:4px;padding:0 5px}.gearSelect{padding:0 4px}.gearSelect>span:first-child{display:none}}
+
+/* Shared conversation surface: content-sized bubbles remain rich-content safe. */
+.turn { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 24px; min-width: 0; }
+.userPrompt { align-self: flex-end; margin: 0; max-width: 85%; background: #e4ebe1; color: #23321f; border-radius: 22px 22px 6px 22px; }
+.userPrompt > div { min-width: 0; }
+.userPrompt > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.lessonArticle { width: fit-content; max-width: 94%; min-width: 0; box-sizing: border-box; background: #f1f2ef; color: var(--foreground); border-radius: 22px 22px 22px 6px; padding: 14px 18px; }
+.lessonArticle pre, .lessonArticle table { max-width: 100%; }
+.lessonArticle pre { overflow-x: auto; }
+.lessonArticle :global(.katex-display) { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+.lessonArticle section:first-child { margin-top: 8px; }
+.lessonArticle section:last-child { margin-bottom: 0; }
+:global(.dark) .userPrompt { background: #354332; color: #f1f5ee; }
+:global(.dark) .lessonArticle { background: #252825; color: var(--foreground); }
+.lessonReceipt { display: grid; gap: 8px; padding: 8px 0; }
+.lessonReceipt > span { font-size: 12px; color: var(--muted-foreground); }
+.lessonReceipt > strong { font-size: 16px; line-height: 1.45; }
+.lessonReceipt > button { justify-self: start; }
+.originalResponse { margin-top: 8px; }
+.originalResponse summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
+.composerCourse { display: flex; align-items: center; gap: 6px; width: fit-content; max-width: 100%; margin: 0 0 7px 6px; font-size: 12px; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.composerCourse:hover { color: var(--foreground); }
+@media(max-width:620px) { .lessonArticle { max-width: 96%; padding: 12px 14px; } .userPrompt { max-width: 88%; } .composerCourse { font-size: 11px; } }
+
+/* Reserve real space for the composer, including tall drafts and attachments. */
+.composerDock { position: relative; background: var(--background); }
+.chatScroll { scroll-padding-bottom: 24px; }
+.chatShell .page { padding-bottom: 24px; }

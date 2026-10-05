@@ -1,5 +1,6 @@
 "use client";
 
+import {FlashcardLibraryEntry} from './flashcard-workspace';
 import { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
@@ -306,7 +307,7 @@ export function ReviewWorkspace({
     </section>;
   }
 
-  return <section className={styles.page} aria-label="Review">
+  return <section className={styles.page} aria-label="Review"><FlashcardLibraryEntry/>
     <header>
       <span className={styles.meta}>KEEP WHAT YOU LEARN</span>
       <h1>Review</h1>

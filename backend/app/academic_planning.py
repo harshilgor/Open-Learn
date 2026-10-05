@@ -63,46 +63,72 @@ class AcademicPlanningService:
 
     def ingest(self, owner, course, command):
         with self.store.transaction() as conn:
-            self.course(conn, owner, course)
-            kind = command['kind']
-            if kind not in {'assignment', 'assessment', 'term', 'coverage'}:
-                raise AcademicError('invalid_entity_kind', 'Unsupported academic entity.')
-            external = command.get('externalId')
-            identity = external or command.get('entityId')
-            if not identity:
-                identity = uuid4().hex
-            entity_id = command.get('entityId') or hashlib.sha256(f'{course}:{command.get("origin", "manual")}:{kind}:{identity}'.encode()).hexdigest()[:32]
-            entities = self.rows(conn, 'academic_entities', owner, course)
-            if command.get('entityId') and not any(e['id'] == entity_id and e['kind'] == kind for e in entities):
-                raise AcademicError('entity_not_found', 'Academic entity unavailable.', 404)
-            entity = next((e for e in entities if e['id'] == entity_id), {'id': entity_id, 'courseId': course, 'kind': kind, 'externalId': external, 'facts': {}})
-            observations = self.rows(conn, 'academic_observations', owner, course)
-            for field, value in command.get('fields', {}).items():
-                if field not in {'title', 'instructions', 'due', 'availability', 'scope', 'weight', 'format', 'completed', 'covered', 'date'}:
-                    raise AcademicError('invalid_fact', 'Unsupported academic field.')
-                if field in {'due', 'date'} and value is not None:
-                    if not isinstance(value, dict) or value.get('kind') not in {'instant', 'date_only', 'timezone_unknown', 'unknown'}:
-                        raise AcademicError('invalid_date', 'Dates must preserve their precision and timezone.')
-                    if value['kind'] == 'instant': moment(value['value'])
-                    if value['kind'] == 'date_only': datetime.strptime(value['value'], '%Y-%m-%d')
-                source = command.get('source', {})
-                if not source.get('locator') or not source.get('revision'):
-                    raise AcademicError('source_required', 'A source locator and revision are required.')
-                origin_key = command.get('idempotencyKey', uuid4().hex)
-                oid = hashlib.sha256(f'{entity_id}:{field}:{origin_key}'.encode()).hexdigest()
-                duplicate = next((o for o in observations if o['id'] == oid), None)
-                obs = {'id': oid, 'courseId': course, 'entityId': entity_id, 'field': field, 'value': value, 'source': source, 'observedAt': command.get('observedAt', datetime.now(timezone.utc).isoformat()), 'confirmation': command.get('confirmation', 'confirmed'), 'origin': command.get('origin', 'manual'), 'override': bool(command.get('override')), 'reason': command.get('reason'), 'negated': bool(command.get('negated'))}
-                if duplicate:
-                    if duplicate['value'] != value: raise AcademicError('idempotency_conflict', 'The import key already contains another value.', 409)
-                else:
-                    observations.append(self.put(conn, 'academic_observations', owner, obs))
-                candidates = [o for o in observations if o['entityId'] == entity_id and o['field'] == field and not o['negated']]
-                overrides = [o for o in candidates if o['override']]
-                student_dates = [o for o in candidates if o['origin'] == 'canvas' and o['source'].get('studentSpecific') and field == 'due']
-                selected = sorted(overrides or student_dates or candidates, key=lambda o: (o['observedAt'], o['id']))[-1] if candidates else None
-                distinct = {json.dumps(o['value'], sort_keys=True) for o in candidates}
-                entity['facts'][field] = {'value': selected['value'] if selected else None, 'observationId': selected['id'] if selected else None, 'source': selected['source'] if selected else None, 'conflict': len(distinct) > 1 and not (overrides or student_dates), 'alternatives': [o['id'] for o in candidates], 'rationale': 'deliberate_user_override' if overrides else 'authenticated_student_date' if student_dates else 'provisional_latest_observation' if len(distinct) > 1 else 'consistent_observations'}
-            return self.put(conn, 'academic_entities', owner, entity)
+            return self.ingest_in_transaction(conn, owner, course, command)
+
+    def ingest_in_transaction(self, conn, owner, course, command):
+        self.course(conn, owner, course)
+        kind = command['kind']
+        if kind not in {'assignment', 'assessment', 'term', 'coverage', 'meeting'}:
+            raise AcademicError('invalid_entity_kind', 'Unsupported academic entity.')
+        external = command.get('externalId')
+        identity = external or command.get('entityId')
+        if not identity:
+            identity = uuid4().hex
+        entity_id = command.get('entityId') or hashlib.sha256(f'{course}:{command.get("origin", "manual")}:{kind}:{identity}'.encode()).hexdigest()[:32]
+        entities = self.rows(conn, 'academic_entities', owner, course)
+        if command.get('entityId') and not any(e['id'] == entity_id and e['kind'] == kind for e in entities):
+            raise AcademicError('entity_not_found', 'Academic entity unavailable.', 404)
+        entity = next((e for e in entities if e['id'] == entity_id), {'id': entity_id, 'courseId': course, 'kind': kind, 'externalId': external, 'facts': {}})
+        original = json.dumps(entity, sort_keys=True)
+        observations = self.rows(conn, 'academic_observations', owner, course)
+        for field, value in command.get('fields', {}).items():
+            if field not in {'title', 'instructions', 'due', 'availability', 'scope', 'weight', 'format', 'completed', 'covered', 'date', 'start', 'end', 'recurrence', 'location', 'cancelled'}:
+                raise AcademicError('invalid_fact', 'Unsupported academic field.')
+            if field in {'due', 'date', 'start', 'end'} and value is not None:
+                if not isinstance(value, dict) or value.get('kind') not in {'instant', 'date_only', 'timezone_unknown', 'unknown'}:
+                    raise AcademicError('invalid_date', 'Dates must preserve their precision and timezone.')
+                if value['kind'] == 'instant': moment(value['value'])
+                if value['kind'] == 'date_only': datetime.strptime(value['value'], '%Y-%m-%d')
+            source = command.get('source', {})
+            if not source.get('locator') or not source.get('revision'):
+                raise AcademicError('source_required', 'A source locator and revision are required.')
+            origin_key = command.get('idempotencyKey', uuid4().hex)
+            oid = hashlib.sha256(f'{entity_id}:{field}:{origin_key}'.encode()).hexdigest()
+            duplicate = next((o for o in observations if o['id'] == oid), None)
+            obs = {'id': oid, 'courseId': course, 'entityId': entity_id, 'field': field, 'value': value, 'source': source, 'observedAt': command.get('observedAt', datetime.now(timezone.utc).isoformat()), 'confirmation': command.get('confirmation', 'confirmed'), 'origin': command.get('origin', 'manual'), 'override': bool(command.get('override')), 'reason': command.get('reason'), 'negated': bool(command.get('negated'))}
+            if duplicate:
+                if duplicate['value'] != value: raise AcademicError('idempotency_conflict', 'The import key already contains another value.', 409)
+            else:
+                observations.append(self.put(conn, 'academic_observations', owner, obs))
+            entity['facts'][field] = self.select_fact(observations, entity_id, field)
+        if json.dumps(entity, sort_keys=True) == original:
+            return entity
+        entity = self.put(conn, 'academic_entities', owner, entity)
+        from .browser_assistant.reminders import schedule_entity
+        schedule_entity(self.store, conn, owner, entity)
+        return entity
+
+    @staticmethod
+    def select_fact(observations, entity_id, field):
+        candidates = [o for o in observations if o['entityId'] == entity_id and o['field'] == field and not o['negated']]
+        # Keep the audit history, but compare current versions of each browser
+        # source. A revised syllabus supersedes its own previous observation.
+        current = {}
+        other = []
+        for candidate in candidates:
+            if candidate['origin'] != 'browser':
+                other.append(candidate)
+                continue
+            lineage = (candidate['source'].get('connectionId'), candidate['source']['locator'], candidate['override'])
+            prior = current.get(lineage)
+            if prior is None or (candidate['observedAt'], candidate['id']) > (prior['observedAt'], prior['id']):
+                current[lineage] = candidate
+        candidates = other + list(current.values())
+        overrides = [o for o in candidates if o['override']]
+        student_dates = [o for o in candidates if o['origin'] in {'canvas', 'browser'} and o['source'].get('studentSpecific') and field == 'due']
+        selected = sorted(overrides or student_dates or candidates, key=lambda o: (o['observedAt'], o['id']))[-1] if candidates else None
+        distinct = {json.dumps(o['value'], sort_keys=True) for o in candidates}
+        return {'value': selected['value'] if selected else None, 'observationId': selected['id'] if selected else None, 'source': selected['source'] if selected else None, 'conflict': len(distinct) > 1 and not (overrides or student_dates), 'alternatives': [o['id'] for o in candidates], 'rationale': 'deliberate_user_override' if overrides else 'authenticated_student_date' if student_dates else 'provisional_latest_observation' if len(distinct) > 1 else 'consistent_observations'}
 
     def view(self, owner, course):
         with self.store.engine.connect() as conn:
@@ -185,6 +211,8 @@ class AcademicPlanningService:
             task = dict(command, id=command.get('id') or uuid4().hex, courseId=course, status='proposed', duration=duration, launch={'workflow': actions[action], 'courseId': course, 'conceptIds': command.get('conceptIds', []), 'capability': command.get('capability', 'recall'), 'entityId': command.get('entityId'), 'requestedTopic': topic or command.get('reason', '')[:500]}, completionCriterion='explicit_assignment_completion' if action == 'assignment' else 'workflow_finished_with_followup_evidence', policyRevision='task-v1', pinned=False)
             existing = next((t for t in self.rows(conn, 'study_tasks', owner, course) if t['id'] == task['id']), None)
             if existing: return existing
+            from .buddy_service import BuddyService
+            BuddyService(self.store).responsibility(conn,owner,task['id'],'task',course)
             return self.put(conn, 'study_tasks', owner, task)
 
     def task_action(self, owner, course, task_id, command):

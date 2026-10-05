@@ -22,7 +22,7 @@ export type Attempt = {
 export type Quiz = {
   id: string; sessionId: string; title: string; revision: number; status: string; count: number;
   lessonNoteId?: string | null; requestedTopic?: string | null; origin?: string;
-  contextSource?: boolean;
+  contextSource?: boolean; sourceSuperseded?:boolean;
   mode: 'topic_drill' | 'timed_short_quiz'; modeConfig: { duration_seconds?: number }; deadlineAt: string | null; remainingSeconds: number | null;
   current: Presentation | null; attempts: Attempt[];
   challenges?: { id: string; presentationId: string; status: string; explanation?: string; outcome?: string }[];
@@ -64,7 +64,10 @@ export function navigateToSession(sessionId: string | null, replace = false): vo
   if (typeof window === 'undefined') return;
   if (replace && window.location.pathname === '/notes') return;
   const query = new URLSearchParams(window.location.search);
-  const next = `${sessionPath(sessionId)}${query.has('course') ? `?${new URLSearchParams({ course: query.get('course') || '' })}` : ''}`;
+  const kept=new URLSearchParams();
+  if(query.has('course'))kept.set('course',query.get('course')||'');
+  if(query.has('class')&&window.location.pathname===sessionPath(sessionId))kept.set('class',query.get('class')||'');
+  const next = `${sessionPath(sessionId)}${kept.size?'?'+kept.toString():''}`;
   if (`${window.location.pathname}${window.location.search}` === next) return;
   window.history[replace ? 'replaceState' : 'pushState']({ sessionId }, '', next);
 }

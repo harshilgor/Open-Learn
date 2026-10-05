@@ -57,3 +57,9 @@ The learner challenges a question whose source contained an error. The item is s
 | Operations | Worker recovery, provider outage, restore, source deletion, and account deletion have tested procedures |
 
 The release is complete when these journeys and invariants pass in the supported local and hosted environments, the team has reviewed the educational quality comparison, and all ordinary failure states have a user recovery path. Completion is assessed by observable behavior and evidence, not by how many modules or prompts were added.
+
+## Proposed agent execution acceptance extension
+
+See [agent execution delivery and verification gates](26_agent_execution_platform.md). The proposed golden journey researches inflation and unemployment, collects real data, runs Python, creates a chart and report, teaches at the learner's level, quizzes afterward, survives worker interruption, preserves sources/artifacts, and notifies on completion. Generated outputs count only as exposure; qualifying independent quiz responses enter the existing evidence pipeline. Validate authorization, payload-bound approvals, idempotency across uncertain external outcomes, lazy resource cleanup, budget exhaustion, event replay, takeover, cancellation, revocation, and local/hosted availability. Final support and release commitments follow the decision workshop.
+
+The revised agent track also requires ongoing-responsibility pause/stop semantics, steering races, scoped operational memory, compaction, bounded delegation, trigger deduplication, and native phone recording recovery. Follow the detailed matrix in the agent brief; a running worker or successful sandbox command alone does not establish task completion.

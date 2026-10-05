@@ -337,6 +337,8 @@ class CourseService:
                 text("DELETE FROM courses WHERE id = :id AND owner_id = :owner"),
                 {"id": course_id, "owner": owner_id},
             )
+            conn.execute(text('DELETE FROM buddy_courses WHERE id=:id AND owner_id=:owner'),{'id':course_id,'owner':owner_id})
+            conn.execute(text('UPDATE buddy_responsibilities SET course_id=NULL WHERE course_id=:id AND owner_id=:owner'),{'id':course_id,'owner':owner_id})
         return True
 
     def list_course_sessions(self, owner_id: str, course_id: str, limit: int = 50, offset: int = 0) -> tuple[list[LearningSession], int]:

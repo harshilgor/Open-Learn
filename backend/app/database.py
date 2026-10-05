@@ -57,3 +57,18 @@ def run_migrations(url: str | None = None) -> None:
     config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", resolved.replace("%", "%%"))
     command.upgrade(config, "head")
+
+
+def require_current_schema(url: str) -> None:
+    """Readers/workers fail closed until the single release migration finishes."""
+    from alembic.script import ScriptDirectory
+    from alembic.runtime.migration import MigrationContext
+    config=Config(str(BACKEND_ROOT / 'alembic.ini'))
+    config.set_main_option('script_location',str(BACKEND_ROOT / 'migrations'))
+    expected=set(ScriptDirectory.from_config(config).get_heads())
+    engine=create_database_engine(url)
+    try:
+        with engine.connect() as conn:
+            if set(MigrationContext.configure(conn).get_current_heads())!=expected:
+                raise RuntimeError('Database schema is not current. Run the release migration before starting services.')
+    finally:engine.dispose()

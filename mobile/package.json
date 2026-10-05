@@ -1,0 +1,38 @@
+{
+  "name": "openlearn-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "export": "expo export --platform all",
+    "check:release": "node scripts/check-release.mjs"
+  },
+  "dependencies": {
+    "expo": "57.0.26",
+    "expo-audio": "~57.0.5",
+    "expo-auth-session": "~57.0.13",
+    "expo-crypto": "~57.0.3",
+    "expo-dev-client": "~57.0.19",
+    "expo-document-picker": "~57.0.3",
+    "expo-file-system": "~57.0.7",
+    "expo-notifications": "~57.0.21",
+    "expo-secure-store": "~57.0.4",
+    "expo-sharing": "~57.0.22",
+    "expo-sqlite": "~57.0.3",
+    "expo-web-browser": "~57.0.3",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-webview": "13.16.1"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "tsx": "^4.21.0",
+    "@types/react": "^19.2.0"
+  }
+}

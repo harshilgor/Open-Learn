@@ -210,6 +210,16 @@ class WorkspaceNoteService:
 
     def _read_file(self, learner_id: str, note_id: str) -> WorkspaceNoteRecord:
         path = self.note_path(learner_id, note_id)
+        from .identity import hosted
+        if hosted():
+            # PostgreSQL retains the exact body and frontmatter. Local Markdown
+            # is a disposable cache on independently supervised hosted services.
+            with self.store.engine.connect() as conn:
+                row=conn.execute(text('SELECT title,frontmatter_json,search_text FROM workspace_notes WHERE id=:id AND learner_id=:owner'),{'id':note_id,'owner':learner_id}).mappings().first()
+            if not row:raise WorkspaceNoteError('note_not_found','Note does not exist for this learner.',404)
+            prefix=row['title']+'\n'
+            if not row['search_text'].startswith(prefix):raise WorkspaceNoteError('invalid_note_file','Stored note content is unavailable.',409)
+            self._write_file(path,write_frontmatter(json.loads(row['frontmatter_json']),row['search_text'][len(prefix):]))
         if not path.is_file():
             raise WorkspaceNoteError("note_not_found", "Note does not exist for this learner.", 404)
         try:
@@ -268,6 +278,15 @@ class WorkspaceNoteService:
             "updated_at": record.updated_at,
         }
         with self.store.transaction() as connection:
+            from .identity import hosted
+            if hosted():
+                suffix=' FOR UPDATE' if connection.dialect.name=='postgresql' else ''
+                existing=connection.execute(text('SELECT revision,content_hash FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'+suffix),index_values).mappings().first()
+                if existing:
+                    if existing['revision']==record.revision and existing['content_hash']==index_values['content_hash']:return
+                    if existing['revision']!=record.revision-1:
+                        raise WorkspaceNoteError('revision_conflict','The note changed; reload before saving.',409)
+            prior=connection.execute(text('SELECT content_hash FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'),index_values).scalar_one_or_none()
             result = connection.execute(text("""
                 UPDATE workspace_notes SET relative_path=:relative_path, title=:title, revision=:revision,
                 frontmatter_json=:frontmatter_json, search_text=:search_text, content_hash=:content_hash,
@@ -281,6 +300,9 @@ class WorkspaceNoteService:
                     VALUES (:id, :learner_id, :relative_path, :title, :revision, :frontmatter_json,
                             :search_text, :content_hash, :course_id, :created_at, :updated_at)
                 """), index_values)
+            if result.rowcount and prior!=index_values['content_hash']:
+                from .flashcards.class_adapter import invalidate_source
+                invalidate_source(self.store,connection,record.learner_id,record.id)
             self._sync_link_index(connection, record)
 
     @staticmethod
@@ -523,7 +545,8 @@ class WorkspaceNoteService:
 
     def get(self, learner_id: str, note_id: str) -> WorkspaceNoteRecord:
         record = self._read_file(learner_id, note_id)
-        self._upsert_index(record, self._file_hash(self.note_path(learner_id, note_id).read_text(encoding="utf-8")))
+        from .identity import hosted
+        if not hosted():self._upsert_index(record, self._file_hash(self.note_path(learner_id, note_id).read_text(encoding="utf-8")))
         return record
 
     def refresh_generated_titles(self, learner_id: str) -> dict[str, int]:
@@ -637,9 +660,13 @@ class WorkspaceNoteService:
             raise WorkspaceNoteError("revision_conflict", "The note changed; reload before deleting.", 409)
         self.note_path(learner_id, note_id).unlink()
         with self.store.transaction() as connection:
-            connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id})
+            changed=connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id AND revision=:revision"), {"id": note_id, "learner_id": learner_id,'revision':expected_revision})
+            if changed.rowcount!=1:raise WorkspaceNoteError('revision_conflict','The note changed; reload before deleting.',409)
 
     def reindex(self, learner_id: str) -> WorkspaceNoteReindexResponse:
+        from .identity import hosted
+        if hosted():
+            raise WorkspaceNoteError('local_only','Hosted notes are retained in the database; local directory reindex is unavailable.',409)
         owner_root = self.learner_root(learner_id)
         observed: set[str] = set()
         indexed = skipped = 0

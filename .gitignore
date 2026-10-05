@@ -19,6 +19,10 @@ backend/build/
 backend/data/materials/
 backend/data/notes*/
 backend/data/recordings/
+backend/data/assistant-objects/
+backend/data/agent-research-*/
+backend/data/test-workspace-*/
+backend/data/inventory-*/
 work/
 
 # Local configuration and nested repository backup
@@ -27,3 +31,8 @@ work/
 !**/.env.example
 web/.git-local-backup/
 *.tsbuildinfo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/android/
+mobile/ios/

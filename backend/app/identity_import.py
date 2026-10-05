@@ -13,13 +13,28 @@ from sqlalchemy import select, and_, text
 from .identity import assert_owner_active, fail
 from .identity_data import owned_rows, object_manifest, object_operation
 
-OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_watermarks','canvas_connections'}
+OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_watermarks','canvas_connections',
+        'site_connections', 'assistant_runs', 'assistant_events', 'assistant_steps', 'browser_snapshots',
+        'browser_session_leases', 'browser_provider_cleanup', 'assistant_objects', 'external_course_links',
+        'academic_scan_coverage', 'connection_refresh_schedules', 'notification_subscriptions',
+        'notification_deliveries', 'reminders', 'reminder_policies',
+        'agent_messages', 'agent_commands', 'agent_input_requests', 'agent_checkpoints',
+        'agent_operations', 'agent_artifacts', 'agent_activity', 'agent_activity_cursors',
+        'agent_research_sources', 'agent_research_runs', 'execution_command_outbox',
+        'agent_sandbox_leases','agent_sandbox_cleanup','agent_sandbox_budgets','agent_learning_continuations',
+        'agent_responsibilities','agent_responsibility_occurrences','agent_operational_notes','mobile_voice_receipts'}
 _profile_locks = defaultdict(RLock)
+OMIT.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions','agent_action_drafts','agent_action_operations','agent_delegation_budgets','agent_delegated_children','agent_delegation_charges'})
+OMIT.add('agent_connector_intakes')
+OMIT.add('flashcard_commands')
 
 
 def source_snapshot(conn, profile):
     metadata, records = owned_rows(conn, profile)
     records = {name: rows for name, rows in records.items() if not name.startswith('identity_') and name not in OMIT}
+    if 'buddy_responsibilities' in records:
+        # Reminder schedules are intentionally not imported; keep only imported task responsibilities.
+        records['buddy_responsibilities']=[row for row in records['buddy_responsibilities'] if row['kind']=='task']
     # Imported graphs need their parent scopes. Follow only non-personal parents;
     # explicit foreign-owner rows are never imported through a relationship.
     for _ in range(len(metadata.tables)):
@@ -68,7 +83,10 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
         if checksum != expected_checksum or previous and previous['checksum'] != checksum:
             fail('profile_changed', 'The local profile changed. Refresh the inventory before importing.', 409)
         _, target = owned_rows(conn, owner)
-        if any(values for name, values in target.items() if not name.startswith('identity_') and name != 'learners'):
+        from .buddy_service import BuddyService
+        pristine_id=BuddyService(store).default_id(owner)
+        pristine_buddies=all(row['id']==pristine_id and row['revision']==1 and not row['archived'] and row['name']=='Buddy' for row in target.get('buddy_profiles',[]))
+        if any(values for name, values in target.items() if not name.startswith('identity_') and name != 'learners' and not (pristine_buddies and name in {'buddy_profiles','buddy_accounts'})):
             fail('account_not_empty', 'This account already has history. A profile merge requires an explicit conflict-resolution flow.', 409)
         import_id = previous['id'] if previous else 'import_' + uuid4().hex
         mapping = {profile: owner}
@@ -79,6 +97,9 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
                     if isinstance(value, str) and value != profile:
                         prefix = value.split('_')[0] if '_' in value else 'imported'
                         mapping[value] = prefix + '_' + uuid5(NAMESPACE_URL, import_id + ':' + value).hex
+        for row in rows.get('flashcard_review_sessions',[]):
+            for pick in json.loads(row['payload']).get('selection',[]):
+                value=pick['attemptId'];mapping[value]='fca_'+uuid5(NAMESPACE_URL,import_id+':'+value).hex
         for value in list(mapping):
             if value.startswith('journey_') and value[8:] in mapping:
                 mapping[value] = 'journey_' + mapping[value[8:]]
@@ -118,6 +139,8 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
         elif source['kind'] == 'lecture':
             objects = LectureObjectStore().objects
             objects.put(f"{owner}/{target['recording_id']}/{target['object_key']}", data)
+        elif source['kind']=='material':
+            MaterialService(store).objects.put(target['object_key'],data)
         else:
             path = MaterialService(store).object_path(target['object_key']) if source['kind'] == 'material' else ClassRecordingService(store)._path(owner, target['recording_id'])
             LocalObjectStore(path.parent).put(path.name, data)
@@ -133,6 +156,21 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
         for table in metadata.sorted_tables:
             for row in rows.get(table.name, []):
                 values = remap(dict(row))
+                if table.name=='practice_records' and values.get('kind')=='flashcard_deck':
+                    deck=json.loads(values['payload'])
+                    deck['windows']={mapping.get(key,key):cards for key,cards in deck.get('windows',{}).items()}
+                    values['payload']=json.dumps(deck)
+                if table.name=='flashcard_decks':
+                    deck=json.loads(values['payload']);deck['generationRuns']=[];deck.pop('generationVersions',None);values['payload']=json.dumps(deck)
+                if table.name=='flashcard_preferences':
+                    prefs=json.loads(values['payload']);prefs.update(reminders=False,proactiveDrafts=False);values['payload']=json.dumps(prefs)
+                if table.name=='class_sessions':
+                    copied=json.loads(values['payload'])
+                    copied.update(cancelled=True,processing='paused',captureDeviceImported=True)
+                    values['payload']=json.dumps(copied)
+
+                if table.name == 'buddy_accounts' and conn.execute(select(table).where(table.c.owner_id == owner)).first():
+                    continue
                 if package_snapshot is not None:
                     from datetime import datetime,date
                     from sqlalchemy import DateTime,Date

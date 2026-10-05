@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+  <application>
+    <service android:name="openlearn.capture.CaptureService" android:exported="false" android:foregroundServiceType="microphone" android:stopWithTask="false"/>
+  </application>
+</manifest>

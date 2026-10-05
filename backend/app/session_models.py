@@ -67,6 +67,7 @@ class SessionCreate(ApiModel):
     """
 
     graph_id: str | None = None
+    buddy_id: str | None = Field(default=None, max_length=160)
     graph_revision: int | None = Field(default=None, ge=1)
     goal: str | None = Field(default=None, max_length=1000)
     scope_id: str | None = None
@@ -90,6 +91,7 @@ class SessionCreate(ApiModel):
 
 class LearningSession(ApiModel):
     id: str
+    buddy_id: str | None = None
     learner_id: str = Field(default="local", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
     graph_id: str
     graph_revision: int = 1

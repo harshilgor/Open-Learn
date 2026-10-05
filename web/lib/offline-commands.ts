@@ -14,7 +14,8 @@ export function rememberCommand(owner: string, url: string, init: RequestInit): 
   const path = new URL(url).pathname;
   const isNote = method === 'PATCH' && /\/workspace-notes\/[^/]+$/.test(path);
   const isQuiz = method === 'POST' && /\/quizzes\/[^/]+\/(answer|answers|hint|pause|resume)$/.test(path);
-  if ((!isNote && !isQuiz) || typeof init.body !== 'string') return;
+  const isFlashcard = method === 'POST' && /\/flashcard-(decks|review-sessions)\/[^/]+\/(commands|publish)$/.test(path);
+  if ((!isNote && !isQuiz && !isFlashcard) || typeof init.body !== 'string') return;
   const commands = pendingCommands(owner);
   const commandKey = new Headers(init.headers).get('Idempotency-Key') || undefined;
   const existing = commands.find(item => item.url === url && item.body === init.body && item.method === method);

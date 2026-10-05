@@ -4,6 +4,7 @@ The first parser handles text PDFs and UTF-8; scanned/image material is
 explicitly marked needs_attention. No model is required for indexing.
 """
 from __future__ import annotations
+from contextlib import nullcontext
 import hashlib
 import io
 import json
@@ -34,6 +35,8 @@ class MaterialService:
         self.store = store
         self.root = Path(os.getenv("AI_TUTOR_MATERIAL_DIR", str(Path(__file__).resolve().parents[1] / "data" / "materials"))).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        from .object_store import configured_objects
+        self.objects=configured_objects(self.root)
 
     def object_path(self, key):
         if not re.fullmatch(r"[a-zA-Z0-9_]+", key):
@@ -42,7 +45,7 @@ class MaterialService:
 
     def version(self, owner, version_id, connection=None):
         def query(c):
-            return c.execute(text("SELECT v.*, m.owner_id, m.title, m.role FROM material_versions v JOIN materials m ON m.id=v.material_id WHERE v.id=:id AND m.owner_id=:owner AND m.deleted=false"), {"id": version_id, "owner": owner}).mappings().first()
+            return c.execute(text("SELECT v.*, m.owner_id, m.title, m.role, m.course_id FROM material_versions v JOIN materials m ON m.id=v.material_id WHERE v.id=:id AND m.owner_id=:owner AND m.deleted=false"), {"id": version_id, "owner": owner}).mappings().first()
         if connection is not None:
             row = query(connection)
         else:
@@ -52,10 +55,10 @@ class MaterialService:
             problem("material_not_found", "Material is not available", 404)
         return dict(row)
 
-    def create(self, owner, request):
+    def create(self, owner, request, connection=None):
         mid, vid = uid("mat"), uid("matver")
         course_id = getattr(request, "course_id", None)
-        with self.store.transaction() as c:
+        with (nullcontext(connection) if connection is not None else self.store.transaction()) as c:
             c.execute(
                 text("INSERT INTO materials(id,owner_id,title,role,deleted,course_id) VALUES(:id,:owner,:title,:role,false,:course_id)"),
                 {"id": mid, "owner": owner, "title": request.title, "role": request.role, "course_id": course_id},
@@ -96,7 +99,6 @@ class MaterialService:
                     raise ValueError()
             except (UnicodeError, ValueError):
                 problem("invalid_text", "Upload non-empty UTF-8 text")
-        path = self.object_path(v["object_key"])
         # Atomic exclusive version admission; simultaneous different bytes never
         # overwrite a committed version. Upload I/O is bounded to 50 MiB.
         with self.store.transaction() as c:
@@ -104,7 +106,7 @@ class MaterialService:
             changed = c.execute(text("UPDATE material_versions SET sha256=:hash WHERE id=:id AND sha256 IS NULL"), {"hash": digest, "id": vid}).rowcount
             if not changed:
                 problem("upload_conflict", "Upload already completed; reload its status", 409)
-            path.write_bytes(content)
+            self.objects.put(v['object_key'],content)
             jid = uid("job")
             c.execute(text("INSERT INTO material_jobs(id,owner_id,kind,target_id,status,attempt,payload) VALUES(:id,:owner,'ingest',:target,'queued',0,'{}')"), {"id": jid, "owner": owner, "target": vid})
             c.execute(text("UPDATE material_versions SET status='queued' WHERE id=:id"), {"id": vid})
@@ -172,7 +174,7 @@ class MaterialService:
             version = self.version(owner, version_id)
             if not version["media_type"].startswith("image/"):
                 continue
-            raw = self.object_path(version["object_key"]).read_bytes()
+            raw = self.objects.read(version["object_key"])
             if used + len(raw) > byte_budget:
                 problem("image_context_too_large", "Attached images exceed the 20 MB vision context budget.", 413)
             images.append(ImageInput(media_type=version["media_type"], data=raw, title=version["title"]))
@@ -229,7 +231,7 @@ class MaterialService:
 
     def ingest(self, job):
         v = self.version(job["owner_id"], job["target_id"])
-        raw = self.object_path(v["object_key"]).read_bytes()
+        raw = self.objects.read(v["object_key"])
         pages = []
         issues = []
         if v["media_type"] == "application/pdf":
@@ -301,6 +303,10 @@ class MaterialService:
         self.details(owner, mid)
         with self.store.transaction() as c:
             versions = c.execute(text("SELECT id,object_key FROM material_versions WHERE material_id=:id"), {"id": mid}).mappings().all()
+            from .agent_execution.research_sources import ResearchSources
+            ResearchSources.erase_material_versions(c, owner, {v["id"] for v in versions})
+            from .agent_execution.sandbox_inputs import erase_versions
+            erase_versions(c,owner,{v['id'] for v in versions})
             c.execute(text("UPDATE materials SET deleted=true WHERE id=:id AND owner_id=:owner"), {"id": mid, "owner": owner})
             for v in versions:
                 c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
@@ -308,5 +314,5 @@ class MaterialService:
                 c.execute(text("UPDATE material_jobs SET status='cancelled' WHERE target_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_versions SET status='deleted',payload='{}' WHERE id=:id"), {"id": v["id"]})
         for v in versions:
-            self.object_path(v["object_key"]).unlink(missing_ok=True)
+            self.objects.delete(v["object_key"])
         return {"status": "deleted"}

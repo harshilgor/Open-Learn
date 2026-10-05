@@ -21,7 +21,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-export function MaterialLibrary() {
+export function MaterialLibrary({courseId}:{courseId?:string}={}) {
+  const materialPath='/materials'+(courseId?`?course_id=${encodeURIComponent(courseId)}`:'');
   const [items, setItems] = useState<Material[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [question, setQuestion] = useState('');
@@ -34,17 +35,17 @@ export function MaterialLibrary() {
   const pending = items.some(item => ['queued', 'running', 'uploaded'].includes(item.status));
 
   async function refresh() {
-    const result = await call<{ materials: Material[] }>('/materials');
+    const result = await call<{ materials: Material[] }>(materialPath);
     setItems(result.materials);
   }
   useEffect(() => {
     if (!open) return;
     let active = true;
-    const load = () => call<{ materials: Material[] }>('/materials').then(result => { if (active) setItems(result.materials); }).catch(cause => { if (active) setError(String(cause.message)); });
+    const load = () => call<{ materials: Material[] }>(materialPath).then(result => { if (active) setItems(result.materials); }).catch(cause => { if (active) setError(String(cause.message)); });
     void load();
     const timer = pending ? window.setInterval(() => void load(), 2000) : undefined;
     return () => { active = false; window.clearInterval(timer); };
-  }, [open, pending]);
+  }, [open, pending, materialPath]);
 
   async function upload(file: File) {
     setBusy(true); setError('');
@@ -52,7 +53,7 @@ export function MaterialLibrary() {
       if (file.size > 50 * 1024 * 1024) throw new Error('Choose a file smaller than 50 MB.');
       const lower = file.name.toLowerCase();
       const mediaType = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.md') ? 'text/markdown' : lower.endsWith('.png') ? 'image/png' : lower.match(/\.jpe?g$/) ? 'image/jpeg' : lower.endsWith('.webp') ? 'image/webp' : lower.endsWith('.gif') ? 'image/gif' : 'text/plain';
-      const item = await call<{ materialId: string; versionId: string; uploadPath: string }>('/materials', json({ title: file.name, mediaType, byteCount: file.size, role }));
+      const item = await call<{ materialId: string; versionId: string; uploadPath: string }>('/materials', json({ title: file.name, mediaType, byteCount: file.size, role, courseId }));
       await call(item.uploadPath.replace('/v1', ''), { method: 'PUT', headers: { 'Content-Type': mediaType }, body: file });
       setSelected(previous => [...previous, item.versionId]);
       await refresh();
@@ -63,7 +64,7 @@ export function MaterialLibrary() {
   async function ask() {
     setBusy(true); setError(''); setAnswer(null);
     try {
-      const session = await learningApi.createSession({ topic: question.slice(0, 200), gear: 'Guided' });
+      const session = await learningApi.createSession({ topic: question.slice(0, 200), gear: 'Guided', courseId });
       for (const version of selected) await call(`/sessions/${session.id}/materials`, json({ materialVersionId: version }));
       setAnswer(await call<Answer>(`/sessions/${session.id}/material-answer`, json({ message: question })));
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not answer.'); }

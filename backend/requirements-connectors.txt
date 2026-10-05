@@ -1,0 +1,2 @@
+# Optional Google connector token vault. Existing backend supplies httpx.
+cryptography>=46.0.0,<47

@@ -1,6 +1,7 @@
 /** Continuous microphone session that persists each independent audio slice. */
 import { createLocalLecture, getLocalLecture, persistAudioSlice, updateLocalLecture, defaultLecturePreferences, type LecturePreferences } from '@/lib/lecture-local-store';
 import { syncLecture } from '@/lib/lecture-upload-queue';
+import { ACCOUNT_CHANGED } from './account-session';
 
 export type CapturePhase = 'idle' | 'recording' | 'paused' | 'finalizing' | 'saved' | 'error';
 export const LECTURE_CAPTURE_EVENT = 'open-learn-lecture-capture';
@@ -49,17 +50,17 @@ class LectureCaptureController {
     this.stream = null;
   }
 
-  async start(input: { title: string; courseId?: string | null; noteFolder?: string | null; preferences?: LecturePreferences }): Promise<string> {
+  async start(input: { title: string; courseId?: string | null; buddyId?:string; noteFolder?: string | null; preferences?: LecturePreferences; ownerId?:string; classSetup?:import('./in-class').ClassSetup; microphoneId?:string }): Promise<string> {
     if (this.phaseValue === 'recording' || this.phaseValue === 'paused' || this.phaseValue === 'finalizing') throw new Error('A lecture is already being recorded.');
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('Microphone recording is unavailable in this browser.');
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, ...(input.microphoneId?{deviceId:{exact:input.microphoneId}}:{}) } });
     this.stream = stream;
     try {
       const storage = await navigator.storage?.estimate?.();
       if (storage?.quota && storage.usage !== undefined && storage.quota - storage.usage < 20 * 1024 * 1024) throw new Error('Local storage is nearly full. Export saved recordings before recording.');
       await navigator.storage?.persist?.().catch(() => false);
       const id = `rec_${crypto.randomUUID().replaceAll('-', '')}`;
-      await createLocalLecture({ id, title: input.title, courseId: input.courseId || null, noteFolder: input.noteFolder || null, startedAtMs: Date.now(), preferences: input.preferences || defaultLecturePreferences });
+      await createLocalLecture({ id, ownerId:input.ownerId,classSetup:input.classSetup, buddyId:input.buddyId, title: input.title, courseId: input.courseId || null, noteFolder: input.noteFolder || null, startedAtMs: Date.now(), preferences: input.preferences || defaultLecturePreferences });
       this.id = id;
       this.capturedMs = 0;
       this.markers = [];
@@ -69,7 +70,7 @@ class LectureCaptureController {
       this.captureFailure = null;
       this.saving = Promise.resolve();
       stream.getAudioTracks().forEach(track => {
-        track.addEventListener('ended', () => {this.captureFailure = 'The microphone disconnected. Recover the saved recording.'; void this.stop();});
+        track.addEventListener('ended', () => {if(this.stopRequested)return;this.captureFailure = 'The microphone disconnected. Recover the saved recording.'; void this.stop();});
         track.addEventListener('mute', () => this.emit(this.phaseValue, 'The microphone is muted. Check capture before continuing.'));
       });
       this.wakeLock = await navigator.wakeLock?.request('screen').catch(() => null) || null;
@@ -158,7 +159,7 @@ class LectureCaptureController {
     if (!this.id || this.stopRequested) return;
     this.stopRequested = true;
     this.emit('finalizing');
-    if (this.recorder && this.recorder.state !== 'inactive') this.stopCurrent();
+    if (this.recorder && this.recorder.state !== 'inactive') {this.stopCurrent();this.stream?.getTracks().forEach(track=>track.stop());}
     else await this.finishStop();
   }
 
@@ -183,3 +184,4 @@ class LectureCaptureController {
 }
 
 export const lectureCapture = new LectureCaptureController();
+if(typeof window!=='undefined')window.addEventListener(ACCOUNT_CHANGED,()=>{void lectureCapture.stop();});

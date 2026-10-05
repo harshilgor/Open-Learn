@@ -142,13 +142,70 @@ app.include_router(build_review_router(get_store, lambda: lesson_provider))
 app.include_router(build_session_snapshot_router(get_store))
 app.include_router(build_class_recording_router(get_store, lambda: lesson_provider))
 app.include_router(build_lecture_router(get_store, lambda: lesson_provider))
+from .flashcards.routes import build_flashcard_router
+app.include_router(build_flashcard_router(get_store))
+from .in_class_routes import build_in_class_router
+app.include_router(build_in_class_router(get_store, lambda: lesson_provider))
 app.include_router(build_academic_router(get_store))
 app.include_router(build_canvas_router(get_store))
+from .browser_assistant.routes import build_assistant_router
+app.include_router(build_assistant_router(get_store, lambda: lesson_provider))
+from .agent_execution.routes import build_agent_router
+app.include_router(build_agent_router(get_store))
+from .mobile_routes import build_mobile_router
+app.include_router(build_mobile_router(get_store))
+from .buddy_routes import build_buddy_router
+app.include_router(build_buddy_router(get_store))
+from .agent_execution.research_routes import build_research_router
+app.include_router(build_research_router(get_store))
+from .agent_execution.connected_routes import build_connected_router
+app.include_router(build_connected_router(get_store))
+
+
+@app.on_event('startup')
+def start_agent_execution_worker():
+    from .agent_execution.config import worker_mode
+    if worker_mode() != 'embedded': return
+    from threading import Event
+    from .agent_execution.worker import AgentWorker
+    app.state.agent_stop = Event()
+    app.state.agent_thread = Thread(target=AgentWorker(store, lambda: lesson_provider).run,
+                                   args=(app.state.agent_stop,), daemon=True)
+    app.state.agent_thread.start()
+
+
+@app.on_event('shutdown')
+def stop_agent_execution_worker():
+    if hasattr(app.state, 'agent_stop'):
+        app.state.agent_stop.set()
+        app.state.agent_thread.join(timeout=5)
+
+
+@app.on_event('startup')
+def start_browser_assistant_worker():
+    import threading
+    if os.getenv('OPENLEARN_BROWSER_ASSISTANT_ENABLED', 'true') != 'true': return
+    mode = os.getenv('OPENLEARN_WORKER_MODE', 'external' if os.getenv('AI_TUTOR_ENV', 'development') in {'production','deployed'} else 'embedded')
+    if mode != 'embedded': return
+    from .browser_assistant.workers import AssistantWorker
+    app.state.assistant_stop = threading.Event()
+    app.state.assistant_thread = Thread(target=AssistantWorker(store, lambda: lesson_provider).run,
+                                       args=(app.state.assistant_stop,), daemon=True)
+    app.state.assistant_thread.start()
+
+
+@app.on_event('shutdown')
+def stop_browser_assistant_worker():
+    if hasattr(app.state, 'assistant_stop'):
+        app.state.assistant_stop.set()
+        app.state.assistant_thread.join(timeout=5)
 
 
 @app.on_event("startup")
 def resume_interrupted_class_recordings() -> None:
     """Recover legacy class recordings after an API process restart."""
+    from .agent_execution.config import worker_mode
+    if worker_mode() != 'embedded': return
     from sqlalchemy import text
     with store.engine.connect() as connection:
         pending = connection.execute(text("SELECT id, learner_id FROM class_recordings WHERE status IN ('queued','processing')")).all()
@@ -200,6 +257,18 @@ def health() -> dict:
     except Exception as exc:  # noqa: BLE001 — health must stay available
         payload["webEvidence"] = {"status": "error", "error": type(exc).__name__}
     return payload
+
+
+@app.get('/ready')
+def ready():
+    from sqlalchemy import text
+    from .database import require_current_schema
+    try:
+        with store.engine.connect() as connection:connection.execute(text('SELECT 1'))
+        require_current_schema(store.url)
+    except Exception:
+        return JSONResponse(status_code=503,content={'status':'unavailable'},headers={'Cache-Control':'no-store'})
+    return JSONResponse(content={'status':'ready'},headers={'Cache-Control':'no-store'})
 
 
 @app.get("/health/web-evidence")
@@ -302,6 +371,9 @@ def create_learning_session(
 ) -> LearningSession:
     """Pin a learning session to a graph revision for resumable actions."""
     graph_id = request.graph_id
+    from .buddy_service import BuddyService
+    with db.transaction() as buddy_connection:
+        resolved_buddy = BuddyService(db).resolve(buddy_connection, owner, request.course_id, request.buddy_id)
     if request.domain_pack_id:
         from .domain_pack import get_pack, graph_for_pack
         pack = get_pack(request.domain_pack_id, request.domain_pack_version)
@@ -333,6 +405,7 @@ def create_learning_session(
     effective_learner_id = owner
     session = LearningSession(
         id=f"session_{uuid4().hex}",
+        buddy_id=resolved_buddy,
         learner_id=effective_learner_id,
         course_id=request.course_id,
         graph_id=graph.id,
@@ -349,6 +422,7 @@ def create_learning_session(
     # starts. Repeated imports are deduplicated by LearnerGraphRepository.
     LearnerGraphRepository(db).import_topic_graph(session.learner_id, graph)
     db.save_session(session)
+    BuddyService(db).bind(owner, session.id, resolved_buddy)
     LearnerStateService(db).append_event(
         session.learner_id,
         StateEventCreate(

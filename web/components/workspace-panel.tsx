@@ -31,6 +31,10 @@ import { LearningApiError, friendlyServiceError, learningApi, request, type Cour
 import { QuizWorkspace, LessonPractice } from './quiz-workspace';
 import type { WorkspaceQuizOpen } from '@/lib/workspace-events';
 import styles from './workspace-panel.module.css';
+import {FlashcardWorkspace} from './flashcard-workspace';
+import {MakeFlashcards} from './flashcard-create';
+import type {FlashcardView} from '@/lib/flashcards-client';
+import {InClassWorkspace} from './in-class-workspace';
 import { mentionWorkspaceNoteExcerpt, WORKSPACE_SOURCE_OPEN_EVENT, type WorkspaceNoteSeed } from '@/lib/workspace-events';
 import { StudyNoteBar } from './study-note-bar';
 import { NoteProposalList } from './study-note-panel';
@@ -42,11 +46,11 @@ import type { NotesCommand } from './workspace-sidebar';
 import { noteDisplayTitle } from '@/lib/note-list';
 import { CompactTutorChat, type TutorChatContext } from './compact-tutor-chat';
 
-export type WorkspaceTab = 'notes' | 'quiz' | 'sources';
+export type WorkspaceTab = 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards';
 export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTab[]; activeTab: WorkspaceTab };
 type NoteDraft = (Pick<WorkspaceNote, 'id' | 'title' | 'body' | 'revision' | 'frontmatter'>) | { id: null; title: string; body: string; revision: null; frontmatter: Record<string, unknown> };
 
-const tabNames: Record<WorkspaceTab, string> = { notes: 'Notes', quiz: 'Quiz', sources: 'Sources' };
+const tabNames: Record<WorkspaceTab, string> = { notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards' };
 const noteTools = [
   { format: 'heading', label: 'Heading', icon: Heading2 },
   { format: 'bold', label: 'Bold (Ctrl+B)', icon: Bold },
@@ -563,6 +567,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
         <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={inspectSelection}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} />{selectedExcerpt ? <button type="button" className={styles.excerptFloat} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onClick={mentionExcerpt}><Send size={13} />Ask in chat</button> : null}</div>
         <NoteVisualReferences body={draft.body}/>
         {draft.id && draft.frontmatter?.study_note === true && Array.isArray(draft.frontmatter?.session_ids) && typeof draft.frontmatter.session_ids[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={draft.frontmatter.session_ids[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
+        {draft.id && draft.revision && !dirty ? <MakeFlashcards sessionId={Array.isArray(draft.frontmatter.session_ids)?draft.frontmatter.session_ids[0] as string:undefined} courseId={typeof draft.frontmatter.course_id==='string'?draft.frontmatter.course_id:undefined} sourceRefs={[{kind:draft.frontmatter.study_note?'lesson':'note',id:draft.id,revision:draft.revision}]} origin="learn"/> : null}
         <div className={styles.status} role="status">{saving ? 'Saving…' : dirty ? 'Saving changes…' : draft.id ? 'Saved locally' : 'Start typing to create this note'}</div>
       </>}
       {error ? <p role="alert" className={styles.error}>{error}</p> : null}
@@ -619,7 +624,9 @@ export function NotesWorkspace({ onRecordClass, noteToOpen = null, onNoteOpenCon
   </div>;
 }
 
-export function WorkspacePanel({ quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, sourceToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
+export function WorkspacePanel({ flashcardLaunch, classId, quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, sourceToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
+  flashcardLaunch?:FlashcardView|null;
+  classId?:string|null;
   quizSessionId?: string | null;
   quizConceptId?: string;
   quizToOpen?: WorkspaceQuizOpen | null;
@@ -658,6 +665,7 @@ export function WorkspacePanel({ quizSessionId, quizConceptId, quizToOpen, layou
 
   const active = layout.activeTab;
   return <aside className={`${styles.panel} ${layout.collapsed ? styles.collapsed : ''}`} aria-label="Workspace panel">
+    <div className={styles.returnBar}><Button type="button" variant="ghost" size="sm" onClick={onCollapse}><PanelLeft size={15}/>Return to conversation</Button><span>Study workspace</span></div>
     <header className={styles.header}>
       <div className={styles.tabsHeader}>
         <Tabs value={active} onValueChange={(tab) => onLayoutChange(current => ({ ...current, activeTab: tab as WorkspaceTab }))}>
@@ -675,7 +683,7 @@ export function WorkspacePanel({ quizSessionId, quizConceptId, quizToOpen, layou
           </Button>
           {launcherOpen ? (
             <div className={styles.launcherMenu}>
-              {(['notes', 'sources'] as WorkspaceTab[]).map(tab => (
+              {(['notes', 'sources', 'flashcards'] as WorkspaceTab[]).map(tab => (
                 <button type="button" key={tab} onClick={() => openTab(tab)}>{tabNames[tab]}</button>
               ))}
             </div>
@@ -693,8 +701,8 @@ export function WorkspacePanel({ quizSessionId, quizConceptId, quizToOpen, layou
           size="icon-xs"
           variant="ghost"
           onClick={() => { onLayoutChange(current => ({ ...current, collapsed: true })); onCollapse(); }}
-          aria-label="Collapse notes"
-          title="Collapse notes"
+          aria-label="Close study canvas"
+          title="Close study canvas · your work stays open"
         >
           <PanelRightClose size={15} />
         </Button>
@@ -704,6 +712,8 @@ export function WorkspacePanel({ quizSessionId, quizConceptId, quizToOpen, layou
       {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'} className={styles.preservedTab}><NoteEditor closeRequest={noteCloseRequest} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} quizToOpen={quizToOpen} onCloseRequestHandled={() => setNoteCloseRequest(false)} onClose={() => { setNoteCloseRequest(false); removeActiveTab(); }} /></div> : null}
       {layout.tabs.includes('quiz') ? <div hidden={active !== 'quiz'} className={styles.preservedTab}><QuizWorkspace sessionId={quizToOpen?.sessionId || quizSessionId} conceptId={quizToOpen?.conceptId || quizConceptId} compact launch={quizToOpen?.origin === 'ask' ? quizToOpen : null} quizId={quizToOpen?.quizId} /></div> : null}
       {active === 'sources' ? <SourcesPanel sourceToOpen={sourceToOpen} /> : null}
+      {layout.tabs.includes('flashcards') ? <div hidden={active!=='flashcards'} className={styles.preservedTab}><FlashcardWorkspace launch={flashcardLaunch}/></div> : null}
+      {layout.tabs.includes('class') ? <div hidden={active!=='class'} className={styles.preservedTab}><InClassWorkspace classId={classId||null}/></div> : null}
     </div>
   </aside>;
 }

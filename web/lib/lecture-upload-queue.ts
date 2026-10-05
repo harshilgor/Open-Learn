@@ -1,6 +1,7 @@
 /** Durable upload queue with retry and browser restart recovery. */
 
-import { learningApi, LearningApiError, type LectureStatus } from '@/lib/api';
+import { learningApi, LearningApiError, request, type LectureStatus } from '@/lib/api';
+import {classApi,openClassWorkspace} from './in-class';
 import { clearLocalAudio, getLocalLecture, listLocalChunks, listLocalLectures, setLocalChunkState, updateLocalLecture, type LocalLecture } from '@/lib/lecture-local-store';
 
 export const LECTURE_SYNC_EVENT = 'open-learn-lecture-sync';
@@ -23,7 +24,15 @@ function schedule(id: string) {
 }
 
 async function ensureServer(session: LocalLecture): Promise<LectureStatus> {
-  const status = await learningApi.createLectureRecording({ id: session.id, title: session.title, courseId: session.courseId, startedAtMs: session.startedAtMs, noteFolder: session.noteFolder, preferences: session.preferences as unknown as Record<string, unknown> });
+  const identity=await request<{ownerId:string}>('/v1/account');
+  if(identity.ownerId!==(session.ownerId||'local'))throw new Error('Sign in as the recording owner to resume this upload.');
+  if(session.classSetup){
+    if(session.classSessionId){const status=await learningApi.getLectureRecording(session.id);announce(session.id,status);return status;}
+    const result=await classApi.create({id:session.id,buddyId:session.buddyId,title:session.title,courseId:session.courseId,startedAtMs:session.startedAtMs,noteFolder:session.noteFolder,preferences:session.preferences},session.classSetup);
+    if(!session.classSessionId){await updateLocalLecture(session.id,{classSessionId:result.session.id,noteId:result.session.noteId});openClassWorkspace(result.session.id,result.session.sessionId);}
+    announce(session.id,result.recording);return result.recording;
+  }
+  const status = await learningApi.createLectureRecording({ id: session.id, buddyId:session.buddyId, title: session.title, courseId: session.courseId, startedAtMs: session.startedAtMs, noteFolder: session.noteFolder, preferences: session.preferences as unknown as Record<string, unknown> });
   if (session.noteId !== status.noteId) await updateLocalLecture(session.id, { noteId: status.noteId });
   announce(session.id, status);
   return status;
@@ -42,7 +51,7 @@ async function sync(id: string): Promise<void> {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('Waiting for a connection. Audio is saved locally.');
       await setLocalChunkState(id, chunk.sequenceNumber, 'uploading');
       try {
-        const acknowledged = await learningApi.uploadLectureChunk(id, chunk);
+        const acknowledged = await learningApi.uploadLectureChunk(id, {...chunk,captureDeviceId:session.classSetup?.deviceId});
         if (acknowledged.sequenceNumber !== chunk.sequenceNumber || acknowledged.sha256 !== chunk.sha256) throw new Error('The server acknowledgement did not match this audio slice.');
         await setLocalChunkState(id, chunk.sequenceNumber, 'server_confirmed');
         announce(id);
@@ -87,9 +96,10 @@ export function syncLecture(id: string): Promise<void> {
   return current;
 }
 
-export async function recoverLocalLectures(activeCaptureId: string | null = null): Promise<LocalLecture[]> {
+export async function recoverLocalLectures(activeCaptureId: string | null = null,ownerId='local'): Promise<LocalLecture[]> {
   const sessions = await listLocalLectures();
   for (const session of sessions) {
+    if((session.ownerId||'local')!==ownerId)continue;
     if (session.id !== activeCaptureId && (session.phase === 'recording' || session.phase === 'paused')) {
       await updateLocalLecture(session.id, { phase: 'interrupted', captureInterrupted: true, lastError: 'The browser closed during recording. Saved audio can be recovered; the final seconds may be missing.' });
     }
@@ -101,7 +111,7 @@ export async function recoverLocalLectures(activeCaptureId: string | null = null
 export function startLectureRecovery(): () => void {
   if (typeof window === 'undefined' || recoveryStarted) return () => undefined;
   recoveryStarted = true;
-  const resume = () => { void listLocalLectures().then(sessions => { for (const session of sessions) if (session.phase !== 'completed' && session.nextSequenceNumber > 0) void syncLecture(session.id); }); };
+  const resume = () => { void Promise.all([listLocalLectures(),request<{ownerId:string}>('/v1/account')]).then(([sessions,account]) => { for (const session of sessions) if ((session.ownerId||'local')===account.ownerId && session.phase !== 'completed' && session.nextSequenceNumber > 0) void syncLecture(session.id); }).catch(()=>undefined); };
   const visible = () => { if (document.visibilityState === 'visible') resume(); };
   window.addEventListener('online', resume);
   document.addEventListener('visibilitychange', visible);

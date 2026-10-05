@@ -1,3 +1,4 @@
+from backend.app.identity_middleware import IdentityMiddleware
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -14,6 +15,7 @@ def note_api(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_TUTOR_DEV_IDENTITY", "true")
     store = Store(tmp_path / "notes.db")
     app = FastAPI()
+    app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
     app.include_router(build_workspace_note_router(lambda: store))
     with TestClient(app) as client:
         yield client, store, tmp_path / "vault"

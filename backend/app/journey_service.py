@@ -221,6 +221,8 @@ class JourneyService:
             profile=context.teaching_profile, task=command.mode, output="journey_json",
         )
         from .context_engine import ContextBlock, ContextEngine
+        from .buddy_service import BuddyService
+        prompt_instructions += BuddyService(self.store).instructions(owner,sid)
         candidates = [
             ContextBlock("controlDecision", LearningControlPlane.prompt_constraints(control), "control_plane", 0, bool(control)),
             ContextBlock("sharedContext", (control or {}).get("context", {}).get("text"), "shared_context_compiler", 0, bool(control)),
@@ -469,7 +471,10 @@ class JourneyService:
             profile=context.teaching_profile, task=command.mode, output="journey_markdown",
             selected_passage=bool(selection), evidence_instruction=evidence_section["instruction"],
         )
+        from .buddy_service import BuddyService
+        prompt_instructions += BuddyService(self.store).instructions(owner,sid)
         context_data = {
+            # Companion preferences are bounded instructions, not learner evidence.
             "controlDecision": LearningControlPlane.prompt_constraints(control),
             "sharedContext": (control or {}).get("context", {}).get("text"),
             "selectedPassage": selection, "selectedLessonId": getattr(command, "selected_lesson_id", None),
