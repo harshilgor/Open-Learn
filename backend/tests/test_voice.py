@@ -141,6 +141,24 @@ def test_acceptance_rollout_only_admits_configured_authenticated_email(env, monk
     assert not _voice_usage_ready()
 
 
+@pytest.mark.parametrize('kind', ['voice_turn', 'voice_action', 'voice_teach'])
+def test_interactive_worker_dispatches_durable_voice_jobs_to_correct_executor(env, monkeypatch, kind):
+    store, _, sid = env
+    from backend.app.execution_worker import ExecutionWorker
+    from backend.app.workflow_store import WorkflowStore
+    monkeypatch.setattr('backend.app.usage.ledger.Ledger.reconcile', lambda self: 0)
+    monkeypatch.setattr('backend.app.worker.monitor_usage_if_due', lambda *args: None)
+    monkeypatch.setattr('backend.app.voice.maintenance.tick', lambda *args: 0)
+    monkeypatch.setattr('backend.app.execution_outbox.ExecutionOutbox.drain', lambda *args: 0)
+    jobs = WorkflowStore(store)
+    job = jobs.enqueue('alice', sid, kind, {}, 'worker-voice:' + kind)
+    dispatched = []
+    monkeypatch.setattr('backend.app.voice.worker.run_voice_job', lambda s, p, j: dispatched.append(('voice', j)))
+    monkeypatch.setattr('backend.app.learning_routes.run_job', lambda s, p, j: dispatched.append(('learning', j)))
+    ExecutionWorker(store, lambda: None).tick()
+    assert dispatched == [('learning' if kind == 'voice_teach' else 'voice', job['id'])]
+
+
 def test_voice_slices_are_reserved_once_and_replayed_with_same_deadline(env, monkeypatch):
     store, _, sid = env
     _enable_metered_voice(monkeypatch)

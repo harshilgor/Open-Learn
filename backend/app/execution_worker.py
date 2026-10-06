@@ -47,7 +47,11 @@ class ExecutionWorker:
             from sqlalchemy import text
             with self.store.engine.connect() as conn:
                 kind = conn.execute(text("SELECT kind FROM learning_jobs WHERE id=:id"), {"id": job_id}).scalar_one()
-            executor = run_review_job if kind in REVIEW_KINDS else run_job
+            if kind in {'voice_turn', 'voice_action'}:
+                from .voice.worker import run_voice_job
+                executor = run_voice_job
+            else:
+                executor = run_review_job if kind in REVIEW_KINDS else run_job
             executor(self.store, self.provider_getter(), job_id)
         return len(ids)
 
