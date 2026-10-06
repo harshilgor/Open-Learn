@@ -215,14 +215,17 @@ async def entrypoint(ctx: JobContext):
                 for attempt in range(2):
                     try:
                         authorization = await backend.call(
-                            'POST', f"/speech/{event['segmentId']}/tts-preflight", request, timeout=3.0)
+                            'POST', f"/speech/{event['segmentId']}/tts-preflight", request, timeout=15.0)
                         break
                     except (httpx.TimeoutException, httpx.NetworkError):
                         if attempt:
                             raise
-                last_activity_before_speech = time.monotonic()
+                if stopped.is_set() or event['epoch'] != epoch:
+                    continue
+                log.info('Voice speech starting for session %s segment %s', sid, event['segmentId'])
                 handle = voice.say(event['text'], allow_interruptions=True)
                 await handle
+                log.info('Voice speech completed for session %s segment %s interrupted=%s', sid, event['segmentId'], handle.interrupted)
                 await backend.call('POST', f"/speech/{event['segmentId']}/tts-complete", {'reservation_id': authorization['reservationId']})
                 await backend.call('POST', '/playback', {'segment_id': event['segmentId'], 'epoch': event['epoch'], 'status': 'interrupted' if handle.interrupted else 'played'})
             except httpx.HTTPStatusError as exc:
