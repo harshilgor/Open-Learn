@@ -23,8 +23,8 @@ from ..usage.ledger import Ledger, UsageError
 from ..usage.operations import configured_rate
 from ..usage.policy import Policy
 
-VOICE_SLICE_SECONDS = 15
-VOICE_SLICE_RENEWAL_LEAD_SECONDS = 5
+VOICE_SLICE_SECONDS = min(60, max(15, int(os.getenv('OPENLEARN_VOICE_SLICE_SECONDS', '15'))))
+VOICE_SLICE_RENEWAL_LEAD_SECONDS = 30 if VOICE_SLICE_SECONDS == 60 else 5
 VOICE_SLICE_MILLISECONDS = VOICE_SLICE_SECONDS * 1000
 
 
@@ -91,7 +91,7 @@ def _settle_voice_slice(ledger, owner, sid, index):
         row = _reservation(ledger, owner, key)
         if row and row['state'] == 'dispatched':
             # Provider receipts are not available from these media adapters;
-            # settle the full, conservatively reserved 15-second bound.
+            # settle the full, conservatively reserved interval bound.
             ledger.settle(owner, row['id'], cost=row['liability_nano'], source='estimated')
 
 
@@ -150,14 +150,14 @@ def _admit_voice_slice(store, owner, sid, index, *, active=True):
         if not existing_runtime or not existing_speech:
             raise UsageError('usage_operation_conflict', 'This voice interval is being reconciled.', 409)
         # A replay returns the exact original authorization without admitting
-        # another charge or refreshing its 15-second deadline.
+        # another charge or refreshing its original deadline.
         if existing_runtime['state'] != 'dispatched' or existing_speech['state'] != 'dispatched':
             raise UsageError('usage_operation_conflict', 'This voice interval cannot be retried.', 409)
         started = max(existing_runtime['created_at'], existing_speech['created_at'])
         if now >= started + VOICE_SLICE_SECONDS:
             _settle_voice_slice(ledger, owner, sid, index)
             raise UsageError('voice_slice_expired', 'This voice interval has ended.', 409)
-        return {'sliceIndex': index, 'startedAt': started, 'nextAt': started + VOICE_SLICE_SECONDS,
+        return {'sliceIndex': index, 'startedAt': started, 'nextAt': started + VOICE_SLICE_SECONDS, 'renewalLeadSeconds': VOICE_SLICE_RENEWAL_LEAD_SECONDS,
                 'remainingSeconds': max(0, int(session['expires_at'] - now)), 'replayed': True}
 
     if index > 0:
@@ -220,7 +220,7 @@ def _admit_voice_slice(store, owner, sid, index, *, active=True):
     if any(row is None or row['state'] not in {'dispatched', 'settled'} for row in rows):
         raise UsageError('usage_operation_conflict', 'Voice interval could not be authorized.', 503)
     started = max(row['created_at'] for row in rows)
-    return {'sliceIndex': index, 'startedAt': started, 'nextAt': started + VOICE_SLICE_SECONDS,
+    return {'sliceIndex': index, 'startedAt': started, 'nextAt': started + VOICE_SLICE_SECONDS, 'renewalLeadSeconds': VOICE_SLICE_RENEWAL_LEAD_SECONDS,
             'remainingSeconds': max(0, int(session['expires_at'] - now)), 'replayed': False}
 
 

@@ -102,14 +102,15 @@ async def entrypoint(ctx: JobContext):
         index = 1
         current = first_slice
         while not stopped.is_set():
-            await asyncio.sleep(max(0, float(current['nextAt']) - 5 - time.time()))
+            lead = float(current.get('renewalLeadSeconds', 5))
+            await asyncio.sleep(max(0, float(current['nextAt']) - lead - time.time()))
             if stopped.is_set():
                 return
             try:
                 # The slice number is stable across transport retries. The API
                 # rejects out-of-order reservations. Renew inside the server's
-                # five-second overlap; all overlap is reserved and metered.
-                current = await backend.call('POST', '/slice', {'slice_index': index}, timeout=4.0)
+                # server-authorized overlap; all overlap is reserved and metered.
+                current = await backend.call('POST', '/slice', {'slice_index': index}, timeout=max(1, lead - 2))
                 index += 1
             except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
                 status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__

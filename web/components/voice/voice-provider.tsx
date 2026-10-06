@@ -29,6 +29,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const generation = useRef(0);
   const focusUpdates = useRef<Promise<unknown>>(Promise.resolve());
   const resuming = useRef<Promise<void> | null>(null);
+  const connecting = useRef(false);
 
   const end = useCallback(async () => {
     generation.current++;
@@ -100,6 +101,8 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   }, [end]);
 
   const connect = useCallback(async (chatId: string) => {
+    if (connecting.current || sessionRef.current) return;
+    connecting.current = true;
     setSetup(null); setError(''); setState('Connecting');
     const epoch = ++generation.current;
     try {
@@ -136,10 +139,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
       void observeVoice(created.id, controller.signal, receive).catch(cause => { setError(cause instanceof Error ? cause.message : 'Voice connection lost.'); void end(); });
       const permitted = await navigator.mediaDevices.enumerateDevices(); setDevices(permitted.filter(item => item.kind === 'audioinput'));
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Voice could not start.'); await end(); }
+    finally { connecting.current = false; }
   }, [device, end, receive, reconnect]);
 
   const start = useCallback(async (chatId: string) => {
-    if (sessionRef.current) return;
+    if (sessionRef.current || connecting.current) return;
     try { const capability = await voiceApi.capabilities(); if (!capability.enabled) { setError(capability.message); return; } setSetup(chatId); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Voice unavailable.'); }
   }, []);

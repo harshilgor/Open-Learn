@@ -215,6 +215,26 @@ def test_voice_slice_cannot_be_replayed_after_its_reserved_interval(env, monkeyp
     assert states == ['settled']
 
 
+def test_hosted_voice_interval_reserves_full_bound_and_returns_renewal_lead(env, monkeypatch):
+    import backend.app.voice.routes as routes
+    store, _, sid = env
+    _enable_metered_voice(monkeypatch)
+    monkeypatch.setenv('OPENLEARN_FREE_CREDITS_MICRO', '1000000000')
+    monkeypatch.setattr(routes, 'VOICE_SLICE_SECONDS', 60)
+    monkeypatch.setattr(routes, 'VOICE_SLICE_MILLISECONDS', 60000)
+    monkeypatch.setattr(routes, 'VOICE_SLICE_RENEWAL_LEAD_SECONDS', 30)
+    first = routes._admit_voice_slice(store, 'alice', sid, 0)
+    assert first['nextAt']-first['startedAt'] == 60
+    assert first['renewalLeadSeconds'] == 30
+    replay = routes._admit_voice_slice(store, 'alice', sid, 0)
+    assert replay['nextAt'] == first['nextAt']
+    assert replay['renewalLeadSeconds'] == 30
+    with store.engine.connect() as conn:
+        rows = conn.execute(text('SELECT payload FROM usage_reservations WHERE root_id=:sid'), {'sid': sid}).scalars().all()
+    assert len(rows) == 2
+    assert all(json.loads(row)['maximumQuantities'] == {'milliseconds':60000} for row in rows)
+
+
 def test_voice_tts_is_preflighted_idempotently_and_settled(env, monkeypatch):
     store, records, sid = env
     _enable_metered_voice(monkeypatch)
