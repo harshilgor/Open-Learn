@@ -65,7 +65,14 @@ class ReminderService:
     def listing(self,owner,status=None):
         with self.store.engine.connect() as conn:
             assert_owner_active(conn,owner)
-            rows=conn.execute(text('SELECT * FROM reminders WHERE owner_id=:owner AND (:status IS NULL OR status=:status) ORDER BY due_at DESC LIMIT 200'),{'owner':owner,'status':status}).mappings().all()
+            # PostgreSQL cannot infer an optional bind's type from IS NULL.
+            # Use a concrete equality predicate only when a filter is supplied.
+            query='SELECT * FROM reminders WHERE owner_id=:owner'
+            parameters={'owner':owner}
+            if status is not None:
+                query+=' AND status=:status'
+                parameters['status']=status
+            rows=conn.execute(text(query+' ORDER BY due_at DESC LIMIT 200'),parameters).mappings().all()
             policies=conn.execute(text("SELECT * FROM reminder_policies WHERE owner_id=:owner AND kind='routine'"),{'owner':owner}).mappings().all()
         return {'reminders':[self.public(row) for row in rows],'routines':[{'id':r['id'],'revision':r['revision'],'active':r['active'],**json.loads(r['payload'])} for r in policies]}
 

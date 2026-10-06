@@ -33,9 +33,11 @@ def run_voice_job(store, provider, job_id):
     except Exception as exc:
         detail = getattr(exc, 'detail', None)
         code = detail.get('code') if isinstance(detail, dict) else type(exc).__name__
-        frames = traceback.extract_tb(exc.__traceback__)[-4:]
+        frames = [frame for frame in traceback.extract_tb(exc.__traceback__)
+                  if 'sqlalchemy' not in frame.filename and 'psycopg' not in frame.filename][-4:]
         location = ' > '.join(f'{frame.name}:{frame.lineno}' for frame in frames)
-        logging.getLogger('openlearn.voice').warning('Voice job %s failed: %s at %s', job_id, code, location)
+        sqlstate = getattr(getattr(exc, 'orig', None), 'sqlstate', None)
+        logging.getLogger('openlearn.voice').warning('Voice job %s failed: %s SQLSTATE=%s at %s', job_id, code, sqlstate, location)
         # Do not retry uncertain side effects automatically.
         try:
             with store.transaction() as conn:

@@ -22,6 +22,19 @@ def env(monkeypatch):
     principal_context.reset(token);store.close();path.unlink(missing_ok=True)
 
 
+def test_listing_optional_status_preserves_owner_scope(env):
+    store, svc = env
+    pending = svc.create('alice', ReminderCreate(when='in 1 minute',message='Pending'), 'pending')
+    cancelled = svc.create('alice', ReminderCreate(when='in 1 minute',message='Cancelled'), 'cancelled')
+    other = svc.create('alice', ReminderCreate(when='in 1 minute',message='Other account'), 'other')
+    svc.cancel('alice', cancelled['id'])
+    with store.engine.begin() as conn:
+        conn.execute(text("UPDATE reminders SET owner_id='bob' WHERE id=:id"), {'id':other['id']})
+    assert {row['id'] for row in svc.listing('alice')['reminders']} == {pending['id'], cancelled['id']}
+    assert [row['id'] for row in svc.listing('alice','pending')['reminders']] == [pending['id']]
+    assert [row['id'] for row in svc.listing('alice','cancelled')['reminders']] == [cancelled['id']]
+
+
 def test_once_replay_tick_and_inbox(env):
     store,svc=env
     command=ReminderCreate(when='in 1 minute',message='Call Sam')
