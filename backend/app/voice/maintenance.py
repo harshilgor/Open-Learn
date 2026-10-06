@@ -27,7 +27,7 @@ def tick(store, *, prune_events=True):
         try:
             if row['room_closed_at'] is not None:
                 continue
-            if not media.configured():
+            if not media.control_configured():
                 continue
             asyncio.run(media.close(row['id']))
             with store.engine.begin() as conn:

@@ -78,7 +78,7 @@ def test_janitor_retries_room_close_after_ending(env, monkeypatch):
         attempts.append(room)
         if len(attempts) == 1:
             raise RuntimeError('temporary provider failure')
-    monkeypatch.setattr('backend.app.voice.media.configured', lambda: True)
+    monkeypatch.setattr('backend.app.voice.media.control_configured', lambda: True)
     monkeypatch.setattr('backend.app.voice.media.close', close)
     monkeypatch.setattr('backend.app.voice.routes._settle_voice_session', lambda ledger, owner, room: settlements.append(room))
     assert tick(store, prune_events=False) == 1
@@ -99,7 +99,7 @@ def test_janitor_closes_media_even_when_accounting_fails(env, monkeypatch):
         closed.append(room)
     def unavailable(*args):
         raise RuntimeError('accounting unavailable')
-    monkeypatch.setattr('backend.app.voice.media.configured', lambda: True)
+    monkeypatch.setattr('backend.app.voice.media.control_configured', lambda: True)
     monkeypatch.setattr('backend.app.voice.media.close', close)
     monkeypatch.setattr('backend.app.voice.routes._settle_voice_session', unavailable)
     assert tick(store, prune_events=False) == 1

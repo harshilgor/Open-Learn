@@ -11,6 +11,11 @@ def configured():
     return os.getenv('OPENROUTER_MODEL', 'openrouter/free') == 'openrouter/free' and all(os.getenv(k) for k in ('LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'OPENROUTER_API_KEY'))
 
 
+def control_configured():
+    # Cleanup remains available after an inference or speech key is revoked.
+    return all(os.getenv(k) for k in ('LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'))
+
+
 def token(room, identity, *, admin=False, ttl=300):
     grants = {'room': room, 'roomJoin': not admin, 'canPublish': True, 'canSubscribe': True, 'canPublishData': True}
     if admin:

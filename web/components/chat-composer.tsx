@@ -106,9 +106,9 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     usageNotice = allowance.heldMicrocredits > 0 ? 'Remaining allowance is reserved for ongoing work.' : reset ? `Your allowance refreshes at ${reset}. Your draft stays here.` : 'Your AI allowance is used for this window.';
   } else if (allowance.availability !== 'available') {
     usageNotice = 'AI work is temporarily unavailable while usage is checked. Your draft stays here.';
-  } else if (allowancePercent.used >= 95) {
+  } else if (!allowance.testUnlimited && allowancePercent.used >= 95) {
     usageNotice = 'You are close to your AI allowance limit.';
-  } else if (allowancePercent.used >= 80) {
+  } else if (!allowance.testUnlimited && allowancePercent.used >= 80) {
     usageNotice = 'Most of your AI allowance has been used.';
   }
   const reduceMotion = useAppReducedMotion();
