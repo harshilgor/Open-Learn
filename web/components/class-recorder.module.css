@@ -9,16 +9,15 @@
 .dialogActions { display: flex; justify-content: flex-end; gap: 8px; }
 .error { color: var(--destructive); font-size: 12px; }
 .bubble { position: fixed; z-index: 80; right: 24px; bottom: 24px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; width: min(430px, calc(100vw - 32px)); padding: 10px 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 8px 30px rgba(0,0,0,.2); }
-.liveTranscript { flex: 1 0 100%; border-top: 1px solid var(--border); padding-top: 7px; font-size: 11px; }
-.liveTranscript summary { color: var(--muted-foreground); cursor: pointer; }
-.liveTranscript > div { max-height: 140px; overflow: auto; line-height: 1.45; }
-.liveTranscript p { margin: 6px 0 0; }
 .notice { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 81; max-width: calc(100vw - 32px); padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--popover); color: var(--foreground); font-size: var(--type-ui); box-shadow: 0 5px 24px #0002; }
 .liveDot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: #d75142; box-shadow: 0 0 0 4px rgba(215,81,66,.14); }
 .pausedDot { background: var(--muted-foreground); box-shadow: none; }
 .bubbleText { display: grid; min-width: 112px; gap: 2px; }
 .bubbleText strong { font-size: 12px; line-height: 1.2; }
 .bubbleText small { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.displaySleepStatus { flex-basis: 100%; color: var(--muted-foreground); font-size: 11px; }
+.captionStatus { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; color: var(--muted-foreground); font-size: 11px; line-height: 1.45; }
+.captionStatus button { display: inline-flex; flex: none; place-items: center; width: auto; height: auto; padding: 4px 7px; border: 1px solid var(--border); color: var(--primary); font-size: 11px; }
 .wave { display: flex; align-items: center; justify-content: center; gap: 2px; width: 29px; height: 30px; }
 .wave i { width: 3px; min-height: 4px; border-radius: 3px; background: #d75142; transition: height 90ms ease; }
 .bubble button, .errorBubble button { display: grid; flex: none; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }

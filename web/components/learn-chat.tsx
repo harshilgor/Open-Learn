@@ -1,4 +1,7 @@
 "use client";
+import { useVoice } from "./voice/voice-provider";
+import { VoiceHistory } from "./voice/voice-history";
+import { reportVoiceFocus, VOICE_REFRESH, voiceApi } from "@/lib/voice/client";
 
 import {routeFlashcardRequest} from '@/lib/flashcards-client';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -33,6 +36,7 @@ import { MessageActionBar, VerificationBadge, type MessageVerification } from '.
 import {useBrowserAssistant} from '@/lib/browser-assistant';
 import {BrowserTaskCard} from './browser-task-card';
 import {ExecutionPanel} from './assistant/execution-panel';
+import {parseClassReferenceOpenRequest,requestClassReferenceOpen} from '@/lib/in-class';
 
 type NoteContextReceipt = { label: string; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[]; totalCharacters: number };
 type ReplacementTarget = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number };
@@ -114,6 +118,8 @@ export function LearnChat({
   onMissingSession?:()=>void;
 }) {
   const reduceMotion = useAppReducedMotion();
+  const voice = useVoice();
+  const [voiceRefresh, setVoiceRefresh] = useState(0);
   const buddies=useBuddies();
   const [conversation,setConversation]=useState(()=>initialSessionId?buddies.snapshot?.modes[initialSessionId]!=='ask':true);
   const restoredPresentation = useRef(initialSessionId ? buddies.snapshot?.modes[initialSessionId] : undefined);
@@ -141,6 +147,16 @@ export function LearnChat({
   const [busy, setBusy] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState('');
+  const [reminderReply, setReminderReply] = useState('');
+  const [classActionReply,setClassActionReply]=useState('');
+  const [scheduledMessages,setScheduledMessages]=useState<{id:string;title:string;body:string;url:string}[]>([]);
+  useEffect(()=>{
+    if(!sessionId)return;
+    let live=true;
+    const load=()=>void request<{messages:{id:string;title:string;body:string;url:string}[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId)).then(result=>{if(live)setScheduledMessages(result.messages);}).catch(()=>{});
+    load();const timer=window.setInterval(load,15000);
+    return()=>{live=false;window.clearInterval(timer);};
+  },[sessionId]);
   const [selection, setSelection] = useState<SelectedPassage | null>(null);
   const [selectionPanel, setSelectionPanel] = useState<SelectionPanel | null>(null);
   const [selectionFollowup, setSelectionFollowup] = useState('');
@@ -402,6 +418,21 @@ export function LearnChat({
     }
   }, [turns.length, streaming, scrollToBottom]);
 
+  useEffect(() => {
+    const refresh = (event: Event) => { if ((event as CustomEvent<string>).detail === sessionId) setVoiceRefresh(value => value + 1); };
+    window.addEventListener(VOICE_REFRESH, refresh);
+    return () => window.removeEventListener(VOICE_REFRESH, refresh);
+  }, [sessionId]);
+  useEffect(() => { reportVoiceFocus({ lesson_id: lesson?.id || null }); }, [lesson?.id]);
+  async function startVoice() {
+    try {
+      const capabilities = await voiceApi.capabilities();
+      if (!capabilities.enabled) { await voice?.start(sessionId || ''); return; }
+      const current = sessionId ? { id: sessionId } : await learningApi.createSession({ topic: 'Study conversation', goal: 'Study with Buddy', gear, courseId: courseId ?? undefined, buddyId: buddies.active?.id });
+      if (!sessionId) { setSessionId(current.id); onSessionCreated?.(current.id); }
+      await voice?.start(current.id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not start voice.'); }
+  }
   function applyJourney(next: Journey) { setJourney(next); setTurns(next.turns); setChatMode(next.mode); setGear(next.gear); }
   useEffect(() => {
     let active = true;
@@ -495,7 +526,7 @@ export function LearnChat({
       }
     }
     void restore(); return () => { active = false; };
-  }, [initialSessionId, recallFiled]);
+  }, [initialSessionId, recallFiled, voiceRefresh]);
 
   useEffect(() => {
     const receiveExcerpt = (event: Event) => {
@@ -816,7 +847,13 @@ export function LearnChat({
     if (!text || busy) return;
     if (!buddies.active) { setError('Reconnect to Open Learn before sending. Your draft is still here.'); void buddies.refresh(); return; }
     if (buddies.active.archived && !sessionId) { setError('Choose an active Buddy to start a new conversation.'); return; }
+    setClassActionReply('');
     if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}
+    if(!attachments.length){
+      const intent=parseClassReferenceOpenRequest(text);
+      const opened=intent?await requestClassReferenceOpen(intent,initialSessionId||sessionId):null;
+      if(opened){clearSubmittedDraft();setClassActionReply(`Opened ${opened.title} · Page ${opened.pageIndex+1} in your live class.`);setProgress('');return;}
+    }
     if (quizClarification) {
       const pending = quizClarification;
       setQuizClarification(null);
@@ -850,7 +887,11 @@ export function LearnChat({
       if (!sessionId) setSessionId(currentSession.id);
       rememberSessionHint(currentSession.id);
       navigateToSession(currentSession.id, !sessionId);
-      if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {clearSubmittedDraft();setProgress('');return;}
+        if (!attachments.length && /^(?:remind me|quiz me (?:every|weekdays)|every\b|schedule\b|show my reminders|list (?:my )?reminders|cancel .*reminder|snooze)/i.test(text)) {
+          const result = await request<{handled:boolean;message?:string}>('/v1/reminder-chat-command', {method:'POST',headers:{'Idempotency-Key':crypto.randomUUID()},body:JSON.stringify({message:text,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,sessionId:currentSession.id,buddyId:buddies.active.id,courseId:courseId||undefined})});
+          if (result.handled) {setReminderReply(result.message||'Reminder updated.');clearSubmittedDraft();setProgress('');return;}
+        }
+        if (!attachments.length && await routeFlashcardRequest(text,currentSession.id,courseId||undefined)) {clearSubmittedDraft();setProgress('');return;}
       if (chatMode !== 'quiz' && !attachments.length && await browserAssistant.tryStart(text, currentSession.id)) {
         clearSubmittedDraft(); setProgress('');
         return;
@@ -953,6 +994,7 @@ export function LearnChat({
     if (sessionId) void buddyApi.mode(sessionId, conversational ? 'conversation' : mode).then(()=>buddies.refresh()).catch(()=>setError('Mode changed for this visit, but could not be saved. Please try again.'));
   }
   return <div className={styles.chatShell}>
+    <VoiceHistory chatId={sessionId} />
     <div ref={scrollArea} className={styles.chatScroll}>
     <div className={`${styles.page} ${turns.length ? styles.reading : styles.empty}`}>
     {courseName ? (
@@ -976,6 +1018,9 @@ export function LearnChat({
     {chatMode !== 'quiz' ? <ExecutionPanel sessionId={sessionId} courseId={courseId} onSession={id => { setSessionId(id); rememberSessionHint(id); navigateToSession(id, !sessionId); }} /> : null}
     {browserAssistant.tasks.map(task=><BrowserTaskCard key={task.id} task={task} onCommand={browserAssistant.command}/>)}
     {browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
+    {reminderReply ? <div className="buddy-preview" role="status"><p style={{whiteSpace:'pre-line'}}>{reminderReply}</p><Button variant="ghost" onClick={()=>{window.location.href='/chat?view=reminders';}}>Open reminders</Button></div> : null}
+    {classActionReply ? <div className="buddy-preview" role="status"><p>{classActionReply}</p></div> : null}
+    {scheduledMessages.map(message=><article key={message.id} className="buddy-preview"><strong>{message.title}</strong><p>{message.body}</p><a href={message.url}>Open activity</a></article>)}
     {quizClarification ? <div className={styles.turnStatus} role="status"><strong>What topic should I quiz you on?</strong><p>Reply in Ask chat with the topic, then I’ll start your quiz.</p><Button type="button" variant="ghost" size="sm" onClick={() => { if (quizClarification.sourceTransitionId && quizClarification.sessionId) void learningApi.recordTransitionInteraction(quizClarification.sourceTransitionId, 'failed', 'quiz', quizClarification.sessionId).catch(() => undefined); setQuizClarification(null); }}>Cancel</Button></div> : null}
     {!turns.length && busy && !streaming && !activity ? <div className={styles.loading} role="status"><LoaderCircle className={styles.spinner} size={22} /><h2>{progress}</h2><p>{prompt}</p><span>A thoughtful answer takes a little time.</span></div> : null}
     {!turns.length && activity ? <AnimatePresence mode="wait">{activity && <WebResearchActivity activity={activity} />}</AnimatePresence> : null}
@@ -1047,6 +1092,6 @@ export function LearnChat({
         onDismiss={handleDismissTransition}
       /> : null}
       {buddies.active?.archived&&!sessionId?<p role="status">This Buddy is archived. Choose an active Buddy to start a new conversation.</p>:null}
-      <ChatComposer onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
+      <ChatComposer onVoice={() => void startVoice()} onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
   </div>;
 }

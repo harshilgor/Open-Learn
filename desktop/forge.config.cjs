@@ -8,7 +8,7 @@ const packageOutput = process.env.FORMA_FORGE_PACKAGE_OUT;
 const windowsSigning = signedRelease ? {
   certificateFile: process.env.WINDOWS_CERTIFICATE_FILE,
   certificatePassword: process.env.WINDOWS_CERTIFICATE_PASSWORD,
-  description: 'Forma',
+  description: 'Open Learn',
   website: 'https://github.com/harshilgor/AI-Tutor-Harness-'
 } : undefined;
 

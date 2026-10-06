@@ -39,52 +39,57 @@ class Connections:
                 conn.execute(text('UPDATE site_connections SET payload=:payload,revision=revision+1 WHERE id=:id AND owner_id=:owner'), {'payload': encoded(p), 'id': r['id'], 'owner': owner})
 
     def cloud_login(self, owner, identifier, revision, finish=False):
-        from .executors.cloud import readiness, BrowserbaseProvider
-        report = readiness()
-        if not all(report.values()):
-            fail('capability_unavailable', 'Cloud credentials, browser runtime, egress and private-login verification are required.', 503)
+        from .executors.cloud import (BrowserbaseProvider, TERMINAL_SESSION_STATES,
+                                      queue_context_cleanup, require_cloud_ready, stop_and_settle)
         item = self.repo.read('site_connections', owner, identifier)
         if item['revision'] != revision: fail('revision_conflict', 'Refresh this connection.', 409)
         if item['executor'] != 'cloud' or item['status'] == 'revoked': fail('invalid_input', 'Select a connected cloud browser.', 422)
         provider = BrowserbaseProvider()
         if finish:
             if not item.get('loginSessionId'): fail('invalid_input', 'Start a sign-in session first.', 422)
-            provider.stop(item['loginSessionId'])
+            run_id = 'login:' + identifier
+            with self.store.engine.connect() as conn:
+                lease = conn.execute(text('SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run'),
+                                     {'owner': owner, 'run': run_id}).mappings().first()
+            if lease:
+                if lease['status'] != 'closed' and not stop_and_settle(self.store, provider, lease):
+                    fail('capability_unavailable', 'The sign-in browser is still being safely closed. Retry shortly.', 503)
+            else:
+                try:
+                    provider.stop(item['loginSessionId'])
+                    state = provider.request('GET', 'sessions/' + item['loginSessionId']).get('status', '')
+                    if str(state).upper() not in TERMINAL_SESSION_STATES:
+                        fail('capability_unavailable', 'The sign-in browser is still being safely closed. Retry shortly.', 503)
+                except Exception:
+                    fail('capability_unavailable', 'The sign-in browser is still being safely closed. Retry shortly.', 503)
+
+            context_id = item.get('providerContextId')
+            if context_id:
+                # Old deployments may have left a persistent context behind.
+                # Queue its deletion first so a transient provider failure does
+                # not make the unmetered context unreachable to cleanup.
+                try:
+                    queue_context_cleanup(self.store, owner, {'providerContextId': context_id})
+                except Exception:
+                    fail('capability_unavailable', 'The sign-in browser closed, but saved browser data could not be queued for cleanup. Retry shortly.', 503)
+                try:
+                    provider.delete_context(context_id)
+                    with self.store.engine.begin() as conn:
+                        conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'),
+                                     {'id': 'context:' + context_id})
+                except Exception:
+                    pass
             with self.store.transaction() as conn:
                 fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
                 if fresh['revision'] != revision: fail('revision_conflict', 'The connection changed.', 409)
                 fresh.pop('loginSessionId', None)
-                fresh.update(status='connected', cloudLogin=True, revision=revision+1)
-                conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE run_id=:run AND owner_id=:owner"), {'run':'login:'+identifier,'owner':owner})
+                fresh.pop('providerContextId', None)
+                fresh.update(status='unpaired', cloudLogin=False, revision=revision+1)
                 conn.execute(text('UPDATE site_connections SET status=:status,revision=:revision,payload=:payload WHERE id=:id AND owner_id=:owner'), {'status':fresh['status'],'revision':fresh['revision'],'payload':encoded(self.clean(fresh)),'id':identifier,'owner':owner})
             return public_connection(fresh)
-        context = item.get('providerContextId') or provider.create_context()
-        session = None
-        try:
-            if item.get('loginSessionId'): provider.stop(item['loginSessionId'])
-            session = provider.create({**item, 'providerContextId':context})
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as pw:
-                browser = pw.chromium.connect_over_cdp(session['connectUrl'], timeout=20000)
-                try:
-                    page = browser.contexts[0].pages[0] if browser.contexts[0].pages else browser.contexts[0].new_page()
-                    page.goto(item['origin'], wait_until='domcontentloaded', timeout=20000)
-                finally: browser.close()
-            with self.store.transaction() as conn:
-                fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
-                if fresh['revision'] != revision: fail('revision_conflict', 'The connection changed.', 409)
-                fresh.update(providerContextId=context,loginSessionId=session['id'],status='login_required',cloudLogin=True,revision=revision+1)
-                conn.execute(text('UPDATE site_connections SET status=:status,revision=:revision,payload=:payload WHERE id=:id AND owner_id=:owner'), {'status':fresh['status'],'revision':fresh['revision'],'payload':encoded(self.clean(fresh)),'id':identifier,'owner':owner})
-                conn.execute(text('''INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload)
-                    VALUES(:id,:owner,:run,:connection,:session,'login',:expires,'{}') ON CONFLICT(run_id) DO UPDATE SET provider_session=excluded.provider_session,status='login',expires_at=excluded.expires_at'''),
-                    {'id':uid('login'),'owner':owner,'run':'login:'+identifier,'connection':identifier,'session':session['id'],'expires':time.time()+600})
-            return {'connection':public_connection(fresh),'liveViewUrl':provider.live_view(session['id']), 'expiresAt':time.time()+600}
-        except Exception:
-            if session: provider.stop(session['id'])
-            if not item.get('providerContextId'):
-                from .executors.cloud import queue_context_cleanup
-                queue_context_cleanup(self.store, owner, {'providerContextId':context})
-            raise
+        require_cloud_ready()
+        fail('capability_unavailable',
+             'Cloud sign-in is unavailable until persistent browser contexts have a bounded, metered lifecycle.', 503)
 
     def patch(self, owner, identifier, command):
         with self.store.transaction() as conn:

@@ -215,6 +215,11 @@ class Store:
             return False
         journey_id = f"journey_{session_id}"
         with self.transaction() as connection:
+            from .in_class_service import invalidate_material_access
+            invalidate_material_access(
+                connection, session_id=session_id, owner=owner,
+                session_course_id=None, update_session_course=True,
+            )
             action_ids = connection.execute(
                 text("SELECT id FROM learning_actions WHERE session_id = :sid"), {"sid": session_id}
             ).scalars().all()

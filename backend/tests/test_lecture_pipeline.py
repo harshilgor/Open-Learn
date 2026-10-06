@@ -1,7 +1,9 @@
 import hashlib
 import json
 import base64
+from pathlib import Path
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 import httpx
@@ -14,7 +16,7 @@ from alembic.config import Config
 
 from backend.app.lecture_models import LectureCreate, LectureFinalize
 from backend.app.lecture_pipeline import LectureWorker
-from backend.app.lecture_provider import OpenRouterTranscriptionProvider, TranscribedSpan, TranscriptionResult, normalize_text
+from backend.app.lecture_provider import OpenAITranscriptionProvider, OpenRouterTranscriptionProvider, TranscribedSpan, TranscriptionFailure, TranscriptionResult, normalize_text
 from backend.app.lecture_service import LectureError, LectureService
 from backend.app.class_recording_service import ClassRecordingService
 from backend.app.storage import Store
@@ -24,6 +26,7 @@ from backend.app.workspace_note_models import WorkspaceNoteCreate, WorkspaceNote
 from backend.app.automatic_note_context import retrieve_relevant_notes
 from backend.app.lecture_routes import build_lecture_router
 from backend.app.identity_middleware import IdentityMiddleware
+from backend.app.usage.context import usage_scope
 
 
 class FakeTranscriber:
@@ -136,6 +139,8 @@ def test_missing_transcription_key_is_explained_in_recording_status(lecture, mon
 
 
 def test_openrouter_key_retries_saved_lecture_without_openai(monkeypatch, lecture):
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
     monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
     monkeypatch.delenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -149,6 +154,7 @@ def test_openrouter_key_retries_saved_lecture_without_openai(monkeypatch, lectur
     assert service.status("alice", created["id"])["chunks"]["failed"] == 13
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
+    monkeypatch.setenv("OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE", "0.006")
     calls = []
 
     def post(url, **kwargs):
@@ -169,6 +175,9 @@ def test_openrouter_key_retries_saved_lecture_without_openai(monkeypatch, lectur
 
 
 def test_openrouter_large_recording_uses_supported_multipart_upload(monkeypatch):
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
+    monkeypatch.setenv("OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE", "0.006")
     captured = {}
 
     def post(url, **kwargs):
@@ -176,16 +185,55 @@ def test_openrouter_large_recording_uses_supported_multipart_upload(monkeypatch)
         return httpx.Response(200, request=httpx.Request("POST", url), json={"text": "Recorded lecture."})
 
     monkeypatch.setattr(httpx, "post", post)
-    result = OpenRouterTranscriptionProvider(key="test-router-key").transcribe_chunk(
-        b"RIFF" + b"x" * (4 * 1024 * 1024), "audio/wav", 1000)
+    store_path = Path(__file__).resolve().parents[1] / "data" / f"test_transcription_{uuid4().hex}.db"
+    store = Store(store_path)
+    try:
+        with usage_scope(store, "alice", "recording-test"):
+            result = OpenRouterTranscriptionProvider(key="test-router-key").transcribe_chunk(
+                b"RIFF" + b"x" * (4 * 1024 * 1024), "audio/wav", 1000)
+        with store.engine.connect() as conn:
+            event = conn.execute(text("SELECT component,cost_nano,source FROM usage_events WHERE owner_id='alice'")).one()
+        assert event.component == "stt"
+        assert event.cost_nano == 100_000  # $0.006/min prorated over the 1-second slice.
+        assert event.source == "estimated"
+    finally:
+        store.close()
+        store_path.unlink(missing_ok=True)
+        Path(str(store_path) + "-wal").unlink(missing_ok=True)
+        Path(str(store_path) + "-shm").unlink(missing_ok=True)
     assert captured["data"]["model"] == "openai/whisper-large-v3"
     assert captured["files"]["file"][0] == "recording.wav"
     assert result.spans[0].text == "Recorded lecture."
 
 
+@pytest.mark.parametrize(
+    ("provider", "key_name", "rate_name"),
+    [
+        ("openai", "OPENAI_API_KEY", "OPENLEARN_OPENAI_STT_USD_PER_MINUTE"),
+        ("openrouter", "OPENROUTER_API_KEY", "OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE"),
+    ],
+)
+def test_transcription_requires_rate_before_provider_request(monkeypatch, provider, key_name, rate_name):
+    monkeypatch.setenv(key_name, "test-provider-key")
+    monkeypatch.delenv(rate_name, raising=False)
+    calls = []
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: calls.append(args))
+    client = OpenAITranscriptionProvider(key="test-provider-key") if provider == "openai" else OpenRouterTranscriptionProvider(key="test-provider-key")
+
+    with pytest.raises(TranscriptionFailure) as unavailable:
+        client.transcribe_chunk(b"audio", "audio/webm", 8000)
+
+    assert unavailable.value.code == "usage_provider_unavailable"
+    assert "rate configured" in str(unavailable.value)
+    assert calls == []
+
+
 def test_legacy_class_recording_uses_openrouter_for_transcription(monkeypatch, lecture):
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
     monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
+    monkeypatch.setenv("OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE", "0.006")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", raising=False)
     store, _, _ = lecture
@@ -204,7 +252,8 @@ def test_legacy_class_recording_uses_openrouter_for_transcription(monkeypatch, l
 
     service = ClassRecordingService(store, TextProvider())
     recorded = service.upload("alice", note.id, b"\x1a\x45\xdf\xa3audio", "audio/webm", 8000, [])
-    service.process(recorded["id"], "alice")
+    with usage_scope(store, "alice", recorded["id"]):
+        service.process(recorded["id"], "alice")
     assert service.get("alice", recorded["id"])["status"] == "completed"
     assert "The lecture covered cells." in notes.get("alice", note.id).body
 

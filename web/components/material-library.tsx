@@ -50,11 +50,7 @@ export function MaterialLibrary({courseId}:{courseId?:string}={}) {
   async function upload(file: File) {
     setBusy(true); setError('');
     try {
-      if (file.size > 50 * 1024 * 1024) throw new Error('Choose a file smaller than 50 MB.');
-      const lower = file.name.toLowerCase();
-      const mediaType = lower.endsWith('.pdf') ? 'application/pdf' : lower.endsWith('.md') ? 'text/markdown' : lower.endsWith('.png') ? 'image/png' : lower.match(/\.jpe?g$/) ? 'image/jpeg' : lower.endsWith('.webp') ? 'image/webp' : lower.endsWith('.gif') ? 'image/gif' : 'text/plain';
-      const item = await call<{ materialId: string; versionId: string; uploadPath: string }>('/materials', json({ title: file.name, mediaType, byteCount: file.size, role, courseId }));
-      await call(item.uploadPath.replace('/v1', ''), { method: 'PUT', headers: { 'Content-Type': mediaType }, body: file });
+      const item = await learningApi.uploadCourseMaterial(courseId || null, file, role as 'reference' | 'textbook' | 'lecture_notes' | 'sample_paper' | 'answer_key');
       setSelected(previous => [...previous, item.versionId]);
       await refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Upload failed.'); }
@@ -87,7 +83,7 @@ export function MaterialLibrary({courseId}:{courseId?:string}={}) {
   return <section aria-label="Supporting materials" className="w-full max-w-3xl rounded-2xl border p-4 my-4">
     <Button variant="ghost" aria-expanded={open} onClick={() => setOpen(!open)}>Supporting materials {open ? '−' : '+'}</Button>
     {open && <div className="space-y-4 mt-3">
-      <p>Upload a PDF, TXT, Markdown, PNG, JPG, WEBP, or GIF. Text files are searchable; images are sent as visual context when your configured model supports vision.</p>
+      <p>Upload PDF, TXT, or Markdown files up to 500 MiB, or images up to 50 MiB. Text files are searchable; images are sent as visual context when your configured model supports vision.</p>
       <label className="block">Material type <select aria-label="Material type" value={role} onChange={event => setRole(event.target.value)} className="border rounded p-2"><option value="reference">Reference</option><option value="textbook">Textbook</option><option value="lecture_notes">Lecture notes</option><option value="sample_paper">Sample paper</option><option value="answer_key">Answer key</option></select></label>
       <label className="block">Upload supporting material <input type="file" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" disabled={busy} onChange={event => { const file = event.target.files?.[0]; if (file) void upload(file); event.target.value = ''; }} /></label>
       {items.map(item => <div key={item.id} className="border rounded p-3 space-y-2"><label><input type="checkbox" checked={selected.includes(item.versionId)} onChange={event => setSelected(previous => event.target.checked ? [...previous, item.versionId] : previous.filter(id => id !== item.versionId))} /> {item.title}</label><p role="status">{item.status.replaceAll('_', ' ')} · {item.role.replaceAll('_', ' ')}</p>{item.issues?.map((issue, index) => <p key={index}>{issue.message}</p>)}<Button variant="outline" onClick={() => void inspect(item)}>Inspect extracted text</Button> <Button variant="ghost" onClick={() => void remove(item)}>Delete</Button></div>)}

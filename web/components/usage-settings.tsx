@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { learningApi, friendlyServiceError, type UsageRange, type UsageSummary } from '@/lib/api';
 import { UsageAnalyticsView } from './usage-analytics';
 import styles from './usage-settings.module.css';
+import { UsageAllowance } from './usage-allowance';
 
 const RANGES: { id: UsageRange; label: string }[] = [
   { id: '7d', label: '7 days' },
@@ -42,7 +43,7 @@ function shortModel(model: string): string {
 export function UsageSettings() {
   const [tab, setTab] = useState<'overview' | 'analytics'>('overview');
   return (
-    <div className={styles.usage}>
+    <div className={styles.usage}><UsageAllowance/><p className={styles.muted}>Historical tutor generations are shown below. Provider costs are service diagnostics, not charges to you.</p>
       <div className={styles.tabs} role="tablist" aria-label="Usage views">
         {(['overview', 'analytics'] as const).map(item => (
           <button

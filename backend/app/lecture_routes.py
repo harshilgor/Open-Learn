@@ -10,8 +10,15 @@ from .lecture_pipeline import LectureWorker
 from .lecture_service import LectureError, LectureService, MAX_CHUNK_BYTES
 from .material_routes import material_owner
 from .lecture_observations import LectureObservationService
+from .live_transcription import configured_live_transcription_provider, live_transcription_enabled
+from .in_class_models import ClassLiveTranscriptSegmentCreate, ClassLiveTranscriptInterimUpdate
 from pydantic import BaseModel, Field
 from typing import Literal
+import os
+import json
+import hashlib
+import hmac
+from sqlalchemy import text
 
 class TranscriptEdit(BaseModel):
     wording: str = Field(min_length=1, max_length=4000)
@@ -27,7 +34,7 @@ class ObservationEdit(BaseModel):
     entityId: str | None = None
 
 
-def build_lecture_router(store_provider, provider_getter, transcriber=None):
+def build_lecture_router(store_provider, provider_getter, transcriber=None, live_transcriber=None):
     router = APIRouter(prefix="/v1/learners/{learner_id}/lecture-recordings", tags=["lecture-recordings"])
 
     def authorize(learner_id: str, owner: str):
@@ -40,11 +47,72 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
     def worker(db=Depends(store_provider)):
         return LectureWorker(db, provider_getter, transcriber)
 
+    def live_provider():
+        return live_transcriber or configured_live_transcription_provider()
+
     def translate(operation):
         try:
             return operation()
         except LectureError as exc:
             raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+
+    @router.get("/live-transcription")
+    def live_transcription_status(learner_id: str = Path(min_length=1, max_length=120), owner=Depends(material_owner)):
+        authorize(learner_id, owner)
+        configured = live_transcription_enabled() and bool(os.getenv("OPENAI_API_KEY"))
+        return {"available": configured, "provider": "OpenAI" if configured else None}
+
+    @router.post("/{recording_id}/live-transcription-session")
+    def create_live_transcription_session(recording_id: str, learner_id: str, response: Response,
+            x_capture_capability: str | None = Header(default=None, alias="X-Capture-Capability", min_length=32, max_length=128),
+            owner=Depends(material_owner), svc=Depends(service)):
+        authorize(learner_id, owner)
+        if not live_transcription_enabled():
+            raise HTTPException(503, {"code": "live_transcription_disabled", "message": "Live captions are not enabled on this server."})
+        with svc.store.engine.connect() as conn:
+            row = conn.execute(text("""SELECT c.payload,r.status,r.expected_chunk_count
+                FROM class_sessions c JOIN lecture_recordings r ON r.id=c.recording_id
+                WHERE c.recording_id=:recording AND c.owner_id=:owner"""),
+                {"recording": recording_id, "owner": owner}).mappings().first()
+        if not row:
+            raise HTTPException(404, {"code": "class_not_found", "message": "Class session unavailable."})
+        class_data = json.loads(row["payload"])
+        stored_capability_hash = class_data.get("captureCapabilityHash")
+        presented_capability_hash = hashlib.sha256(x_capture_capability.encode("utf-8")).hexdigest() if x_capture_capability else ""
+        if not stored_capability_hash or not hmac.compare_digest(presented_capability_hash, stored_capability_hash):
+            raise HTTPException(409, {"code": "capture_capability_mismatch", "message": "Live captions are unavailable for this capture."})
+        if row["status"] != "recording" or row["expected_chunk_count"] is not None:
+            raise HTTPException(409, {"code": "capture_not_active", "message": "Live captions are only available during active capture."})
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        try:
+            return live_provider().create_client_secret(owner)
+        except RuntimeError as exc:
+            raise HTTPException(503, {"code": "live_transcription_unavailable", "message": str(exc)}) from exc
+
+    @router.post("/{recording_id}/live-transcription-segments")
+    def save_live_transcription_segment(recording_id: str, body: ClassLiveTranscriptSegmentCreate, learner_id: str, response: Response,
+            x_capture_capability: str | None = Header(default=None, alias="X-Capture-Capability", min_length=32, max_length=128),
+            owner=Depends(material_owner), svc=Depends(service)):
+        from .in_class_service import InClassService
+        authorize(learner_id, owner)
+        if not live_transcription_enabled():
+            raise HTTPException(503, {"code": "live_transcription_disabled", "message": "Live captions are not enabled on this server."})
+        response.headers["Cache-Control"] = "private, no-store"
+        result=InClassService(svc.store).append_live_transcript(owner,"class_"+recording_id,x_capture_capability,body)
+        return result
+
+    @router.post("/{recording_id}/live-transcription-interim")
+    def save_live_transcription_interim(recording_id: str, body: ClassLiveTranscriptInterimUpdate, learner_id: str, response: Response,
+            x_capture_capability: str | None = Header(default=None, alias="X-Capture-Capability", min_length=32, max_length=128),
+            owner=Depends(material_owner), svc=Depends(service)):
+        from .in_class_service import InClassService
+        from .class_live_notes import ClassLiveNoteService
+        authorize(learner_id, owner)
+        if not live_transcription_enabled():
+            raise HTTPException(503, {"code": "live_transcription_disabled", "message": "Live captions are not enabled on this server."})
+        response.headers["Cache-Control"] = "private, no-store"
+        return ClassLiveNoteService(InClassService(svc.store)).append_interim(owner, "class_"+recording_id, x_capture_capability, body)
 
     @router.post("", status_code=201)
     def create(command: LectureCreate, learner_id: str = Path(min_length=1, max_length=120), owner=Depends(material_owner), svc=Depends(service)):
@@ -60,6 +128,11 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None):
     def status(recording_id: str, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
         authorize(learner_id, owner)
         return translate(lambda: svc.status(owner, recording_id))
+
+    @router.delete("/{recording_id}/audio")
+    def remove_audio(recording_id: str, learner_id: str, owner=Depends(material_owner), svc=Depends(service)):
+        authorize(learner_id, owner)
+        return translate(lambda: svc.remove_audio(owner, recording_id))
 
     @router.put("/{recording_id}/chunks/{sequence}")
     async def upload(recording_id: str, sequence: int, request: Request, tasks: BackgroundTasks, learner_id: str,

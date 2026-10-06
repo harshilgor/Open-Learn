@@ -24,6 +24,9 @@ class LectureObservationService:
             invalidate_source(self.store,conn,owner,segment_id)
             from .in_class_service import handoff
             handoff(conn,owner,recording,'correction:'+segment_id+':'+str(revision+1))
+            from .class_live_notes import ClassLiveNoteService
+            ClassLiveNoteService.emit_reconcile(conn,owner,recording,segment['start_ms'],segment['end_ms'],
+                'correction:'+segment_id+':'+str(revision+1))
             sections = conn.execute(text('SELECT id,evidence_json FROM lecture_sections WHERE recording_id=:recording'), {'recording': recording}).all()
             affected = [s[0] for s in sections if any(e['segmentId'] == segment_id for e in json.loads(s[1]))]
             for section in affected:

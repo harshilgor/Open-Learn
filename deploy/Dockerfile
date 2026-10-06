@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*
 COPY backend/requirements.txt backend/requirements-daytona.txt backend/requirements-browser.txt /tmp/
 RUN pip install --no-cache-dir -r /tmp/requirements.txt -r /tmp/requirements-daytona.txt -r /tmp/requirements-browser.txt && python -m playwright install --with-deps chromium
 COPY backend/app /app/backend/app

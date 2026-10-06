@@ -39,4 +39,14 @@ def readiness():
     if not policy.snapshot:return {'state':'setup_required','reasonCode':'snapshot_required'}
     if not os.getenv('DAYTONA_API_KEY'):return {'state':'setup_required','reasonCode':'credential_required'}
     if not importlib.util.find_spec('daytona'):return {'state':'setup_required','reasonCode':'sdk_required'}
-    return {'state':'available','reasonCode':None}
+    try:
+        from ..usage.policy import Policy
+        usage=Policy.load()
+        if usage.mode!='enforce' or not usage.paid:
+            return {'state':'setup_required','reasonCode':'paid_usage_policy_required'}
+    except Exception:
+        return {'state':'setup_required','reasonCode':'paid_usage_policy_required'}
+    # An SDK sandbox TTL alone does not bound billable CPU/RAM/disk allocation,
+    # stop latency or delayed provider adjustments. Never advertise this route
+    # as available until the adapter enforces those limits and settles receipts.
+    return {'state':'setup_required','reasonCode':'sandbox_lifecycle_metering_unavailable'}

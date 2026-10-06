@@ -54,7 +54,7 @@ export function AppInstall() {
       </div>}
       {error ? <p role="alert" className="text-sm">{error}</p> : null}
       <Button variant="ghost" onClick={() => { remember(); setOpen(false); }}>Continue in browser</Button>
-      <p className="text-xs text-muted-foreground">You can reopen these instructions from Install app in the sidebar.</p>
+      <p className="text-xs text-muted-foreground">You can also install later from your browser menu.</p>
     </DialogContent>
   </Dialog>;
 }

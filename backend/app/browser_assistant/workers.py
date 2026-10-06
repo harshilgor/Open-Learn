@@ -76,7 +76,8 @@ class AssistantWorker:
         if not job: return
         heartbeat = LeaseHeartbeat(self.store, job)
         try:
-            with job_scope(job):
+            from ..usage.context import usage_scope
+            with job_scope(job), usage_scope(self.store,job['owner_id'],job['target_id']):
                 if job['kind'] == 'reminder_dispatch':
                     from .reminders import dispatch_push
                     dispatch_push(self.store, job)
@@ -471,11 +472,11 @@ class AssistantWorker:
                 self.object_scan_cursor = page.get('NextContinuationToken')
 
     def notifications(self, stop, once=False):
-        from .reminders import tick_reminders
+        from ..reminder_worker import NotificationsWorker
+        dispatcher=NotificationsWorker(self.store,self.provider_getter)
         while not stop.is_set():
             try:
-                tick_reminders(self.store)
-                for identifier in self.jobs.ready_ids('interactive', {'reminder_dispatch'}, 5): self.execute(identifier)
+                dispatcher.tick()
             except Exception as exc: log.warning('Reminder dispatcher iteration failed (%s)',type(exc).__name__)
             if once: return
             stop.wait(2)

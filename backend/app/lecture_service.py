@@ -46,10 +46,19 @@ class LectureService:
     def chunk_audio(self,owner,recording_id,sequence):
         """Read through the object adapter so hosted audio works across workers."""
         with self.store.transaction() as conn:
-            if not self._row(owner,recording_id,conn):raise LectureError('recording_not_found','Recording unavailable.',404)
+            recording=self._row(owner,recording_id,conn)
+            if not recording:raise LectureError('recording_not_found','Recording unavailable.',404)
+            preferences=self._preferences(recording)
+            stages=json.loads(recording['stage_json'])
+            if recording['status']=='completed' and preferences.get('keepAudio',True) is False and stages.get('audioRetention')=='removed':
+                raise LectureError('audio_removed','Audio was removed according to this recording’s retention setting.',404)
             row=conn.execute(text('SELECT storage_key,media_type,sha256 FROM lecture_audio_chunks WHERE recording_id=:id AND sequence_number=:sequence'),{'id':recording_id,'sequence':sequence}).mappings().first()
             if not row:raise LectureError('chunk_not_found','Audio slice unavailable.',404)
-            content=self.objects.read(owner,recording_id,row['storage_key'])
+            try:content=self.objects.read(owner,recording_id,row['storage_key'])
+            except OSError as exc:
+                if recording['status']=='completed' and preferences.get('keepAudio',True) is False:
+                    raise LectureError('audio_removed','Audio was removed according to this recording’s retention setting.',404) from exc
+                raise LectureError('chunk_storage_missing','The audio copy is unavailable; processing needs repair.',503) from exc
             if hashlib.sha256(content).hexdigest()!=row['sha256']:raise LectureError('audio_integrity_failed','Audio integrity check failed.',409)
             return content,row['media_type']
 
@@ -64,6 +73,13 @@ class LectureService:
         if not row:
             raise LectureError("recording_not_found", "Lecture recording not found.", 404)
         return row
+
+    @staticmethod
+    def _preferences(row):
+        preferences = json.loads(row["preferences_json"])
+        preferences["keepAudio"] = preferences.get("keepAudio", preferences.get("keep_audio", True))
+        preferences["captureSystemAudio"] = preferences.get("captureSystemAudio", preferences.get("capture_system_audio", False))
+        return preferences
 
     def create(self, owner: str, command: LectureCreate):
         try:
@@ -103,7 +119,7 @@ class LectureService:
                 conn.execute(text("""INSERT INTO lecture_recordings(id,learner_id,note_id,course_id,title,status,expected_chunk_count,duration_ms,markers_json,preferences_json,stage_json,pipeline_version,generation_version,started_at,created_at,updated_at)
                     VALUES (:id,:owner,:note,:course,:title,'recording',NULL,0,'[]',:prefs,:stages,1,0,:started,:now,:now)"""), {
                     "id": command.id, "owner": owner, "note": note.id, "course": command.course_id,
-                    "title": command.title.strip(), "prefs": encoded(command.preferences.model_dump(mode="json")),
+                    "title": command.title.strip(), "prefs": encoded(command.preferences.model_dump(mode="json", by_alias=True)),
                     "stages": encoded(STAGES), "started": command.started_at_ms / 1000, "now": now,
                 })
         except IntegrityError as exc:
@@ -161,18 +177,39 @@ class LectureService:
             return self._duplicate(owner, recording_id, existing, digest, len(content), start_ms, end_ms, media_type)
         if row["status"] in {"completed", "cancelled"}:
             raise LectureError("recording_closed", "This recording no longer accepts audio.", 409)
+        ingest_started_at = time.time()
         key, stored_hash = self.objects.write(owner, recording_id, content)
         now = time.time()
+        chunk_id = uid("ach")
         try:
             with self.store.transaction() as conn:
+                if conn.dialect.name == "sqlite":
+                    conn.exec_driver_sql("BEGIN IMMEDIATE")
+                lock_suffix = " FOR UPDATE" if conn.dialect.name == "postgresql" else ""
+                current = conn.execute(text("SELECT status,expected_chunk_count,duration_ms FROM lecture_recordings WHERE id=:id AND learner_id=:owner" + lock_suffix), {"id": recording_id, "owner": owner}).mappings().first()
+                if not current:
+                    raise LectureError("recording_not_found", "This recording is not available.", 404)
+                if current["status"] in {"completed", "cancelled"}:
+                    raise LectureError("recording_closed", "This recording no longer accepts audio.", 409)
+                if current["expected_chunk_count"] is not None and sequence >= current["expected_chunk_count"]:
+                    raise LectureError("chunk_outside_finalized_count", "This slice is beyond the stopped recording.", 409)
+                # Active recordings carry a placeholder duration (the legacy
+                # schema requires a non-null value). Enforce the duration fence
+                # only after finalization pins expected_chunk_count and duration.
+                if current["expected_chunk_count"] is not None and end_ms > current["duration_ms"]:
+                    raise LectureError("chunk_outside_finalized_duration", "This slice extends beyond the stopped recording.", 409)
                 conn.execute(text("""INSERT INTO lecture_audio_chunks(id,recording_id,sequence_number,start_ms,end_ms,media_type,byte_count,sha256,storage_key,transcription_status,transcription_attempts,created_at,updated_at)
                     VALUES (:id,:recording,:sequence,:start,:end,:mime,:size,:hash,:key,'pending',0,:now,:now)"""), {
-                    "id": uid("ach"), "recording": recording_id, "sequence": sequence, "start": start_ms,
+                    "id": chunk_id, "recording": recording_id, "sequence": sequence, "start": start_ms,
                     "end": end_ms, "mime": media_type, "size": len(content), "hash": stored_hash,
                     "key": key, "now": now,
                 })
                 job = self.jobs.enqueue(owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, f"lecture:chunk:{recording_id}:{sequence}", connection=conn)
                 conn.execute(text('UPDATE lecture_audio_chunks SET capture_epoch=:epoch,epoch_sequence=:epoch_sequence,independent_media=:independent WHERE recording_id=:recording AND sequence_number=:sequence'), {'epoch': capture_epoch, 'epoch_sequence': epoch_sequence, 'independent': independent_media, 'recording': recording_id, 'sequence': sequence})
+                class_id = conn.execute(text('SELECT id FROM class_sessions WHERE recording_id=:recording AND owner_id=:owner'), {'recording': recording_id, 'owner': owner}).scalar_one_or_none()
+                if class_id:
+                    from .in_class_metrics import record as record_metric
+                    record_metric(conn,owner=owner,class_id=class_id,stage='capture_ingest',correlation_id=chunk_id,queued_at=ingest_started_at,started_at=ingest_started_at,finished_at=time.time(),counters={'bytes':len(content)})
         except IntegrityError:
             self.objects.delete(owner, recording_id, key)
             with self.store.engine.connect() as conn:
@@ -197,7 +234,7 @@ class LectureService:
             existing_bytes = self.objects.read(owner, recording_id, row["storage_key"])
         except OSError as exc:
             recording = self._row(owner, recording_id)
-            preferences = json.loads(recording["preferences_json"])
+            preferences = self._preferences(recording)
             if recording["status"] == "completed" and not preferences.get("keepAudio", True):
                 return {"recordingId": recording_id, "sequenceNumber": row["sequence_number"], "sha256": digest, "byteCount": byte_count, "transcriptionStatus": row["transcription_status"], "duplicate": True}
             raise LectureError("chunk_storage_missing", "The server copy is unavailable; processing needs repair.", 503) from exc
@@ -207,12 +244,23 @@ class LectureService:
 
     def finalize(self, owner: str, recording_id: str, command: LectureFinalize):
         row = self._row(owner, recording_id)
-        if row["expected_chunk_count"] is not None and (row["expected_chunk_count"] != command.expected_chunk_count or row["duration_ms"] != command.duration_ms):
-            raise LectureError("finalization_conflict", "The stop details differ from the saved recording.", 409)
         if command.markers_ms and command.markers_ms[-1] > command.duration_ms:
             raise LectureError("marker_outside_recording", "A marker is beyond the end of the recording.")
-        if row["expected_chunk_count"] is None:
-            with self.store.transaction() as conn:
+        with self.store.transaction() as conn:
+            if conn.dialect.name == "sqlite":
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+            lock_suffix = " FOR UPDATE" if conn.dialect.name == "postgresql" else ""
+            current = conn.execute(text("SELECT status,expected_chunk_count,duration_ms FROM lecture_recordings WHERE id=:id AND learner_id=:owner" + lock_suffix), {"id": recording_id, "owner": owner}).mappings().first()
+            if not current:
+                raise LectureError("recording_not_found", "This recording is not available.", 404)
+            if current["status"] == "cancelled":
+                raise LectureError("recording_closed", "This recording is no longer accepting changes.", 409)
+            if current["expected_chunk_count"] is not None and (current["expected_chunk_count"] != command.expected_chunk_count or current["duration_ms"] != command.duration_ms):
+                raise LectureError("finalization_conflict", "The stop details differ from the saved recording.", 409)
+            extra_chunk = conn.execute(text("SELECT 1 FROM lecture_audio_chunks WHERE recording_id=:id AND sequence_number>=:count LIMIT 1"), {"id": recording_id, "count": command.expected_chunk_count}).first()
+            if extra_chunk:
+                raise LectureError("finalization_chunk_conflict", "Saved audio extends beyond the requested stop point.", 409)
+            if current["expected_chunk_count"] is None:
                 conn.execute(text("UPDATE lecture_recordings SET status='waiting_for_uploads',expected_chunk_count=:count,capture_interrupted=:interrupted,duration_ms=:duration,markers_json=:markers,stopped_at=:now,updated_at=:now WHERE id=:id AND learner_id=:owner AND expected_chunk_count IS NULL"), {
                     "count": command.expected_chunk_count, "duration": command.duration_ms,
                     "interrupted": command.capture_interrupted, "markers": encoded(command.markers_ms), "now": time.time(), "id": recording_id, "owner": owner,
@@ -225,11 +273,28 @@ class LectureService:
     def maybe_enqueue_finalize(self, owner: str, recording_id: str):
         row = self._row(owner, recording_id)
         expected = row["expected_chunk_count"]
-        if expected is None or row["status"] in {"completed", "cancelled"}:
+        if expected is None or row["status"] == "cancelled":
+            return None
+        if row["status"] == "completed":
+            self._schedule_unretained_audio_removal(owner, recording_id, row)
             return None
         with self.store.engine.connect() as conn:
-            chunks = conn.execute(text("SELECT sequence_number,transcription_status FROM lecture_audio_chunks WHERE recording_id=:id"), {"id": recording_id}).all()
-        by_sequence = {seq: status for seq, status in chunks}
+            class_recording = conn.execute(text("SELECT 1 FROM class_sessions WHERE recording_id=:id AND owner_id=:owner"), {"id": recording_id, "owner": owner}).first()
+            chunks = conn.execute(text("SELECT sequence_number,transcription_status,storage_key FROM lecture_audio_chunks WHERE recording_id=:id"), {"id": recording_id}).all()
+            if class_recording:
+                # In-Class owns semantic processing. Mark the recording archive
+                # complete once every expected chunk is transcribed, without
+                # enqueueing a second legacy post-class semantic pass.
+                by_sequence = {seq: status for seq, status, _key in chunks}
+                if len(by_sequence) == expected and all(by_sequence.get(seq) == "completed" for seq in range(expected)):
+                    stages = json.loads(row["stage_json"])
+                    stages.update({"transcription": "completed", "semanticAnalysis": "class_managed", "noteGeneration": "class_managed", "verification": "class_managed"})
+                    with self.store.transaction() as write:
+                        changed = write.execute(text("UPDATE lecture_recordings SET status='completed',stage_json=:stages,error=NULL,updated_at=:now WHERE id=:id AND learner_id=:owner AND expected_chunk_count=:expected AND status!='completed'"), {"stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner, "expected": expected})
+                    if changed.rowcount == 1:
+                        self._schedule_unretained_audio_removal(owner, recording_id)
+                return None
+        by_sequence = {seq: status for seq, status, _key in chunks}
         if len(by_sequence) != expected or any(by_sequence.get(seq) != "completed" for seq in range(expected)):
             return None
         stages = json.loads(row["stage_json"])
@@ -241,8 +306,113 @@ class LectureService:
             conn.execute(text("UPDATE lecture_recordings SET status='processing',stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status!='completed'"), {"stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner})
         return job
 
+    def _schedule_unretained_audio_removal(self, owner: str, recording_id: str, row=None):
+        row = row or self._row(owner, recording_id)
+        if row["status"] != "completed":
+            return
+        preferences = self._preferences(row)
+        stages = json.loads(row["stage_json"])
+        if preferences.get("keepAudio", True) or stages.get("audioRetention") in {"removed", "failed"}:
+            return
+        with self.store.transaction() as conn:
+            current = conn.execute(text("SELECT status,stage_json FROM lecture_recordings WHERE id=:id AND learner_id=:owner"), {"id": recording_id, "owner": owner}).mappings().first()
+            if not current or current["status"] != "completed":
+                return
+            current_stages = json.loads(current["stage_json"])
+            if current_stages.get("audioRetention") == "removed":
+                return
+            current_stages.setdefault("audioRetention", "pending")
+            current_stages.setdefault("audioRetentionCursor", -1)
+            current_stages.setdefault("audioRetentionGeneration", 0)
+            conn.execute(text("UPDATE lecture_recordings SET stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='completed'"), {"stages": encoded(current_stages), "now": time.time(), "id": recording_id, "owner": owner})
+            after_sequence = int(current_stages["audioRetentionCursor"])
+            generation = int(current_stages["audioRetentionGeneration"])
+            self.jobs.enqueue(owner, recording_id, "lecture_audio_retention",
+                              {"recording_id": recording_id, "after_sequence": after_sequence, "generation": generation},
+                              f"lecture:audio-retention:{recording_id}:{generation}:{after_sequence}",
+                              connection=conn, queue="batch")
+
+    def remove_audio_page(self, owner: str, recording_id: str, after_sequence: int, generation: int, page_size: int = 100):
+        row = self._row(owner, recording_id)
+        preferences = self._preferences(row)
+        stages = json.loads(row["stage_json"])
+        if preferences.get("keepAudio", True) or stages.get("audioRetention") != "pending" or int(stages.get("audioRetentionGeneration", 0)) != generation:
+            return {"status": stages.get("audioRetention", "unchanged")}
+        cursor = int(stages.get("audioRetentionCursor", -1))
+        if after_sequence < cursor:
+            return {"status": "continued"}
+        with self.store.engine.connect() as conn:
+            rows = conn.execute(text("""SELECT sequence_number,storage_key FROM lecture_audio_chunks
+                WHERE recording_id=:id AND sequence_number>:after
+                ORDER BY sequence_number LIMIT :limit"""), {"id": recording_id, "after": after_sequence, "limit": page_size}).all()
+        for _sequence, key in rows:
+            self.objects.delete(owner, recording_id, key)
+        with self.store.transaction() as conn:
+            current = conn.execute(text("SELECT status,preferences_json,stage_json FROM lecture_recordings WHERE id=:id AND learner_id=:owner"), {"id": recording_id, "owner": owner}).mappings().first()
+            if not current:
+                return {"status": "unavailable"}
+            current_preferences = self._preferences(current)
+            current_stages = json.loads(current["stage_json"])
+            if current_preferences.get("keepAudio", True) or current_stages.get("audioRetention") != "pending" or int(current_stages.get("audioRetentionGeneration", 0)) != generation:
+                return {"status": current_stages.get("audioRetention", "changed")}
+            if rows:
+                current_stages["audioRetentionCursor"] = int(rows[-1][0])
+            if len(rows) < page_size:
+                current_stages["audioRetention"] = "removed"
+                current_stages.pop("audioRetentionCursor", None)
+                current_stages.pop("audioRetentionError", None)
+            conn.execute(text("UPDATE lecture_recordings SET stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner"), {
+                "stages": encoded(current_stages), "now": time.time(), "id": recording_id, "owner": owner,
+            })
+            if current_stages["audioRetention"] == "pending":
+                next_sequence = int(current_stages["audioRetentionCursor"])
+                self.jobs.enqueue(owner, recording_id, "lecture_audio_retention",
+                                  {"recording_id": recording_id, "after_sequence": next_sequence, "generation": generation},
+                                  f"lecture:audio-retention:{recording_id}:{generation}:{next_sequence}",
+                                  connection=conn, queue="batch")
+        return {"status": current_stages["audioRetention"], "deletedThrough": current_stages.get("audioRetentionCursor")}
+
+    def mark_audio_retention_failed(self, owner: str, recording_id: str, generation: int):
+        with self.store.transaction() as conn:
+            row = conn.execute(text("SELECT stage_json FROM lecture_recordings WHERE id=:id AND learner_id=:owner"), {"id": recording_id, "owner": owner}).mappings().first()
+            if not row:
+                return
+            stages = json.loads(row["stage_json"])
+            if stages.get("audioRetention") != "pending" or int(stages.get("audioRetentionGeneration", 0)) != generation:
+                return
+            stages["audioRetention"] = "failed"
+            stages["audioRetentionError"] = "Audio removal needs another attempt."
+            conn.execute(text("UPDATE lecture_recordings SET stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner"), {
+                "stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner,
+            })
+
+    def remove_audio(self, owner: str, recording_id: str):
+        row = self._row(owner, recording_id)
+        if row["status"] != "completed":
+            raise LectureError("recording_not_ready", "Finish processing before removing the saved audio.", 409)
+        preferences = self._preferences(row)
+        preferences.pop("keep_audio", None)
+        preferences.pop("capture_system_audio", None)
+        preferences["keepAudio"] = False
+        with self.store.transaction() as conn:
+            stages = json.loads(row["stage_json"])
+            if stages.get("audioRetention") == "failed":
+                stages["audioRetention"] = "pending"
+                stages["audioRetentionGeneration"] = int(stages.get("audioRetentionGeneration", 0)) + 1
+                stages.pop("audioRetentionError", None)
+            changed = conn.execute(text("UPDATE lecture_recordings SET preferences_json=:preferences,stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='completed'"), {
+                "preferences": encoded(preferences), "stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner,
+            })
+            if changed.rowcount != 1:
+                raise LectureError("recording_changed", "The recording changed. Reload before removing audio.", 409)
+        self._schedule_unretained_audio_removal(owner, recording_id)
+        return self.status(owner, recording_id)
+
     def status(self, owner: str, recording_id: str):
         row = self._row(owner, recording_id)
+        if row["status"] == "completed":
+            self._schedule_unretained_audio_removal(owner, recording_id, row)
+            row = self._row(owner, recording_id)
         with self.store.engine.connect() as conn:
             chunks = conn.execute(text("SELECT sequence_number,transcription_status,start_ms,end_ms FROM lecture_audio_chunks WHERE recording_id=:id ORDER BY sequence_number"), {"id": recording_id}).all()
             buddy=conn.execute(text('SELECT buddy_id FROM buddy_classes WHERE id=:id AND owner_id=:owner'),{'id':recording_id,'owner':owner}).scalar_one_or_none()
@@ -256,7 +426,7 @@ class LectureService:
             "captureInterrupted": bool(row["capture_interrupted"]),
             "durationMs": row["duration_ms"], "markersMs": json.loads(row["markers_json"]),
             "chunks": {"expected": expected, "serverConfirmed": len(chunks), "transcribed": sum(chunk[1] == "completed" for chunk in chunks), "failed": sum(chunk[1] == "failed" for chunk in chunks), "missing": missing},
-            "stages": json.loads(row["stage_json"]), "preferences": json.loads(row["preferences_json"]),
+            "stages": json.loads(row["stage_json"]), "preferences": self._preferences(row),
             "generationVersion": row["generation_version"], "pipelineVersion": row["pipeline_version"],
             "error": row["error"], "updatedAt": row["updated_at"],
         }
@@ -366,12 +536,15 @@ class LectureService:
         row = self._row(owner, recording_id)
         if row["status"] != "completed":
             raise LectureError("lecture_not_ready", "Finish lecture processing before changing note depth.", 409)
+        preference_values = preferences.model_dump(mode="json", by_alias=True)
+        if json.loads(row["stage_json"]).get("audioRetention") in {"pending", "removed", "failed"}:
+            preference_values["keepAudio"] = False
         version = row["generation_version"] + 1
         stages = json.loads(row["stage_json"])
         stages["noteGeneration"] = "queued"
         stages["verification"] = "pending"
         with self.store.transaction() as conn:
-            changed = conn.execute(text("UPDATE lecture_recordings SET status='processing',preferences_json=:prefs,stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='completed' AND generation_version=:version"), {"prefs": encoded(preferences.model_dump(mode="json")), "stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner, "version": row["generation_version"]})
+            changed = conn.execute(text("UPDATE lecture_recordings SET status='processing',preferences_json=:prefs,stage_json=:stages,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='completed' AND generation_version=:version"), {"prefs": encoded(preference_values), "stages": encoded(stages), "now": time.time(), "id": recording_id, "owner": owner, "version": row["generation_version"]})
             if changed.rowcount != 1:
                 raise LectureError("recording_changed", "Recording changed; reload and try again.", 409)
             from .execution import Outbox

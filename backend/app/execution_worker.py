@@ -13,7 +13,7 @@ from .workflow_store import WorkflowStore
 
 INTERACTIVE_KINDS = frozenset({"create", "journey", "note_synthesis", "note_draft", "next", "answer", "hint", "retry", "resume", "pause", "challenge", "flag"})
 REVIEW_KINDS = frozenset({"review_create", "review_answer", "concept_sync", "review_backfill"})
-LECTURE_KINDS = frozenset({"lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate"})
+LECTURE_KINDS = frozenset({"lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention"})
 
 
 class ExecutionWorker:
@@ -24,16 +24,25 @@ class ExecutionWorker:
         self.records = WorkflowStore(store)
 
     def tick(self, limit=20):
+        from .usage.ledger import Ledger
+        from .worker import monitor_usage_if_due
+        monitor_usage_if_due(self.store)
+        Ledger(self.store).reconcile()
+        if self.queue == 'interactive':
+            from .voice.maintenance import tick as voice_maintenance
+            voice_maintenance(self.store)
         def enqueue(conn, owner, message_id, payload):
             self.records.enqueue(owner, payload["target"], payload["kind"], payload["input"], message_id,
                                  connection=conn, input_revision=payload.get("inputRevision"), queue=payload.get("queue"))
         ExecutionOutbox(self.store).drain({"execution.enqueue": enqueue}, limit)
         if self.queue == "batch":
             from .lecture_pipeline import LectureWorker
-            return LectureWorker(self.store, self.provider_getter).drain(limit)
+            # Reserve a bounded transcription batch per poll so workers on
+            # other class/session queues can make progress between batches.
+            return LectureWorker(self.store, self.provider_getter).drain(min(limit, 4))
         from .learning_routes import run_job
         from .review_routes import run_review_job
-        ids = self.records.ready_ids(self.queue, INTERACTIVE_KINDS | REVIEW_KINDS, limit)
+        ids = self.records.ready_ids(self.queue, INTERACTIVE_KINDS | REVIEW_KINDS | {'voice_turn', 'voice_action', 'voice_teach'}, limit)
         for job_id in ids:
             from sqlalchemy import text
             with self.store.engine.connect() as conn:

@@ -14,7 +14,9 @@ def save_class(store,conn,owner,item,wid,result,manifest):
     # Keep legacy draft payloads readable for old clients; new UI uses deck IDs.
     records=WorkflowStore(store);exists=conn.execute(text("SELECT 1 FROM practice_records WHERE id=:id AND owner_id=:owner AND kind='flashcard_deck'"),{'id':identifier,'owner':owner}).first()
     legacy=records.read(owner,identifier,'flashcard_deck',conn) if exists else {'id':identifier,'classId':item['id'],'courseId':item['courseId'],'status':'draft','windows':{},'scheduled':False}
-    legacy['windows'][wid]=[{**c,'segmentIds':c['sourceIds']} for c in result['cards']];legacy['cards']=[c for key,cards in legacy['windows'].items() if key in item['activeWindows'] for c in cards]
+    legacy['windows'][wid]=[{**c,'segmentIds':c['sourceIds']} for c in result['cards']]
+    active=conn.execute(text("SELECT window_id FROM class_session_window_membership WHERE owner_id=:owner AND class_id=:class AND set_id=:set AND purpose='transcript'"),{'owner':owner,'class':item['id'],'set':item.get('activeWindowSetId')}).scalars().all() if item.get('activeWindowSetId') else []
+    legacy['cards']=[c for key,cards in legacy['windows'].items() if key in set(active) for c in cards]
     records.put(conn,owner,'flashcard_deck',legacy,parent=item['id'],expected=legacy['revision'] if exists else None)
     return identifier
 

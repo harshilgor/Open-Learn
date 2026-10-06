@@ -1,6 +1,6 @@
 """Local authorized workflow endpoints; jobs survive process and page restarts."""
 from .execution import schedule_local
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 import logging
 from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, RevisionCommand
 from .material_routes import material_owner
@@ -17,7 +17,16 @@ from .mode_transition_models import ModeClassificationRequest, ModeTransitionInt
 from .mode_transition_service import ModeTransitionService
 
 
+from .usage.context import usage_job
+
+@usage_job
 def run_job(store, provider, job_id):
+    from sqlalchemy import text
+    with store.engine.connect() as conn:
+        kind = conn.execute(text('SELECT kind FROM learning_jobs WHERE id=:id'), {'id': job_id}).scalar_one_or_none()
+    if kind in {'voice_turn', 'voice_action'}:
+        from .voice.worker import run_voice_job
+        return run_voice_job(store, provider, job_id)
     records = WorkflowStore(store)
     job = records.claim(job_id)
     if not job:
@@ -29,7 +38,10 @@ def run_job(store, provider, job_id):
     synthesis = StudyNoteService(store, provider)
     try:
         prepared = None
-        if kind == "journey":
+        if kind == 'voice_teach':
+            from .voice.teaching import prepare as prepare_voice_teaching
+            prepared = prepare_voice_teaching(store, provider, owner, target, payload)
+        elif kind == "journey":
             prepared = journey.prepare(owner, target, JourneyCommand.model_validate(payload))
         elif kind == "note_synthesis":
             prepared = synthesis.prepare(owner, target, ProposalCreate.model_validate(payload))
@@ -45,7 +57,10 @@ def run_job(store, provider, job_id):
         with store.transaction() as conn:
             records.validate_lease(conn, job)
             records.validate_input(conn, job)
-            if kind == "create":
+            if kind == 'voice_teach':
+                from .voice.teaching import commit as commit_voice_teaching
+                result = commit_voice_teaching(conn, owner, prepared)
+            elif kind == "create":
                 created = quiz.create(owner, QuizCreate.model_validate(payload), conn, uid("quiz"))
                 result = {"quizId": created["id"]}
             elif kind == "journey":
@@ -207,8 +222,10 @@ def build_learning_router(store_provider, provider_getter):
         with db.transaction() as conn:
             return service.discard(conn, owner, draft_id)
     @router.get("/quizzes")
-    def listing(session_id: str | None = None, lesson_note_id: str | None = None, owner=Depends(material_owner), db=Depends(store_provider)):
-        return {"quizzes": QuizService(db, None).history(owner, session_id=session_id, lesson_note_id=lesson_note_id)}
+    def listing(session_id: str | None = None, lesson_note_id: str | None = None,
+                limit: int = Query(25, ge=1, le=100), cursor: str | None = Query(None, max_length=512),
+                owner=Depends(material_owner), db=Depends(store_provider)):
+        return QuizService(db, None).history(owner, session_id=session_id, lesson_note_id=lesson_note_id, limit=limit, cursor=cursor)
 
     @router.post("/quizzes", status_code=202)
     def create(command: QuizCreate, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):

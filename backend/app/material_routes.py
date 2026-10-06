@@ -28,6 +28,18 @@ def build_material_router(store_provider, provider_getter=lambda: None):
     def service(db=Depends(store_provider)):
         return MaterialService(db)
 
+    @router.get('/material-versions/{vid}/index-pages')
+    def index_pages(vid:str,after:int=-1,owner=Depends(material_owner),svc=Depends(service)):
+        from .material_index import MaterialIndexService
+        return MaterialIndexService(svc.store).pages(owner,vid,after)
+
+    @router.post('/material-versions/{vid}/ocr-pages/{page}/retry')
+    def retry_ocr(vid:str,page:int,tasks:BackgroundTasks,owner=Depends(material_owner),svc=Depends(service)):
+        from .material_index import MaterialIndexService
+        result=MaterialIndexService(svc.store).retry_ocr(owner,vid,page)
+        schedule_local(tasks,svc.process_one)
+        return result
+
     @router.post("/sessions/{sid}/material-answer")
     def answer(sid: str, request: MaterialQuestion, owner=Depends(material_owner), svc=Depends(service)):
         from .context_service import retrieve, save_manifest, canonical_evidence
@@ -84,12 +96,34 @@ def build_material_router(store_provider, provider_getter=lambda: None):
     @router.put("/materials/{mid}/versions/{vid}/content")
     async def upload(mid: str, vid: str, request: Request, tasks: BackgroundTasks, owner=Depends(material_owner), svc=Depends(service)):
         version = svc.version(owner, vid)
-        content = bytearray()
-        async for part in request.stream():
-            content.extend(part)
-            if len(content) > version["byte_count"]:
-                problem("upload_too_large", "Upload exceeds declared size", 413)
-        result = svc.upload(owner, mid, vid, bytes(content))
+        from .material_models import MAX_DIRECT_MATERIAL_BYTES
+        if version["byte_count"] > MAX_DIRECT_MATERIAL_BYTES:
+            problem("resumable_upload_required", "Files above 50 MiB must use the resumable upload route.", 413)
+        from .material_upload_stream import request_upload_file
+        async with request_upload_file(request, version["byte_count"]) as (path, _size):
+            result = svc.upload_file(owner, mid, vid, path)
+        schedule_local(tasks, svc.process_one)
+        return result
+
+    @router.post("/materials/{mid}/versions/{vid}/uploads", status_code=201)
+    def start_upload(mid: str, vid: str, owner=Depends(material_owner), svc=Depends(service)):
+        session = svc.create_upload_session(owner, mid, vid)
+        return {**session, "sessionUrl": f"/v1/material-uploads/{session['uploadId']}"}
+
+    @router.get("/material-uploads/{upload_id}")
+    def upload_status(upload_id: str, owner=Depends(material_owner), svc=Depends(service)):
+        return svc.upload_session(owner, upload_id)
+
+    @router.put("/material-uploads/{upload_id}/parts/{part_index}")
+    async def upload_part(upload_id: str, part_index: int, request: Request, owner=Depends(material_owner), svc=Depends(service)):
+        expected = svc.expected_upload_part_bytes(owner, upload_id, part_index)
+        from .material_upload_stream import request_upload_file
+        async with request_upload_file(request, expected) as (path, _size):
+            return svc.upload_part(owner, upload_id, part_index, path)
+
+    @router.post("/material-uploads/{upload_id}/complete")
+    def complete_upload(upload_id: str, tasks: BackgroundTasks, owner=Depends(material_owner), svc=Depends(service)):
+        result = svc.complete_upload(owner, upload_id)
         schedule_local(tasks, svc.process_one)
         return result
 

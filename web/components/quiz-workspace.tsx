@@ -1,4 +1,5 @@
 "use client";
+import { reportVoiceFocus, VOICE_REFRESH } from "@/lib/voice/client";
 
 import {MakeFlashcards} from './flashcard-create';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -17,11 +18,13 @@ import { openWorkspaceQuiz, type WorkspaceQuizOpen } from '@/lib/workspace-event
 import { readSettingsPreferences, useSettingsPreferences } from '@/lib/settings-preferences';
 
 export type QuizHistoryItem = { id: string; title: string; sessionId: string; lessonNoteId?: string | null; origin: string; status: string; count: number; attempted: number; score: number | null; assisted: number; skipped: number; dontKnow: number; contested: number; createdAt?: string; updatedAt?: string };
+type QuizHistoryPage = { quizzes: QuizHistoryItem[]; nextCursor: string | null };
 
-async function loadQuizHistory(lessonNoteId?: string): Promise<QuizHistoryItem[]> {
-  const query = lessonNoteId ? `?lesson_note_id=${encodeURIComponent(lessonNoteId)}` : '';
-  const result = await request<{ quizzes: QuizHistoryItem[] }>(`/v1/quizzes${query}`);
-  return result.quizzes;
+async function loadQuizHistory(lessonNoteId?: string, cursor?: string): Promise<QuizHistoryPage> {
+  const params = new URLSearchParams({ limit: '25' });
+  if (lessonNoteId) params.set('lesson_note_id', lessonNoteId);
+  if (cursor) params.set('cursor', cursor);
+  return request<QuizHistoryPage>(`/v1/quizzes?${params.toString()}`);
 }
 
 export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = false, historyOnly = false, launch, quizId, onStartQuiz, onQuizChange, onReturn, onReviewInLearn, onCreateRepairNote }: { sessionId?: string | null; conceptId?: string; inline?: boolean; compact?: boolean; historyOnly?: boolean; launch?: WorkspaceQuizOpen | null; quizId?: string; onStartQuiz?: () => void; onQuizChange?: () => void; onReturn?: () => void; onReviewInLearn?: (suggestion: ModeTransitionSuggestion) => void; onCreateRepairNote?: (attemptId: string) => void }) {
@@ -30,7 +33,17 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   const startedLaunch = useRef<string | null>(null);
   const completedTask = useRef<string | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
+  useEffect(() => {
+    if (quiz) reportVoiceFocus({ quiz_id: quiz.id, presentation_id: quiz.current?.id || null, expected_revision: quiz.revision });
+  }, [quiz]);
+  useEffect(() => {
+    const refresh = () => { if (quiz?.id) void getQuiz(quiz.id).then(setQuiz).catch(() => undefined); };
+    window.addEventListener(VOICE_REFRESH, refresh);
+    return () => window.removeEventListener(VOICE_REFRESH, refresh);
+  }, [quiz?.id]);
   const [saved, setSaved] = useState<QuizHistoryItem[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const settings = useSettingsPreferences();
   const [countOverride, setCountOverride] = useState<number | null>(null);
   const [difficultyOverride, setDifficultyOverride] = useState<string | null>(null);
@@ -64,11 +77,11 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     let active = true;
     async function restore() {
       if (historyOnly) {
-        void loadQuizHistory().then(list => { if (active) setSaved(list); }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load quiz history.'); });
+        void loadQuizHistory().then(page => { if (active) { setSaved(page.quizzes); setHistoryCursor(page.nextCursor); } }).catch(cause => { if (active) setError(cause instanceof Error ? cause.message : 'Could not load quiz history.'); });
         return;
       }
       if (launch && !launch.quizId) {
-        if (!inline) void loadQuizHistory(launch.lessonNoteId).then(list => { if (active) setSaved(list); }).catch(() => undefined);
+        if (!inline) void loadQuizHistory(launch.lessonNoteId).then(page => { if (active) { setSaved(page.quizzes); setHistoryCursor(page.nextCursor); } }).catch(() => undefined);
         return;
       }
       try {
@@ -76,12 +89,22 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
         if (pending) { setBusy(true); const result = await waitForJob(pending, scope); if (result?.quizId) localStorage.setItem(`forma-${scope}`, result.quizId); }
         const id = historyOnly ? null : quizId || launch?.quizId || localStorage.getItem(`forma-${scope}`);
         if (id) { const found = await getQuiz(id); if (active) setQuiz(found); }
-        if (!inline) { const list = await loadQuizHistory(launch?.lessonNoteId); if (active) setSaved(list); }
+        if (!inline) { const page = await loadQuizHistory(launch?.lessonNoteId); if (active) { setSaved(page.quizzes); setHistoryCursor(page.nextCursor); } }
       } catch (cause) { if (active) setError(cause instanceof Error ? cause.message : 'Could not restore this quiz.'); }
       finally { if (active) setBusy(false); }
     }
     void restore(); return () => { active = false; };
   }, [scope, inline, quizId, launch, historyOnly]);
+  async function loadOlderQuizzes() {
+    if (!historyCursor || historyLoading) return;
+    setHistoryLoading(true);
+    try {
+      const page = await loadQuizHistory(launch?.lessonNoteId, historyCursor);
+      setSaved(current => [...current, ...page.quizzes]);
+      setHistoryCursor(page.nextCursor);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load older quizzes.'); }
+    finally { setHistoryLoading(false); }
+  }
   useEffect(() => {
     if (!launch || startedLaunch.current === launch.id) return;
     startedLaunch.current = launch.id;
@@ -188,6 +211,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
       {!inline && !compact && !historyOnly && <div className={styles.setup}><label>Questions<select value={count} onChange={e => setCountOverride(Number(e.target.value))}>{[1, 3, 5, 10].map(n => <option key={n}>{n}</option>)}</select></label><label>Difficulty<select value={difficulty} onChange={e => setDifficultyOverride(e.target.value)}>{['adaptive', 'foundational', 'standard', 'stretch'].map(d => <option key={d} value={d}>{d}</option>)}</select></label><label>Practice mode<select value={mode} onChange={e => setModeOverride(e.target.value as 'topic_drill' | 'timed_short_quiz')}><option value="topic_drill">Topic drill</option><option value="timed_short_quiz">Timed short quiz</option></select></label>{mode === 'timed_short_quiz' && <label>Time<select value={duration} onChange={e => setDurationOverride(Number(e.target.value))}>{[300,600,900,1200].map(seconds => <option key={seconds} value={seconds}>{seconds / 60} minutes</option>)}</select></label>}</div>}
       {historyOnly ? <Button onClick={onStartQuiz}>Start new quiz</Button> : !compact ? <Button disabled={busy} onClick={() => void start()}>Prepare quiz</Button> : null}
       {!inline && saved.map(q => <button className={styles.saved} key={q.id} disabled={busy} onClick={() => { setError(''); if (onReturn) { onReturn(); openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId || undefined, origin: q.lessonNoteId ? 'learn' : 'ask' }); return; } if (q.lessonNoteId && !launch?.lessonNoteId) { openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId, origin: 'learn' }); return; } void getQuiz(q.id).then(setQuiz).catch(e => setError(e.message)); }}>{q.title}<Badge variant="secondary">{q.status.replaceAll('_', ' ')} · {q.attempted}/{q.count}</Badge></button>)}
+      {!inline && historyCursor ? <Button variant="outline" disabled={historyLoading} onClick={() => void loadOlderQuizzes()}>{historyLoading ? 'Loading…' : 'Load older quizzes'}</Button> : null}
     </div> : <>
       <div className={styles.progress}><strong>{quiz.title}</strong><span>{quiz.summary.attempted} of {quiz.count} answered</span><div className={styles.progressTrack} aria-hidden="true"><motion.span initial={false} animate={{ width: `${(quiz.summary.attempted / quiz.count) * 100}%` }} transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: 'easeOut' }} /></div>{quiz.mode === 'timed_short_quiz' && <span aria-live="polite">Time left {secondsLeft} seconds</span>}</div>
       {quiz.contextSource ? <p className={styles.meta}>This quiz uses your study context, which has not been independently verified.</p> : null}
@@ -243,6 +267,8 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
 export function LessonPractice({ noteId, sessionId, noteTitle, launch }: { noteId: string; sessionId: string; noteTitle: string; launch?: WorkspaceQuizOpen | null }) {
   const sectionRef = useRef<HTMLElement | null>(null);
   const [history, setHistory] = useState<QuizHistoryItem[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [localLaunch, setLocalLaunch] = useState<WorkspaceQuizOpen | null>(null);
   const [dismissedLaunchId, setDismissedLaunchId] = useState<string | null>(null);
@@ -251,9 +277,19 @@ export function LessonPractice({ noteId, sessionId, noteTitle, launch }: { noteI
   const refreshHistory = useCallback(() => setVersion(value => value + 1), []);
   useEffect(() => {
     let current = true;
-    void loadQuizHistory(noteId).then(items => { if (current) setHistory(items); }).catch(cause => { if (current) setError(cause instanceof Error ? cause.message : 'Could not load lesson quizzes.'); });
+    void loadQuizHistory(noteId).then(page => { if (current) { setHistory(page.quizzes); setHistoryCursor(page.nextCursor); } }).catch(cause => { if (current) setError(cause instanceof Error ? cause.message : 'Could not load lesson quizzes.'); });
     return () => { current = false; };
   }, [noteId, version]);
+  async function loadOlderLessonQuizzes() {
+    if (!historyCursor || historyLoading) return;
+    setHistoryLoading(true);
+    try {
+      const page = await loadQuizHistory(noteId, historyCursor);
+      setHistory(items => [...items, ...page.quizzes]);
+      setHistoryCursor(page.nextCursor);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load older lesson quizzes.'); }
+    finally { setHistoryLoading(false); }
+  }
   useEffect(() => { if (launch?.lessonNoteId === noteId) sectionRef.current?.scrollIntoView({ block: 'start' }); }, [launch?.id, launch?.lessonNoteId, noteId]);
   const externalLaunch = launch?.lessonNoteId === noteId && launch.id !== dismissedLaunchId ? launch : null;
   const selectedLaunch = externalLaunch || (activeId ? null : localLaunch);
@@ -262,6 +298,7 @@ export function LessonPractice({ noteId, sessionId, noteTitle, launch }: { noteI
   return <section ref={sectionRef} className={styles.lessonPractice} aria-label="Lesson practice">
     <div className={styles.lessonPracticeHeader}><div><span className={styles.meta}>PRACTICE</span><h2>Quiz this lesson</h2><p>Your answers and feedback stay linked to this lesson.</p></div><Button type="button" size="sm" onClick={() => { setActiveId(null); setLocalLaunch({ id: crypto.randomUUID(), sessionId, lessonNoteId: noteId, requestedTopic: noteTitle, origin: 'learn' }); }}>New quiz</Button></div>
     {history.length ? <div className={styles.lessonHistory}>{history.map(item => <button type="button" key={item.id} onClick={() => { setLocalLaunch(null); setActiveId(item.id); }}><strong>{item.title}</strong><span>{item.status.replaceAll('_', ' ')} · {item.attempted}/{item.count} answered{item.score === null ? '' : ` · ${item.score}% practice score`}{item.assisted ? ` · ${item.assisted} assisted` : ''}{item.skipped ? ` · ${item.skipped} skipped` : ''}{item.contested ? ` · ${item.contested} disputed` : ''}</span></button>)}</div> : <p className={styles.meta}>No quizzes for this lesson yet.</p>}
+    {historyCursor ? <Button type="button" size="sm" variant="outline" disabled={historyLoading} onClick={() => void loadOlderLessonQuizzes()}>{historyLoading ? 'Loading…' : 'Load older lesson quizzes'}</Button> : null}
     {showPlayer ? <QuizWorkspace key={selectedLaunch?.id || selectedQuizId || noteId} sessionId={sessionId} compact launch={selectedLaunch} quizId={selectedQuizId || undefined} onQuizChange={refreshHistory} onReturn={() => { setActiveId(null); setLocalLaunch(null); if (launch) setDismissedLaunchId(launch.id); }} /> : null}
     {error ? <p role="alert" className={styles.meta}>{error}</p> : null}
   </section>;

@@ -32,8 +32,6 @@ class AgentWorker:
             from ..flashcards.maintenance import FlashcardMaintenance
             FlashcardMaintenance(self.store).tick()
             self._flashcard_maintenance_at=time.time()
-        from ..in_class_service import InClassService
-        InClassService(self.store,self.provider_getter()).tick(min(limit,4))
         from .delegation import Delegation
         from .connected_actions import ConnectedActions
         Delegation(self.store).tick(limit)
@@ -52,11 +50,28 @@ class AgentWorker:
         job=self.repo.jobs.claim(identifier,lease_seconds=120)
         if not job:return
         heartbeat=LeaseHeartbeat(self.store,job)
-        try: self.advance(job)
+        from ..usage.context import usage_scope
+        try:
+            with self.repo.transaction() as conn:run=self.repo.run(conn,job['owner_id'],job['target_id'])
+            with usage_scope(self.store,job['owner_id'],run.get('usageRootId') or job['target_id']):
+                self.advance(job)
         except Exception as exc:
             code=exc.detail.get('code') if isinstance(exc,HTTPException) and isinstance(exc.detail,dict) else None
             if code in {'lease_lost','revision_conflict'}:
                 self.retire_stale_outputs(job)
+                return
+            if code in {'usage_task_cap_exhausted','usage_task_window_changed','usage_window_exhausted'}:
+                try:
+                    with self.repo.transaction() as conn:
+                        run=self.repo.run(conn,job['owner_id'],job['target_id'])
+                        self.repo.jobs.validate_lease(conn,job)
+                        if run['status'] not in TERMINAL and run['desired_input_revision']==job['input_revision']:
+                            message=('This task reached its accepted usage maximum.' if code=='usage_task_cap_exhausted' else 'This task stopped at the allowance limit or refresh.')+' Your saved work is available; continue in a linked task with a new maximum.'
+                            run=self.repo.update(conn,run,status='completed_partial',error=code,summary=message)
+                            self.repo.event(conn,run,'task.completed_partial',reasonCode=code)
+                            self.repo.activity(conn,run,'final:'+run['id'],'task.completed_partial',text=message)
+                        self.repo.jobs.finish(conn,job,{'status':run['status'],'reasonCode':code})
+                except HTTPException:pass
                 return
             retry=bool(getattr(exc,'retryable',False))
             if retry and job['attempt_count']<job['max_attempts']:

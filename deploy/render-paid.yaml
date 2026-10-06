@@ -1,5 +1,24 @@
 # Paid proposal: review costs before applying. Supabase DATABASE_URL comes from the shared group.
 services:
+  - type: worker
+    name: openlearn-notifications
+    runtime: docker
+    plan: starter
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime notifications
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production
+  - type: cron
+    name: openlearn-reminders-backup
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    schedule: '* * * * *'
+    dockerCommand: python -m backend.app.reminder_cron
+    envVars:
+      - fromGroup: openlearn-production
   - type: web
     name: openlearn-api
     runtime: docker
@@ -29,6 +48,16 @@ services:
     dockerfilePath: deploy/Dockerfile
     dockerContext: .
     dockerCommand: python -m backend.app.hosted_runtime agent
+    autoDeployTrigger: off
+    envVars:
+      - fromGroup: openlearn-production
+  - type: worker
+    name: openlearn-class
+    runtime: docker
+    plan: starter
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime class
     autoDeployTrigger: off
     envVars:
       - fromGroup: openlearn-production

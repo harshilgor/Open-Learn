@@ -1,5 +1,6 @@
 import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
-import { authenticatedFetch } from './account-session';
+import { authenticatedFetch, sessionToken } from './account-session';
+import { uploadMaterialParts, type MaterialUploadSession } from './material-upload';
 /**
  * Browser client for the learning-kernel API.
  *
@@ -12,7 +13,7 @@ import { authenticatedFetch } from './account-session';
 
 export type Gear = 'Quick' | 'Guided' | 'Deep';
 export type ClassRecording = { id: string; noteId: string; title: string; mediaType: string; byteCount: number; durationMs: number; markersMs: number[]; status: 'queued' | 'processing' | 'completed' | 'failed'; error?: string | null; createdAt: number; updatedAt: number };
-export type LectureStatus = { id: string; noteId: string; title: string; courseId: string | null; recordingStatus: string; captureComplete: boolean; captureInterrupted: boolean; durationMs: number; markersMs: number[]; chunks: { expected: number | null; serverConfirmed: number; transcribed: number; failed: number; missing: number[] }; stages: { transcription: string; semanticAnalysis: string; noteGeneration: string; verification: string }; preferences: Record<string, unknown>; generationVersion: number; pipelineVersion: number; error: string | null; updatedAt: number };
+export type LectureStatus = { id: string; noteId: string; title: string; courseId: string | null; recordingStatus: string; captureComplete: boolean; captureInterrupted: boolean; durationMs: number; markersMs: number[]; chunks: { expected: number | null; serverConfirmed: number; transcribed: number; failed: number; missing: number[] }; stages: { transcription: string; semanticAnalysis: string; noteGeneration: string; verification: string; audioRetention?: string; audioRetentionError?: string }; preferences: Record<string, unknown>; generationVersion: number; pipelineVersion: number; error: string | null; updatedAt: number };
 export type LectureEvidence = { segmentId: string; startMs: number; endMs: number };
 export type LectureNoteBlock = { id: string; sectionId: string; entityId: string; ordinal: number; blockType: string; title: string; content: string; evidence: LectureEvidence[]; sourceKind: string; verificationStatus: string };
 export type LectureSection = { id: string; ordinal: number; title: string; sectionType: string; summary: string; startMs: number; endMs: number; evidence: LectureEvidence[]; confidence: number | null; analysisStatus: string };
@@ -388,6 +389,15 @@ function url(path: string): string {
   return `${apiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+export async function authenticatedResource(path:string):Promise<{url:string;httpHeaders:Record<string,string>}>{
+  const headers:Record<string,string>={};
+  const token=await sessionToken();
+  if(token)headers.Authorization=`Bearer ${token}`;
+  const desktop=desktopToken();
+  if(desktop)headers['X-Forma-Desktop-Token']=desktop;
+  return {url:url(path),httpHeaders:headers};
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Accept', 'application/json');
@@ -432,6 +442,45 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     throw new LearningApiError(response.status, error.code || 'request_failed', message, error.details);
   }
   return body as T;
+}
+
+export async function requestStream(path:string,init:RequestInit={}):Promise<Response>{
+  const headers=new Headers(init.headers);headers.set('Accept','text/event-stream');
+  const token=desktopToken();if(token)headers.set('X-Forma-Desktop-Token',token);
+  let response:Response;
+  try{response=await authenticatedFetch(url(path),{...init,headers});}
+  catch(cause){if(init.signal?.aborted)throw cause;throw new LearningApiError(503,'service_unavailable',serviceConnectionMessage());}
+  if(!response.ok){const raw=await response.text();let detail:{code?:string;message?:string}|null=null;try{const parsed=JSON.parse(raw) as {detail?:{code?:string;message?:string}};detail=parsed.detail??null;}catch{}throw new LearningApiError(response.status,detail?.code||'request_failed',detail?.message||`Learning API request failed (${response.status})`);}
+  return response;
+}
+
+export async function requestBlob(path: string, signal?: AbortSignal): Promise<Blob> {
+  const headers = new Headers({ Accept: 'application/pdf' });
+  const token = desktopToken();
+  if (token) headers.set('X-Forma-Desktop-Token', token);
+  let response: Response;
+  try {
+    response = await authenticatedFetch(url(path), { headers, signal });
+  } catch (cause) {
+    if (signal?.aborted) throw cause;
+    throw new LearningApiError(503, 'service_unavailable', serviceConnectionMessage());
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: { code?: string; message?: string } } | null;
+    throw new LearningApiError(response.status, body?.detail?.code || 'request_failed', body?.detail?.message || 'The source document could not be opened.');
+  }
+  return response.blob();
+}
+
+async function materialFileFingerprint(file: File): Promise<string> {
+  const hashes: string[] = [];
+  const step = 1024 * 1024;
+  for (let offset = 0; offset < file.size; offset += step) {
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await file.slice(offset, Math.min(file.size, offset + step)).arrayBuffer()));
+    hashes.push(Array.from(digest, byte => byte.toString(16).padStart(2, '0')).join(''));
+  }
+  const final = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hashes.join(':'))));
+  return Array.from(final, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -1150,12 +1199,20 @@ export const learningApi = {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings`, { method: 'POST', headers: { 'X-Dev-Learner-Id': learnerId }, body: JSON.stringify(input) });
   },
 
+  getLiveTranscriptionAvailability(learnerId = 'local'): Promise<{ available: boolean; provider: string | null }> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/live-transcription`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
   listLectureRecordings(learnerId = 'local'): Promise<{ recordings: LectureStatus[] }> {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings`, { headers: { 'X-Dev-Learner-Id': learnerId } });
   },
 
   getLectureRecording(id: string, learnerId = 'local'): Promise<LectureStatus> {
     return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}`, { headers: { 'X-Dev-Learner-Id': learnerId } });
+  },
+
+  deleteLectureAudio(id: string, learnerId = 'local'): Promise<LectureStatus> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/lecture-recordings/${encodeURIComponent(id)}/audio`, { method: 'DELETE', headers: { 'X-Dev-Learner-Id': learnerId } });
   },
 
   uploadLectureChunk(id: string, chunk: { sequenceNumber: number; startMs: number; endMs: number; mimeType: string; sha256: string; blob: Blob;captureDeviceId?:string }, learnerId = 'local'): Promise<{ recordingId: string; sequenceNumber: number; sha256: string; duplicate: boolean }> {
@@ -1270,8 +1327,8 @@ export const learningApi = {
       body: JSON.stringify(input),
     });
   },
-  async uploadCourseMaterial(courseId: string, file: File, role: 'reference' | 'textbook' | 'lecture_notes' = 'reference'): Promise<CourseMaterial> {
-    if (file.size > 50 * 1024 * 1024) throw new Error('File exceeds 50 MB limit.');
+  async uploadCourseMaterial(courseId: string | null, file: File, role: CourseMaterial['role'] = 'reference'): Promise<CourseMaterial> {
+    if (file.size > 500 * 1024 * 1024) throw new Error('File exceeds 500 MiB limit.');
     const lower = file.name.toLowerCase();
     const mediaType = lower.endsWith('.pdf')
       ? 'application/pdf'
@@ -1286,19 +1343,57 @@ export const learningApi = {
       : lower.endsWith('.gif')
       ? 'image/gif'
       : 'text/plain';
-
-    const item = await request<{ materialId: string; versionId: string; uploadPath: string }>(
-      '/v1/materials',
-      {
-        method: 'POST',
-        body: JSON.stringify({ title: file.name, mediaType, byteCount: file.size, role, courseId }),
+    if (file.size > 50 * 1024 * 1024 && mediaType.startsWith('image/')) throw new Error('Images must be 50 MB or smaller.');
+    const resumable = file.size > 50 * 1024 * 1024;
+    const localKey = resumable
+      ? `openlearn.course-material-upload:${encodeURIComponent(courseId || 'personal')}:${encodeURIComponent(role)}:${await materialFileFingerprint(file)}`
+      : null;
+    type UploadRecord = { materialId: string; uploadPath: string; resumableUploadPath: string; sessionUrl?: string };
+    let saved: UploadRecord | null = null;
+    if (localKey) {
+      try { saved = JSON.parse(localStorage.getItem(localKey) || 'null') as UploadRecord | null; } catch { saved = null; }
+    }
+    let item = saved;
+    if (item) {
+      try {
+        const material = await request<CourseMaterial>(`/v1/materials/${encodeURIComponent(item.materialId)}`);
+        if (material.status !== 'uploaded') {
+          try { if (localKey) localStorage.removeItem(localKey); } catch { /* Optional browser recovery hint. */ }
+          return material;
+        }
+      } catch {
+        item = null;
+        try { if (localKey) localStorage.removeItem(localKey); } catch { /* Optional browser recovery hint. */ }
       }
-    );
-    await authenticatedFetch(`${apiBaseUrl()}${item.uploadPath}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': mediaType },
-      body: file,
-    });
+    }
+    if (!item) {
+      item = await request<UploadRecord>(
+        '/v1/materials',
+        { method: 'POST', body: JSON.stringify({ title: file.name, mediaType, byteCount: file.size, role, ...(courseId ? { courseId } : {}) }) },
+      );
+      if (localKey) {
+        saved = item;
+        try { localStorage.setItem(localKey, JSON.stringify(saved)); } catch { /* Upload remains resumable in this tab. */ }
+      }
+    }
+    if (resumable) {
+      const session: MaterialUploadSession = item.sessionUrl
+        ? { ...await request<Omit<MaterialUploadSession, 'sessionUrl'>>(item.sessionUrl, {}), sessionUrl: item.sessionUrl }
+        : await request<MaterialUploadSession>(item.resumableUploadPath, { method: 'POST' });
+      item = { ...item, sessionUrl: session.sessionUrl };
+      try { if (localKey) localStorage.setItem(localKey, JSON.stringify(item)); } catch { /* Upload remains resumable in this tab. */ }
+      await uploadMaterialParts(file, session, {
+        putPart: (sessionUrl, index, part) => request(`${sessionUrl}/parts/${index}`, { method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: part }),
+        complete: sessionUrl => request(`${sessionUrl}/complete`, { method: 'POST' }),
+      });
+      try { if (localKey) localStorage.removeItem(localKey); } catch { /* Optional browser recovery hint. */ }
+    } else {
+      await authenticatedFetch(`${apiBaseUrl()}${item.uploadPath}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': mediaType },
+        body: file,
+      });
+    }
     return request<CourseMaterial>(`/v1/materials/${encodeURIComponent(item.materialId)}`);
   },
   detachCourseMaterial(courseId: string, materialId: string): Promise<void> {

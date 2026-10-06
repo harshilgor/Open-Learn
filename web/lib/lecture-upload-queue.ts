@@ -7,9 +7,37 @@ import { clearLocalAudio, getLocalLecture, listLocalChunks, listLocalLectures, s
 export const LECTURE_SYNC_EVENT = 'open-learn-lecture-sync';
 const active = new Map<string, Promise<void>>();
 const resyncRequested = new Set<string>();
+const accountChecks = new Map<string, Promise<{ ownerId: string }>>();
+const recordingStatusChecks = new Map<string, Promise<LectureStatus>>();
+const chunkUploads = new Map<string, Promise<{ recordingId: string; sequenceNumber: number; sha256: string; duplicate: boolean }>>();
 const retries = new Map<string, ReturnType<typeof setTimeout>>();
 const attempts = new Map<string, number>();
 let recoveryStarted = false;
+let recoveryRun: Promise<void> | null = null;
+
+function coalesce<T>(inFlight: Map<string, Promise<T>>, key: string, run: () => Promise<T>): Promise<T> {
+  const current = inFlight.get(key);
+  if (current) return current;
+  const next = run();
+  inFlight.set(key, next);
+  void next.finally(() => {
+    if (inFlight.get(key) === next) inFlight.delete(key);
+  }).catch(() => undefined);
+  return next;
+}
+
+function getAccountIdentity(): Promise<{ ownerId: string }> {
+  return coalesce(accountChecks, 'current-account', () => request<{ ownerId: string }>('/v1/account'));
+}
+
+function getRecordingStatus(id: string, ownerId: string): Promise<LectureStatus> {
+  return coalesce(recordingStatusChecks, `${ownerId}:${id}`, () => learningApi.getLectureRecording(id));
+}
+
+function uploadChunkOnce(id: string, ownerId: string, chunk: Parameters<typeof learningApi.uploadLectureChunk>[1]): ReturnType<typeof learningApi.uploadLectureChunk> {
+  const key = `${ownerId}:${id}:${chunk.sequenceNumber}`;
+  return coalesce(chunkUploads, key, () => learningApi.uploadLectureChunk(id, chunk));
+}
 
 function announce(id: string, status?: LectureStatus) {
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(LECTURE_SYNC_EVENT, { detail: { id, status } }));
@@ -24,10 +52,10 @@ function schedule(id: string) {
 }
 
 async function ensureServer(session: LocalLecture): Promise<LectureStatus> {
-  const identity=await request<{ownerId:string}>('/v1/account');
+  const identity=await getAccountIdentity();
   if(identity.ownerId!==(session.ownerId||'local'))throw new Error('Sign in as the recording owner to resume this upload.');
   if(session.classSetup){
-    if(session.classSessionId){const status=await learningApi.getLectureRecording(session.id);announce(session.id,status);return status;}
+    if(session.classSessionId){const status=await getRecordingStatus(session.id, session.ownerId||'local');announce(session.id,status);return status;}
     const result=await classApi.create({id:session.id,buddyId:session.buddyId,title:session.title,courseId:session.courseId,startedAtMs:session.startedAtMs,noteFolder:session.noteFolder,preferences:session.preferences},session.classSetup);
     if(!session.classSessionId){await updateLocalLecture(session.id,{classSessionId:result.session.id,noteId:result.session.noteId});openClassWorkspace(result.session.id,result.session.sessionId);}
     announce(session.id,result.recording);return result.recording;
@@ -51,7 +79,7 @@ async function sync(id: string): Promise<void> {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new Error('Waiting for a connection. Audio is saved locally.');
       await setLocalChunkState(id, chunk.sequenceNumber, 'uploading');
       try {
-        const acknowledged = await learningApi.uploadLectureChunk(id, {...chunk,captureDeviceId:session.classSetup?.deviceId});
+        const acknowledged = await uploadChunkOnce(id, session.ownerId||'local', {...chunk,captureDeviceId:session.classSetup?.deviceId});
         if (acknowledged.sequenceNumber !== chunk.sequenceNumber || acknowledged.sha256 !== chunk.sha256) throw new Error('The server acknowledgement did not match this audio slice.');
         await setLocalChunkState(id, chunk.sequenceNumber, 'server_confirmed');
         announce(id);
@@ -66,7 +94,7 @@ async function sync(id: string): Promise<void> {
         throw cause;
       }
     }
-    const status = await learningApi.getLectureRecording(id);
+    const status = await getRecordingStatus(id, session.ownerId||'local');
     if (status.recordingStatus === 'completed') {
       await updateLocalLecture(id, { phase: 'completed', lastError: null });
       await clearLocalAudio(id);
@@ -111,7 +139,12 @@ export async function recoverLocalLectures(activeCaptureId: string | null = null
 export function startLectureRecovery(): () => void {
   if (typeof window === 'undefined' || recoveryStarted) return () => undefined;
   recoveryStarted = true;
-  const resume = () => { void Promise.all([listLocalLectures(),request<{ownerId:string}>('/v1/account')]).then(([sessions,account]) => { for (const session of sessions) if ((session.ownerId||'local')===account.ownerId && session.phase !== 'completed' && session.nextSequenceNumber > 0) void syncLecture(session.id); }).catch(()=>undefined); };
+  const resume = () => {
+    if (recoveryRun) return;
+    recoveryRun = Promise.all([listLocalLectures(),getAccountIdentity()]).then(([sessions,account]) => {
+      for (const session of sessions) if ((session.ownerId||'local')===account.ownerId && session.phase !== 'completed' && session.nextSequenceNumber > 0) void syncLecture(session.id);
+    }).catch(()=>undefined).finally(() => { recoveryRun = null; });
+  };
   const visible = () => { if (document.visibilityState === 'visible') resume(); };
   window.addEventListener('online', resume);
   document.addEventListener('visibilitychange', visible);

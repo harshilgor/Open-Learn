@@ -270,3 +270,59 @@
   .forma-sidebar[data-slot=sidebar][data-mobile=true] { max-width:calc(100vw - 40px); }
   .topbar .buddy-header { padding:0; }
 }
+
+/* Keep the workspace controls on one compact, aligned row at every viewport. */
+.workspace .workspace-topbar {
+  display:flex;
+  flex-wrap:nowrap;
+  align-items:center;
+  height:52px;
+  min-height:52px;
+  padding:0 16px;
+  gap:10px;
+  overflow:hidden;
+}
+.workspace .workspace-topbar > .topbar-primary {
+  display:flex;
+  flex:1 1 auto;
+  flex-wrap:nowrap;
+  align-items:center;
+  min-width:0;
+  gap:8px;
+  overflow:hidden;
+  white-space:nowrap;
+}
+.workspace .workspace-topbar > .topbar-actions {
+  display:flex;
+  flex:0 0 auto;
+  flex-wrap:nowrap;
+  align-items:center;
+}
+.workspace .workspace-topbar .buddy-header {
+  display:flex;
+  flex:0 1 auto;
+  flex-wrap:nowrap;
+  align-items:center;
+  min-width:0;
+  max-width:none;
+  gap:6px;
+  padding:0;
+  white-space:nowrap;
+}
+.workspace .workspace-topbar .buddy-desktop-switch { flex-wrap:nowrap; min-width:0; gap:6px; }
+.workspace .workspace-topbar .buddy-desktop-switch select { max-width:112px; }
+.workspace .workspace-topbar .buddy-header > button { flex:0 0 36px; }
+.workspace .workspace-topbar .topbar-primary > strong,
+.workspace .workspace-topbar .topbar-primary > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width:1023px) {
+  .workspace .workspace-topbar { padding-inline:12px; }
+  .workspace .workspace-topbar .buddy-desktop-action { display:none; }
+  .workspace .workspace-topbar > .topbar-primary { gap:6px; }
+  .workspace .workspace-topbar .buddy-mobile-switch strong { max-width:78px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+}
+@media (max-width:767px) {
+  .workspace .workspace-topbar { padding-inline:10px; }
+  .workspace .workspace-topbar > .topbar-primary { gap:5px; }
+  .workspace .workspace-topbar .buddy-header { max-width:132px; }
+  .workspace .workspace-topbar .topbar-primary > strong { max-width:140px; }
+}

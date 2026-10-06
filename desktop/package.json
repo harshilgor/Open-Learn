@@ -1,9 +1,9 @@
 {
   "name": "forma-desktop",
-  "productName": "Forma",
+  "productName": "Open Learn",
   "version": "0.1.5-beta",
   "private": true,
-  "description": "Desktop shell for the Forma learning environment",
+  "description": "Desktop shell for the Open Learn learning environment",
   "author": "Forma Contributors",
   "main": "src/main.cjs",
   "scripts": {

@@ -14,6 +14,20 @@ test('interrupted upload retries same identity and checksum before finalize',asy
 test('saved checksum rejects mutated audio',async()=>{const record=make();record.created=true;record.segments[0].sha256='old';await assert.rejects(syncRecording(record,'alice',transport([]),async()=>{},async()=>new Uint8Array(100),async()=> 'new'),/changed/)});
 test('cross account recordings never dispatch',async()=>{const calls:string[]=[];await assert.rejects(syncRecording(make(),'bob',transport(calls),async()=>{},async()=>new Uint8Array(100),async()=> 'hash'));assert.deepEqual(calls,[])});
 test('unsealed capture cannot finalize',async()=>{const record=make();record.stopped=false;const calls:string[]=[];await syncRecording(record,'alice',transport(calls),async()=>{},async()=>new Uint8Array(100),async()=> 'hash');assert.equal(calls.some(c=>c.endsWith('/finalize')),false)});
+test('class recovery keeps setup identity, device fence and markers across lost upload responses',async()=>{
+  const record=make();record.classSetup={deviceId:'phone-stable',captureEpoch:1};record.markersMs=[12000];
+  const calls:string[]=[];const api=transport(calls);let failed=false;const bodies:Record<string,unknown>[]=[];const headers:Record<string,string>[]=[];
+  api.json=async<T>(path:string,init?:RequestInit)=>{calls.push(path);bodies.push(JSON.parse(init?.body as string));return {} as T;};
+  api.binary=async<T>(path:string,bytes:Uint8Array,supplied:Record<string,string>)=>{calls.push(path);headers.push(supplied);if(!failed){failed=true;throw Error('network lost');}return {} as T;};
+  let durable='';const save=async(value:Recording)=>{durable=JSON.stringify(value);};
+  await assert.rejects(syncRecording(record,'alice',api,save,async()=>new Uint8Array(100),async()=> 'a'.repeat(64)));
+  const restored=JSON.parse(durable) as Recording;
+  await syncRecording(restored,'alice',api,save,async()=>new Uint8Array(100),async()=> 'a'.repeat(64));
+  assert.equal(calls.filter(path=>path==='/v1/class-sessions').length,1);
+  assert.equal(bodies[0].deviceId,'phone-stable');assert.deepEqual(headers[0],headers[1]);
+  assert.equal(headers[1]['X-Capture-Device'],'phone-stable');assert.equal(headers[1]['X-Capture-Epoch'],'1');
+  assert.deepEqual(bodies.at(-1)?.markersMs,[12000]);assert.equal(restored.finalized,true);
+});
 test('missing segment fails finalization',async()=>{const record=make();record.segments[0].sequence=1;await assert.rejects(syncRecording(record,'alice',transport([]),async()=>{},async()=>new Uint8Array(100),async()=> 'hash'),/Missing/)});
 test('oversized segments fail before binary upload',async()=>{const calls:string[]=[];await assert.rejects(syncRecording(make(),'alice',transport(calls),async()=>{},async()=>new Uint8Array(4*1024*1024+1),async()=> 'hash'));assert.equal(calls.some(c=>c.includes('/chunks/')),false)});
 test('message retries retain stable key and body',async()=>{const queue:PendingMessage[]=[{key:'same-key',owner:'alice',body:{text:'Study'},state:'pending'}];let captured='';const api=transport([]);api.json=async<T>(path:string,init?:RequestInit)=>{captured=JSON.stringify(init);throw Error('offline')};await assert.rejects(flushMessages('alice',queue,api,async()=>{}));assert.equal(queue.length,1);assert.match(captured,/same-key/);api.json=async<T>()=>({} as T);await flushMessages('alice',queue,api,async()=>{});assert.equal(queue.length,0)});

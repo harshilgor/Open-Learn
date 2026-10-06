@@ -327,8 +327,34 @@ does not read as a solid white empty slab. */
 .composerDock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
 .connectionNotice { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 10px; font-size:12px; line-height:1.5; color:var(--muted-foreground); }
 .connectionNotice button { text-decoration:underline; min-height:32px; font-weight:600; }
+.usageNotice { margin:0 4px 6px; color:var(--muted-foreground); font-size:12px; line-height:1.4; }
 .composerTools { min-width:0; flex-wrap:wrap; }
 .composerBottom { align-items:flex-end; gap:8px; }
 .composer textarea { font-size:max(16px,var(--type-body,16px)); }
 @media (max-width:420px) { .composerDock { padding-left:10px; padding-right:10px; } .composerTools { gap:2px; } .composerTools button,.composerTools [role=combobox] { max-width:100%; } }
 @media (max-height:650px) { .chatShell .empty { justify-content:flex-start; padding-top:16px; } .greeting { font-size:18px; } }
+.mobileOptionsButton,.mobileModeBadge{display:none}
+.mobileOptionsSheet{border-radius:24px 24px 0 0;padding-bottom:max(20px,env(safe-area-inset-bottom))}
+.mobileOptionsContent{display:grid;gap:20px;padding:8px 24px 24px}
+.mobileOptionsContent>div{display:flex;align-items:center;justify-content:space-between;gap:16px;font-size:14px}
+.mobileOptionsContent>div>[role=combobox]{width:140px}
+.mobileOptionsContent>p{font-size:13px;color:var(--muted-foreground)}
+.connectionStrip:empty{display:none}
+@media(max-width:1023px){
+ .chatComposer{display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:end;column-gap:4px;padding:6px;border-radius:28px;box-shadow:none;min-height:56px}
+ .chatComposer textarea{grid-column:2;grid-row:10;min-height:28px;max-height:112px;padding:6px 0;line-height:22px;font-size:16px;align-self:center}
+ .chatComposer textarea::placeholder{font-size:16px}
+ .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:10;width:40px;height:44px;border-radius:50%;color:var(--foreground)}
+ .chatComposer .composerBottom{display:contents}
+ .chatComposer .composerTools{display:none}
+ .chatComposer .composerBottom>button{grid-column:3;grid-row:10;width:40px;height:44px;min-height:44px;border-radius:50%}
+ .chatComposer .attachments,.chatComposer .contextRow,.chatComposer .noteReceipt,.chatComposer .notePicker,.chatComposer .composerNote,.chatComposer .error{grid-column:1/-1;margin:6px 8px}
+ .mobileModeBadge{display:block;grid-column:1/-1;justify-self:start;margin:2px 8px 4px;padding:4px 8px;border-radius:12px;background:var(--accent);font-size:12px}
+ .connectionNotice{margin:0 4px 6px;flex-wrap:nowrap;justify-content:space-between;font-size:12px;gap:12px}
+ .connectionNotice span{min-width:0}
+ .connectionNotice button{flex-shrink:0;min-height:32px}
+ .usageNotice{margin:0 4px 6px;font-size:11px}
+ .composerDock{padding:8px 10px max(8px,env(safe-area-inset-bottom))}
+ .chatShell .empty{padding-bottom:24px;min-height:100%;justify-content:center}
+ .chatScroll{padding-inline:12px;scrollbar-gutter:auto}
+}

@@ -64,6 +64,8 @@ from .course_routes import build_course_router
 from .study_note_routes import build_study_note_router
 from .study_note_service import StudyNoteService
 from .usage_routes import build_usage_router
+from .usage_events_routes import build_usage_events_router
+from .usage.policy import Policy
 from .review_routes import build_review_router
 from .session_snapshot_routes import build_session_snapshot_router
 from .class_recording_routes import build_class_recording_router
@@ -96,10 +98,14 @@ app.add_middleware(
     allow_origins=[local_web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
     allow_credentials=True,
 )
 generator = GraphGenerator()
 lesson_provider = configured_lesson_provider()
+# Fail before accepting traffic if an allowance or any enabled paid-provider
+# route is missing its required policy and cost bounds.
+usage_policy = Policy.load()
 
 
 def apply_browser_provider(values: dict[str, str]) -> None:
@@ -131,6 +137,8 @@ app.include_router(build_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
+from .voice.routes import build_voice_router
+app.include_router(build_voice_router(get_store, lambda: lesson_provider))
 app.include_router(build_privacy_router(get_store))
 app.include_router(build_provider_key_router(apply_browser_provider, lambda: lesson_provider))
 app.include_router(build_workspace_note_router(get_store))
@@ -138,6 +146,7 @@ app.include_router(build_recommendation_router(get_store))
 app.include_router(build_backup_router(get_store))
 app.include_router(build_study_note_router(get_store, lambda: lesson_provider))
 app.include_router(build_usage_router(get_store))
+app.include_router(build_usage_events_router(get_store))
 app.include_router(build_review_router(get_store, lambda: lesson_provider))
 app.include_router(build_session_snapshot_router(get_store))
 app.include_router(build_class_recording_router(get_store, lambda: lesson_provider))
@@ -146,6 +155,8 @@ from .flashcards.routes import build_flashcard_router
 app.include_router(build_flashcard_router(get_store))
 from .in_class_routes import build_in_class_router
 app.include_router(build_in_class_router(get_store, lambda: lesson_provider))
+from .class_youtube_routes import build_class_youtube_router
+app.include_router(build_class_youtube_router(get_store))
 app.include_router(build_academic_router(get_store))
 app.include_router(build_canvas_router(get_store))
 from .browser_assistant.routes import build_assistant_router
@@ -156,6 +167,8 @@ from .mobile_routes import build_mobile_router
 app.include_router(build_mobile_router(get_store))
 from .buddy_routes import build_buddy_router
 app.include_router(build_buddy_router(get_store))
+from .reminder_routes import build_reminder_router
+app.include_router(build_reminder_router(get_store,lambda:lesson_provider))
 from .agent_execution.research_routes import build_research_router
 app.include_router(build_research_router(get_store))
 from .agent_execution.connected_routes import build_connected_router
@@ -179,6 +192,25 @@ def stop_agent_execution_worker():
     if hasattr(app.state, 'agent_stop'):
         app.state.agent_stop.set()
         app.state.agent_thread.join(timeout=5)
+
+
+@app.on_event('startup')
+def start_in_class_worker():
+    from .agent_execution.config import worker_mode
+    if worker_mode() != 'embedded': return
+    from threading import Event
+    from .in_class_worker import InClassWorker
+    app.state.class_stop = Event()
+    app.state.class_thread = Thread(target=InClassWorker(store, lambda: lesson_provider).run,
+                                    args=(app.state.class_stop,), daemon=True)
+    app.state.class_thread.start()
+
+
+@app.on_event('shutdown')
+def stop_in_class_worker():
+    if hasattr(app.state, 'class_stop'):
+        app.state.class_stop.set()
+        app.state.class_thread.join(timeout=5)
 
 
 @app.on_event('startup')

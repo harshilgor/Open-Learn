@@ -178,9 +178,33 @@ def test_api_owner_device_scope_and_event_replay(environment):
     assert [e['sequence'] for e in events]==[1]
     assert client.get('/v1/assistant/tasks/'+task['id']+'/events?after=1',headers=headers).json()['events']==[]
     assert client.patch('/v1/site-connections/'+site['id'],headers=headers,json={'expectedRevision':site['revision'],'preferred':True}).status_code==409
-    assert client.post('/v1/site-connections/'+site['id']+'/cloud-login',headers=headers,json={'expectedRevision':2}).status_code==503
+    assert client.post('/v1/site-connections/'+site['id']+'/cloud-login',headers=headers,json={'expectedRevision':2}).status_code==422
     assert client.delete('/v1/site-connections/'+site['id'],headers=headers).status_code==200
     assert client.get('/v1/browser-devices/commands',headers=device).status_code==401
+
+
+def test_cloud_browser_requires_verified_bounded_lifecycle(monkeypatch):
+    monkeypatch.setenv('OPENLEARN_USAGE_MODE','enforce')
+    monkeypatch.setenv('OPENLEARN_USAGE_PAID_ROUTES_ENABLED','true')
+    monkeypatch.setenv('OPENLEARN_PROVIDER_RATE_VERSION','browser-test-rates-v1')
+    monkeypatch.setenv('OPENLEARN_PLATFORM_DAILY_BUDGET_USD','10')
+    monkeypatch.setenv('OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD','100')
+    monkeypatch.setenv('OPENLEARN_CLOUD_BROWSER_ENABLED','true')
+    monkeypatch.setenv('OPENLEARN_BROWSERBASE_USD_PER_MINUTE','0.12')
+    monkeypatch.setenv('BROWSERBASE_API_KEY','test-key')
+    monkeypatch.setenv('BROWSERBASE_PROJECT_ID','test-project')
+    monkeypatch.setenv('OPENLEARN_BROWSER_EGRESS_VERIFIED','true')
+    monkeypatch.setenv('OPENLEARN_BROWSER_LIFECYCLE_VERIFIED','false')
+    monkeypatch.setenv('OPENLEARN_SANDBOX_ENABLED','false')
+    monkeypatch.setenv('AI_TUTOR_WEB_EVIDENCE','false')
+    monkeypatch.setenv('AI_TUTOR_MODE_CLASSIFICATION','rules')
+    monkeypatch.setenv('AI_TUTOR_EMBEDDING_MODEL','')
+    from backend.app.browser_assistant.executors.cloud import readiness, require_cloud_ready
+    from fastapi import HTTPException
+    assert readiness()['lifecycleVerified'] is False
+    with pytest.raises(HTTPException) as error:
+        require_cloud_ready()
+    assert error.value.detail['code']=='capability_unavailable'
 
 
 def test_export_and_erasure_remove_credentials_and_queue_provider_cleanup(environment):
