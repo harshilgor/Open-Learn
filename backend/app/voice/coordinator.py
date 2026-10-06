@@ -1,5 +1,6 @@
 """Bounded free-model planning and durable domain action dispatch."""
 import json
+import logging
 import os
 import time
 import httpx
@@ -35,6 +36,7 @@ class Planner:
         finally:
             finish_model(ticket, body.get('usage') if body else None)
         if response.is_error:
+            logging.getLogger('openlearn.voice').warning('Voice reasoning provider returned HTTP %s', response.status_code)
             fail('voice_model_unavailable', 'Buddy could not finish this turn. Your previous work is saved.', 503)
         body = response.json()
         message = body['choices'][0]['message']

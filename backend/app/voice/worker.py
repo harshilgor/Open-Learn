@@ -1,4 +1,6 @@
 """Execute voice turns with the shared queue lease and transaction fencing."""
+import logging
+import traceback
 from ..workflow_store import WorkflowStore
 from ..execution import LeaseHeartbeat, active_job
 from ..identity import Principal, principal_context
@@ -28,7 +30,12 @@ def run_voice_job(store, provider, job_id):
             result = coordinator.run(job['owner_id'], job['target_id'], job['payload']['turn_id'])
         with store.transaction() as conn:
             records.finish(conn, job, result)
-    except Exception:
+    except Exception as exc:
+        detail = getattr(exc, 'detail', None)
+        code = detail.get('code') if isinstance(detail, dict) else type(exc).__name__
+        frames = traceback.extract_tb(exc.__traceback__)[-4:]
+        location = ' > '.join(f'{frame.name}:{frame.lineno}' for frame in frames)
+        logging.getLogger('openlearn.voice').warning('Voice job %s failed: %s at %s', job_id, code, location)
         # Do not retry uncertain side effects automatically.
         try:
             with store.transaction() as conn:
