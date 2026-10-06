@@ -15,7 +15,8 @@ def prepare(store, provider, owner, chat_id, payload):
     async def collect():
         chunks = []
         size = 0
-        async for value in provider.stream_text(provider_input, max_tokens=2400):
+        options = {'prefer_fast_response': True} if getattr(provider, 'supports_fast_voice_stream', False) else {}
+        async for value in provider.stream_text(provider_input, max_tokens=2400, **options):
             size += len(value)
             if size > 20000:
                 fail('voice_output_limit', 'Please ask for a shorter explanation.', 422)

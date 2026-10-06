@@ -132,6 +132,7 @@ class OpenRouterLessonProvider:
 
     endpoint = "https://openrouter.ai/api/v1/chat/completions"
     supports_generation_context = True
+    supports_fast_voice_stream = True
     usage_thread_local = True
 
     @property
@@ -389,7 +390,7 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             raise ModelProviderError("The model must return a JSON object.")
         return parsed
 
-    async def stream_text(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, images: list[ImageInput] | None = None) -> AsyncIterator[str]:
+    async def stream_text(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, images: list[ImageInput] | None = None, prefer_fast_response: bool = False) -> AsyncIterator[str]:
         """Yield provider text only; OpenAI/OpenRouter SSE stays at this boundary.
 
         Exact usage from the terminal SSE event is captured on ``self.last_usage``
@@ -403,6 +404,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         payload = self.streaming_payload(prompt, max_tokens, images)
         images = images or []
         is_openai = bool(getattr(self, "is_openai", False))
+        if prefer_fast_response and not is_openai:
+            payload['reasoning'] = {'enabled': False}
         stream_usage: ProviderUsage | None = None
         self.last_usage = None
         from .usage.transport import begin_model, finish_model
@@ -416,7 +419,9 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
-                        if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        if not data:
                             continue
                         try:
                             event = json.loads(data)
@@ -440,7 +445,7 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                                 stream_usage = parsed
                         except Exception:
                             pass
-                        if event.get("type") in {"error", "response.failed", "response.incomplete"}:
+                        if event.get('error') or event.get("type") in {"error", "response.failed", "response.incomplete"}:
                             raise ModelProviderError("The model stream ended before the lesson was complete.")
                         delta = ""
                         if event.get("type") == "response.output_text.delta":
