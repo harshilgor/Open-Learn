@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from alembic import command
@@ -11,6 +12,14 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+@lru_cache(maxsize=4)
+def _postgres_engine(url: str) -> Engine:
+    # Domain Store objects share one bounded pool per process. Separate default
+    # pools per domain exhaust Supabase's session limit during deploy overlap.
+    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=0,
+                         pool_timeout=10, pool_recycle=300)
 
 
 def database_url() -> str:
@@ -33,6 +42,8 @@ def database_url() -> str:
 
 def create_database_engine(url: str | None = None) -> Engine:
     resolved = url or database_url()
+    if resolved.startswith('postgresql'):
+        return _postgres_engine(resolved)
     if resolved.startswith("sqlite") and ":memory:" not in resolved:
         database_file = make_url(resolved).database
         if database_file and not database_file.startswith("file:"):
