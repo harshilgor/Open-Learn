@@ -16,7 +16,7 @@ Use one coordinator with typed tools. Quiz generation and graphics planning may 
 
 ## 0. Current implementation status
 
-The application-side implementation is present in this release candidate: authenticated room/session APIs, bounded LiveKit grants, owner-scoped durable turns/actions/events/usage, transcript and replay, provider-backed speech, reconnection, the persistent responsive dock, typed actions over existing learning services, and a disabled-by-default feature switch. LiveKit Cloud, Deepgram, and ElevenLabs accounts and credentials are provisioned, and the LiveKit production worker is running. The real provider/browser acceptance run has not passed yet; the voice backend release, migrations, and end-to-end acceptance remain release gates. The activation checklist and secret locations are in [VOICE_TUTOR_PROVIDER_SETUP.md](VOICE_TUTOR_PROVIDER_SETUP.md). Treat sections 20–22 as release gates; local UI fixtures and mocks do not satisfy them.
+The application-side implementation is now in the repository: authenticated room/session APIs, bounded LiveKit grants, owner-scoped durable turns/actions/events/usage, transcript and replay, provider-backed speech, reconnection, the persistent responsive dock, typed actions over existing learning services, and a disabled-by-default feature switch. The work has not passed a real provider/browser acceptance run because LiveKit, Deepgram, and ElevenLabs accounts are not yet available. The activation checklist and exact secret locations are in [VOICE_TUTOR_PROVIDER_SETUP.md](VOICE_TUTOR_PROVIDER_SETUP.md). Treat sections 20–22 as release gates; local UI fixtures and mocks do not satisfy them.
 
 ## 2. Research and alternatives
 

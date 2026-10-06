@@ -71,7 +71,7 @@ def test_account_admission_rate_limits_new_roots_but_allows_existing_root(ledger
         l.reserve('a','rate-sixth','model',{'input_tokens':1,'output_tokens':1},root='task-5')
     assert error.value.status_code==429
     assert error.value.detail['code']=='usage_admission_rate_limited'
-    assert error.value.headers['Retry-After']=='60'
+    assert error.value.detail['resetsAt']==100060.0
 
 
 def test_replay_dispatch_and_uncertainty(ledger):

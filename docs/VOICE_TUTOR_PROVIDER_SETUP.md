@@ -44,7 +44,7 @@ ELEVENLABS_VOICE_ID=...
 ELEVENLABS_MODEL=eleven_flash_v2_5
 ```
 
-The provider credentials are saved in Render. At the time of this release candidate, the deployed service is still on commit `b6f9dcd`; this commit must be merged and deployed before the voice endpoints and migrations `0072_voice.py` through `0077_usage_estimate_references.py` are available. Keep `OPENLEARN_VOICE_ENABLED=false` until the backend migration and real provider/browser acceptance checks pass. Keep the existing Supabase `DATABASE_URL` and OpenRouter key in Render. The backend calls `openrouter/free` directly; the voice worker does not call OpenRouter itself. Keep the public API HTTPS and its execution worker available throughout a session. Render's sleeping free web service is not a dependable live voice API.
+The variables above are saved in Render. Render's **Save only** action does not deploy or restart the service. The currently deployed commit does not include the voice endpoints or migrations `0072_voice.py`–`0075_usage_operator_controls.py`; release and migrate the compatible backend code before testing, while keeping the flag `false`. Keep the existing Supabase `DATABASE_URL` and OpenRouter key in Render. The backend calls `openrouter/free` directly; the voice worker does not call OpenRouter itself. Keep the public API HTTPS and its execution worker available throughout a session. Render's sleeping free web service is not a dependable live voice API.
 
 ## Create and deploy the LiveKit agent
 
