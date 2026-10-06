@@ -1,5 +1,7 @@
 """Shared Journey compilation/commit with bounded streaming and visual planning."""
 import asyncio
+import logging
+import time
 from ..assessment_models import JourneyCommand
 from ..journey_service import JourneyService
 from ..visualization_planner import plan_visualizations
@@ -15,12 +17,19 @@ def prepare(store, provider, owner, chat_id, payload):
     async def collect():
         chunks = []
         size = 0
+        started = time.monotonic()
         options = {'prefer_fast_response': True} if getattr(provider, 'supports_fast_voice_stream', False) else {}
-        async for value in provider.stream_text(provider_input, max_tokens=2400, **options):
-            size += len(value)
-            if size > 20000:
-                fail('voice_output_limit', 'Please ask for a shorter explanation.', 422)
-            chunks.append(value)
+        try:
+            async for value in provider.stream_text(provider_input, max_tokens=2400, **options):
+                if not chunks:
+                    logging.getLogger(__name__).info('Voice lesson first text after %.1fs', time.monotonic()-started)
+                size += len(value)
+                if size > 20000:
+                    fail('voice_output_limit', 'Please ask for a shorter explanation.', 422)
+                chunks.append(value)
+        finally:
+            # Counts and timing only: never record prompts, transcripts or provider payloads.
+            logging.getLogger(__name__).info('Voice lesson stream ended after %.1fs; characters=%d', time.monotonic()-started, size)
         return ''.join(chunks)
 
     body = asyncio.run(asyncio.wait_for(collect(), timeout=90))
