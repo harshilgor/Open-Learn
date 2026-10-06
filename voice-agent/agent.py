@@ -95,7 +95,14 @@ async def entrypoint(ctx: JobContext):
     tts_attempt_id = uuid4().hex
 
     def spawn(coroutine):
-        task = asyncio.create_task(coroutine); tasks.add(task); task.add_done_callback(tasks.discard)
+        task = asyncio.create_task(coroutine); tasks.add(task)
+        def completed(finished):
+            tasks.discard(finished)
+            if not finished.cancelled() and finished.exception() is not None:
+                log.warning('Voice background task failed for session %s: %s (%s)', sid,
+                            finished.get_coro().__qualname__, type(finished.exception()).__name__)
+                stopped.set()
+        task.add_done_callback(completed)
         return task
 
     async def usage_slices():
@@ -103,10 +110,13 @@ async def entrypoint(ctx: JobContext):
         current = first_slice
         while not stopped.is_set():
             lead = float(current.get('renewalLeadSeconds', 5))
-            await asyncio.sleep(max(0, float(current['nextAt']) - lead - time.time()))
+            delay = max(0, float(current['nextAt']) - lead - time.time())
+            log.info('Voice renewal scheduled for session %s slice %s in %.2fs (lead %.2fs)', sid, index, delay, lead)
+            await asyncio.sleep(delay)
             if stopped.is_set():
                 return
             try:
+                log.info('Voice renewal requesting session %s slice %s', sid, index)
                 # The slice number is stable across transport retries. The API
                 # rejects out-of-order reservations. Renew inside the server's
                 # server-authorized overlap; all overlap is reserved and metered.
