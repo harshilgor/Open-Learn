@@ -24,6 +24,7 @@ from ..usage.operations import configured_rate
 from ..usage.policy import Policy
 
 VOICE_SLICE_SECONDS = 15
+VOICE_SLICE_RENEWAL_LEAD_SECONDS = 5
 VOICE_SLICE_MILLISECONDS = VOICE_SLICE_SECONDS * 1000
 
 
@@ -136,7 +137,8 @@ def _admit_voice_slice(store, owner, sid, index, *, active=True):
     records = VoiceStore(store)
     session = records.session(owner, sid, active=active)
     now = time.time()
-    max_slices = max(1, min(120, int((session['expires_at'] - session['created_at'] + VOICE_SLICE_SECONDS - 1) // VOICE_SLICE_SECONDS)))
+    renewal_seconds = VOICE_SLICE_SECONDS - VOICE_SLICE_RENEWAL_LEAD_SECONDS
+    max_slices = max(1, min(120, int((session['expires_at'] - session['created_at'] + renewal_seconds - 1) // renewal_seconds)))
     if index >= max_slices:
         raise UsageError('voice_slice_limit', 'This voice session has reached its time limit.', 429)
 
@@ -166,7 +168,10 @@ def _admit_voice_slice(store, owner, sid, index, *, active=True):
             raise UsageError('voice_slice_order', 'Voice intervals must be admitted in order.', 409)
         prior_started = max(row['created_at'] for row in previous_rows)
         ready_at = prior_started + VOICE_SLICE_SECONDS
-        if now < ready_at:
+        # Renew before the current deadline so a hosted database round trip
+        # cannot strand healthy media. Each overlapping interval is fully
+        # reserved and charged; this never grants unmetered provider time.
+        if now < ready_at - VOICE_SLICE_RENEWAL_LEAD_SECONDS:
             raise UsageError('voice_slice_early', 'The next voice interval is not ready yet.', 409, reset=ready_at)
         _settle_voice_slice(ledger, owner, sid, previous)
 

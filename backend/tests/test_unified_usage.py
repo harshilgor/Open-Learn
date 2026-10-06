@@ -33,6 +33,31 @@ def test_examples_and_billing_validation():
     with pytest.raises(ValueError):price('model',{'input_tokens':1,'cached_tokens':2})
 
 
+def test_test_account_allowance_bypass_retains_spending_caps_and_can_be_revoked(ledger, monkeypatch):
+    l, _ = ledger
+    owner = 'account_test'
+    monkeypatch.setenv('OPENLEARN_USAGE_TEST_EMAILS', 'tester@example.com')
+    with l.store.engine.begin() as conn:
+        conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at,verified_email) VALUES(:id,'test-subject','Tester','active',1,'tester@example.com')"), {'id': owner})
+    for index in range(7):
+        r = l.reserve(owner, 'exempt:' + str(index), 'tts', {'characters':2000}, root='test:' + str(index))
+        l.dispatch(owner, r['id'])
+        l.settle(owner, r['id'])
+    snapshot = l.allowance(owner)
+    assert snapshot['testUnlimited'] and snapshot['availability'] == 'available'
+    assert snapshot['usedMicrocredits'] > l.policy.grant
+    with pytest.raises(UsageError) as error:
+        l.reserve(owner, 'platform-overrun', 'voice', {'milliseconds':1000}, liability=l.policy.daily+1)
+    assert error.value.detail['code'] == 'usage_capacity_unavailable'
+    with pytest.raises(UsageError):
+        l.reserve('other', 'not-exempt', 'tts', {'characters':2000})
+    monkeypatch.delenv('OPENLEARN_USAGE_TEST_EMAILS')
+    assert not l.allowance(owner)['testUnlimited']
+    assert l.allowance(owner)['availability'] == 'unavailable'
+    with pytest.raises(UsageError):
+        l.reserve(owner, 'revoked', 'tts', {'characters':2000}, root='test:0')
+
+
 def test_reads_rejections_and_reset(ledger):
     l,clock=ledger
     assert l.allowance('a')['windowState']=='ready'

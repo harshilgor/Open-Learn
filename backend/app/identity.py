@@ -135,6 +135,8 @@ def authenticate(store, authorization: str | None, local_owner: str | None) -> P
         with store.engine.begin() as conn:
             conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at) VALUES(:id,:hash,:name,'active',:now) ON CONFLICT(subject_hash) DO NOTHING"), {'id': owner, 'hash': subject_hash, 'name': display, 'now': time.time()})
             assert_owner_active(conn, owner)
+            conn.execute(text('UPDATE identity_accounts SET verified_email=:email WHERE id=:owner'),
+                         {'owner': owner, 'email': str(claims.get('email') or '').strip().lower()[:320]})
         return Principal(owner, 'web', display_name=display, expires_at=float(claims['exp']),
                          email=str(claims.get('email') or '').strip().lower())
     if hosted() and not all(os.getenv('OPENLEARN_OIDC_' + name) for name in ('ISSUER', 'AUDIENCE', 'JWKS_URL')):

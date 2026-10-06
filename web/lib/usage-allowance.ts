@@ -2,7 +2,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { request } from './api';
 import { ACCOUNT_CHANGED, sessionToken } from './account-session';
-export type Allowance = {windowId:string|null;windowState:'ready'|'active';serverTime:number;resetsAt:number|null;grantedMicrocredits:number;usedMicrocredits:number;heldMicrocredits:number;availableMicrocredits:number;revision:number;availability:string;reasonCode:string|null};
+export type Allowance = {testUnlimited?:boolean;windowId:string|null;windowState:'ready'|'active';serverTime:number;resetsAt:number|null;grantedMicrocredits:number;usedMicrocredits:number;heldMicrocredits:number;availableMicrocredits:number;revision:number;availability:string;reasonCode:string|null};
 type UsageEventPage={events:Array<{id:string;revision:number;kind:string;createdAt:number}>;nextRevision:number;latestRevision:number;hasMore:boolean;resnapshotRequired:boolean};
 type State={snapshot:Allowance|null;error:string;fetchedAt:number};
 const empty:State={snapshot:null,error:'',fetchedAt:0};

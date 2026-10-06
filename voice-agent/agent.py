@@ -102,15 +102,18 @@ async def entrypoint(ctx: JobContext):
         index = 1
         current = first_slice
         while not stopped.is_set():
-            await asyncio.sleep(max(0, float(current['nextAt']) - time.time()))
+            await asyncio.sleep(max(0, float(current['nextAt']) - 5 - time.time()))
             if stopped.is_set():
                 return
             try:
                 # The slice number is stable across transport retries. The API
-                # rejects out-of-order and early reservations.
-                current = await backend.call('POST', '/slice', {'slice_index': index}, timeout=1.0)
+                # rejects out-of-order reservations. Renew inside the server's
+                # five-second overlap; all overlap is reserved and metered.
+                current = await backend.call('POST', '/slice', {'slice_index': index}, timeout=4.0)
                 index += 1
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError):
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+                status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__
+                log.warning('Voice interval renewal stopped session %s at slice %s: %s', sid, index, status)
                 # A denied interval is a hard stop: keep the agent from making
                 # more STT calls while the screen preserves the typed workflow.
                 # Slice admission is retried only by runtime restart with the
@@ -228,9 +231,9 @@ async def entrypoint(ctx: JobContext):
                         voice.interrupt(force=True)
                     except Exception:
                         pass
-                log.warning('Speech request failed for session %s', sid)
-            except Exception:
-                log.warning('Speech failed for session %s', sid)  # No learner text or credentials.
+                log.warning('Speech request failed for session %s: HTTP %s', sid, exc.response.status_code)
+            except Exception as exc:
+                log.warning('Speech failed for session %s: %s', sid, type(exc).__name__)  # No learner text or credentials.
             finally:
                 if authorization:
                     try:

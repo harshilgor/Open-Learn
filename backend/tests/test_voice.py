@@ -177,6 +177,25 @@ def test_voice_slices_are_reserved_once_and_replayed_with_same_deadline(env, mon
     assert all(json.loads(row['payload'])['providerRates']['providerRateVersion'] == 'voice-test-rates-v1' for row in rows)
 
 
+def test_voice_renewal_overlap_is_bounded_and_metered(env, monkeypatch):
+    from backend.app.voice.routes import _admit_voice_slice
+    store, _, sid = env
+    _enable_metered_voice(monkeypatch)
+    first = _admit_voice_slice(store, 'alice', sid, 0)
+    with pytest.raises(HTTPException) as early:
+        _admit_voice_slice(store, 'alice', sid, 1)
+    assert early.value.detail['code'] == 'voice_slice_early'
+    with store.engine.begin() as conn:
+        conn.execute(text('UPDATE usage_reservations SET created_at=created_at-11 WHERE root_id=:sid'), {'sid': sid})
+    second = _admit_voice_slice(store, 'alice', sid, 1)
+    replay = _admit_voice_slice(store, 'alice', sid, 1)
+    assert second['nextAt'] > first['nextAt']-11
+    assert replay['nextAt'] == second['nextAt']
+    with store.engine.connect() as conn:
+        rows = conn.execute(text('SELECT state FROM usage_reservations WHERE root_id=:sid'), {'sid': sid}).scalars().all()
+    assert sorted(rows) == ['dispatched', 'dispatched', 'settled', 'settled']
+
+
 def test_voice_slice_cannot_be_replayed_after_its_reserved_interval(env, monkeypatch):
     store, records, sid = env
     _enable_metered_voice(monkeypatch)

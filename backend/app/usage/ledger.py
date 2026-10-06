@@ -5,6 +5,7 @@ import uuid
 import base64
 import math
 import time
+import os
 from datetime import datetime, timezone
 from sqlalchemy import text
 from fastapi import HTTPException
@@ -40,6 +41,13 @@ class Ledger:
 
     def __init__(self, store, policy=None, clock=None):
         self.store, self.policy, self.clock = store, policy or Policy.load(), clock
+
+    def test_unlimited(self, conn, owner):
+        allowed = {value.strip().lower() for value in os.getenv('OPENLEARN_USAGE_TEST_EMAILS', '').split(',') if value.strip()}
+        if not allowed or not owner.startswith('account_'):
+            return False
+        email = conn.execute(text("SELECT verified_email FROM identity_accounts WHERE id=:owner AND status='active'"), {'owner': owner}).scalar_one_or_none()
+        return bool(email and email in allowed)
 
     def now(self, conn):
         if self.clock: return self.clock()
@@ -99,6 +107,8 @@ class Ledger:
                      {'owner':owner,'root':root,'maximum':maximum_micro,'period':period[0] if period else None,'policy':self.policy.version,'now':now})
 
     def _check_task_admission_rate(self,conn,owner,now):
+        if self.test_unlimited(conn, owner):
+            return
         recent=conn.execute(text('''SELECT created_at FROM usage_task_caps
             WHERE owner_id=:owner AND created_at>:cutoff ORDER BY created_at LIMIT :limit'''),
             {'owner':owner,'cutoff':now-60,'limit':self.USER_ADMISSIONS_PER_MINUTE}).scalars().all()
@@ -145,12 +155,15 @@ class Ledger:
             period=conn.execute(text('SELECT * FROM usage_periods WHERE owner_id=:owner AND expires_at>:now ORDER BY starts_at DESC LIMIT 1'),{'owner':owner,'now':now}).mappings().first()
             unresolved=conn.execute(text("SELECT count(*) FROM usage_reservations WHERE owner_id=:owner AND state='dispatched' AND deadline<:now"),{'owner':owner,'now':now}).scalar_one()
             p=self.policy
-            grant=period['grant_micro'] if period else p.grant
+            grant=(min(period['grant_micro'],p.grant) if period['policy_version'].endswith(':test') else period['grant_micro']) if period else p.grant
             used=period['used_micro'] if period else 0
             held=period['held_micro'] if period else 0
+            unlimited=self.test_unlimited(conn,owner)
+            if unlimited:
+                grant=max(grant,used+held+p.grant)
             available=max(0,grant-used-held)
             reason='usage_capacity_unavailable' if account and (account['blocked'] or account['status']!='active') else 'usage_reconciliation_pending' if unresolved else 'usage_window_exhausted' if not available else None
-            return dict(policyVersion=period['policy_version'] if period else p.version,rateVersion=p.rates,windowId=period['id'] if period else None,windowState='active' if period else 'ready',serverTime=now,startsAt=period['starts_at'] if period else None,resetsAt=period['expires_at'] if period else None,grantedMicrocredits=grant,usedMicrocredits=used,heldMicrocredits=held,availableMicrocredits=available,revision=account['revision'] if account else 0,availability='unavailable' if reason else 'available',reasonCode=reason)
+            return dict(testUnlimited=unlimited,policyVersion=period['policy_version'] if period else p.version,rateVersion=p.rates,windowId=period['id'] if period else None,windowState='active' if period else 'ready',serverTime=now,startsAt=period['starts_at'] if period else None,resetsAt=period['expires_at'] if period else None,grantedMicrocredits=grant,usedMicrocredits=used,heldMicrocredits=held,availableMicrocredits=available,revision=account['revision'] if account else 0,availability='unavailable' if reason else 'available',reasonCode=reason)
 
     def reserve(self,owner,key,component,quantities,liability=0,root=None,seconds=240,provider=None,model=None,provider_rates=None):
         p=self.policy
@@ -175,7 +188,7 @@ class Ledger:
             for platform,cap in ((month,p.monthly),(day,p.daily)):
                 conn.execute(text('INSERT INTO usage_platform_periods(id) VALUES(:id) ON CONFLICT(id) DO NOTHING'),{'id':platform})
                 row=self.lock(conn,'usage_platform_periods','id',platform)
-                budget=row['budget_nano'] if row['budget_nano'] is not None else cap
+                budget=min(row['budget_nano'], cap) if row['budget_nano'] is not None else cap
                 if row['budget_nano'] is None:
                     conn.execute(text('UPDATE usage_platform_periods SET budget_nano=:budget WHERE id=:id AND budget_nano IS NULL'),{'budget':budget,'id':platform})
                 if row['blocked'] or liability and row['used_nano']+row['held_nano']+liability>budget:
@@ -194,7 +207,8 @@ class Ledger:
                                    {'owner':owner,'root':task_root}).scalar_one()
             task_held=conn.execute(text("SELECT COALESCE(SUM(held_micro),0) FROM usage_reservations WHERE owner_id=:owner AND root_id=:root AND state IN ('reserved','dispatched')"),
                                    {'owner':owner,'root':task_root}).scalar_one()
-            if task_used+task_held+amount>task_cap:
+            unlimited=self.test_unlimited(conn,owner)
+            if not unlimited and task_used+task_held+amount>task_cap:
                 raise UsageError('usage_task_cap_exhausted','This task reached its accepted maximum. Its saved work is available; start a linked task to continue.',409)
             if p.provider_rate_version and provider_rates:
                 rate_provider=provider or component
@@ -207,14 +221,16 @@ class Ledger:
                 if pinned!=snapshot:
                     raise UsageError('usage_rate_version_conflict','Configured provider rates changed without a new rate version.',503)
             period=conn.execute(text('SELECT * FROM usage_periods WHERE owner_id=:owner AND expires_at>:now ORDER BY starts_at DESC LIMIT 1'),{'owner':owner,'now':now}).mappings().first()
-            if task_period and (not period or period['id']!=task_period):
+            if not unlimited and task_period and (not period or period['id']!=task_period):
                 raise UsageError('usage_task_window_changed','This task stopped at the allowance refresh. Start a linked task to continue; saved work is preserved.',409)
-            if amount>(period['grant_micro']-period['used_micro']-period['held_micro'] if period else p.grant):
+            if not unlimited and amount>((min(period['grant_micro'],p.grant) if period['policy_version'].endswith(':test') else period['grant_micro'])-period['used_micro']-period['held_micro'] if period else p.grant):
                 raise UsageError('usage_window_exhausted','Not enough allowance for this task. Your work is saved.',reset=period['expires_at'] if period else None)
             if not period:
                 pid=uuid.uuid4().hex
                 conn.execute(text('INSERT INTO usage_periods(id,owner_id,starts_at,expires_at,grant_micro,policy_version) VALUES(:id,:owner,:now,:end,:grant,:policy)'),{'id':pid,'owner':owner,'now':now,'end':now+p.seconds,'grant':p.grant,'policy':p.version})
                 period=self.lock(conn,'usage_periods','id',pid)
+            if unlimited and period['used_micro']+period['held_micro']+amount>period['grant_micro']:
+                conn.execute(text('UPDATE usage_periods SET grant_micro=:grant,policy_version=:policy WHERE id=:id'), {'grant':period['used_micro']+period['held_micro']+amount+p.grant,'policy':p.version+':test','id':period['id']})
             if not task_period:
                 conn.execute(text('UPDATE usage_task_caps SET period_id=:period WHERE owner_id=:owner AND root_id=:root AND period_id IS NULL'),
                              {'period':period['id'],'owner':owner,'root':task_root})
