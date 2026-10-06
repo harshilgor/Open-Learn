@@ -412,7 +412,10 @@ def test_tool_loop_respects_round_cap(web_env):
     assert bundle.retrieval_occurred is True
 
 
-def test_exa_adapter_egress_and_normalization():
+def test_exa_adapter_egress_and_normalization(monkeypatch):
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
+    monkeypatch.setenv("OPENLEARN_EXA_USD_PER_SEARCH", "0.001")
     def handler(request: httpx.Request):
         assert request.headers.get("x-api-key") == "secret-key"
         return httpx.Response(200, json={

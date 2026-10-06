@@ -71,6 +71,35 @@ def test_complete_flow_semantics_duplicate_and_correction(env):
     assert Artifacts(db).download('alice',book['id'])[1]==data
 
 
+def test_accepted_task_cap_is_stored_with_run_root(env):
+    db,svc,repo=env
+    response,run=start(env,client='bounded',acceptedUsageCapMicro=20_000_000)
+    with db.engine.connect() as conn:
+        cap=conn.execute(text('SELECT maximum_micro FROM usage_task_caps WHERE owner_id=:owner AND root_id=:root'),
+                         {'owner':'alice','root':run['usageRootId']}).scalar_one()
+    assert cap==20_000_000
+    from backend.app.usage.ledger import Ledger
+    with pytest.raises(HTTPException):
+        # Even before a provider call, changing an already accepted maximum is forbidden.
+        with db.transaction() as conn:
+            Ledger(db).accept_task_cap_in_transaction(conn,'alice',run['usageRootId'],30_000_000,1)
+
+
+def test_task_cap_exhaustion_keeps_results_and_supports_linked_followup(env):
+    from backend.app.usage.ledger import UsageError
+    db,svc,repo=env;_,run=start(env,client='cap-stop',acceptedUsageCapMicro=20_000_000)
+    worker=AgentWorker(db);worker.tick();run=repo.read('alice',run['id'])
+    answer(svc,repo,run,client='cap-answer')
+    worker.executor=lambda *_: (_ for _ in ()).throw(UsageError('usage_task_cap_exhausted','cap reached',409))
+    worker.tick();partial=repo.read('alice',run['id'])
+    assert partial['status']=='completed_partial'
+    assert partial['error']=='usage_task_cap_exhausted'
+    continued=svc.admit('alice',Message(clientMessageId='cap-followup',sessionId='session',text='Continue with a new maximum',targetTaskId=run['id'],expectedRevision=partial['revision'],acceptedUsageCapMicro=30_000_000),'cap-followup')
+    child=repo.read('alice',continued['references'][0]['id'])
+    assert child['parentTaskId']==run['id']
+    assert child['usageRootId']!=run['usageRootId']
+
+
 def test_cross_owner_stale_answer_and_pause(env):
     db,svc,repo=env;_,run=start(env);worker=AgentWorker(db);worker.tick();run=repo.read('alice',run['id'])
     with pytest.raises(HTTPException) as denied:repo.read('bob',run['id'])

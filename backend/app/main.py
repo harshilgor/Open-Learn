@@ -64,6 +64,8 @@ from .course_routes import build_course_router
 from .study_note_routes import build_study_note_router
 from .study_note_service import StudyNoteService
 from .usage_routes import build_usage_router
+from .usage_events_routes import build_usage_events_router
+from .usage.policy import Policy
 from .review_routes import build_review_router
 from .session_snapshot_routes import build_session_snapshot_router
 from .class_recording_routes import build_class_recording_router
@@ -101,6 +103,9 @@ app.add_middleware(
 )
 generator = GraphGenerator()
 lesson_provider = configured_lesson_provider()
+# Fail before accepting traffic if an allowance or any enabled paid-provider
+# route is missing its required policy and cost bounds.
+usage_policy = Policy.load()
 
 
 def apply_browser_provider(values: dict[str, str]) -> None:
@@ -132,6 +137,8 @@ app.include_router(build_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
+from .voice.routes import build_voice_router
+app.include_router(build_voice_router(get_store, lambda: lesson_provider))
 app.include_router(build_privacy_router(get_store))
 app.include_router(build_provider_key_router(apply_browser_provider, lambda: lesson_provider))
 app.include_router(build_workspace_note_router(get_store))
@@ -139,6 +146,7 @@ app.include_router(build_recommendation_router(get_store))
 app.include_router(build_backup_router(get_store))
 app.include_router(build_study_note_router(get_store, lambda: lesson_provider))
 app.include_router(build_usage_router(get_store))
+app.include_router(build_usage_events_router(get_store))
 app.include_router(build_review_router(get_store, lambda: lesson_provider))
 app.include_router(build_session_snapshot_router(get_store))
 app.include_router(build_class_recording_router(get_store, lambda: lesson_provider))

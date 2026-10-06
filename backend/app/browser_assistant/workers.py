@@ -76,7 +76,8 @@ class AssistantWorker:
         if not job: return
         heartbeat = LeaseHeartbeat(self.store, job)
         try:
-            with job_scope(job):
+            from ..usage.context import usage_scope
+            with job_scope(job), usage_scope(self.store,job['owner_id'],job['target_id']):
                 if job['kind'] == 'reminder_dispatch':
                     from .reminders import dispatch_push
                     dispatch_push(self.store, job)

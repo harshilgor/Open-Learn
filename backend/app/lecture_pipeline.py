@@ -18,6 +18,7 @@ from .lecture_provider import OpenAITranscriptionProvider, TranscriptionFailure,
 from .lecture_service import LectureError, LectureService, encoded, uid
 from .workflow_store import WorkflowStore
 from .execution import job_scope, LeaseHeartbeat
+from .usage.context import usage_scope
 
 log = logging.getLogger(__name__)
 _worker_lock = threading.Lock()
@@ -498,7 +499,7 @@ class LectureWorker:
         heartbeat = LeaseHeartbeat(self.store, job)
         succeeded = False
         try:
-            with job_scope(job):
+              with job_scope(job), usage_scope(self.store, owner, job["target_id"]):
                 if kind == "lecture_transcribe":
                     result = transcribe_chunk(self.store, owner, recording_id, payload["sequence"], self.transcriber, job)
                 elif kind == "lecture_segment":

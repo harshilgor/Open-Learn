@@ -1,4 +1,5 @@
 "use client";
+import { reportVoiceFocus, VOICE_REFRESH } from "@/lib/voice/client";
 
 import {MakeFlashcards} from './flashcard-create';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -32,6 +33,14 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   const startedLaunch = useRef<string | null>(null);
   const completedTask = useRef<string | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
+  useEffect(() => {
+    if (quiz) reportVoiceFocus({ quiz_id: quiz.id, presentation_id: quiz.current?.id || null, expected_revision: quiz.revision });
+  }, [quiz]);
+  useEffect(() => {
+    const refresh = () => { if (quiz?.id) void getQuiz(quiz.id).then(setQuiz).catch(() => undefined); };
+    window.addEventListener(VOICE_REFRESH, refresh);
+    return () => window.removeEventListener(VOICE_REFRESH, refresh);
+  }, [quiz?.id]);
   const [saved, setSaved] = useState<QuizHistoryItem[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);

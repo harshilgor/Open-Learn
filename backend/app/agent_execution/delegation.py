@@ -40,7 +40,7 @@ class Delegation:
             reserved=conn.execute(text('UPDATE agent_delegation_budgets SET children_remaining=children_remaining-1 WHERE id=:id AND children_remaining>0'),{'id':budget_id})
             if reserved.rowcount!=1:fail('delegation_budget_exhausted','This parent has reached its child limit.',429)
             spec={**run['researchSpec'],'query':body.assignment} if body.kind=='research' else None
-            child=self.coordinator.create(conn,owner,run['sessionId'],body.assignment,'delegation:'+identifier,run.get('csvText'),dict(run['constraints']),parent=parent,kind=body.kind,research_spec=spec,input_material=run.get('inputMaterial'))
+            child=self.coordinator.create(conn,owner,run['sessionId'],body.assignment,'delegation:'+identifier,run.get('csvText'),dict(run['constraints']),parent=parent,kind=body.kind,research_spec=spec,input_material=run.get('inputMaterial'),usage_root_id=run.get('usageRootId') or run['id'])
             payload={'assignment':body.assignment,'budgetId':budget_id,'callsRemaining':12,'tokensRemaining':25000,'sourcePolicy':spec.get('sourcePolicy') if spec else 'inherited_input','externalWrites':False,'verification':None}
             conn.execute(text("INSERT INTO agent_delegated_children(id,owner_id,created_at,parent_id,child_id,input_revision,status,request_hash,payload) VALUES(:id,:owner,:now,:parent,:child,:revision,'running',:hash,:payload)"),{'id':identifier,'owner':owner,'now':time.time(),'parent':parent,'child':child['id'],'revision':run['desired_input_revision'],'hash':request_hash,'payload':encoded(payload)})
             self.repo.activity(conn,run,'child:'+identifier,'child.created',childTaskId=child['id'],text='Started a bounded child task without connector-write grants.')

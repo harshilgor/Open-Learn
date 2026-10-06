@@ -303,6 +303,9 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             # This endpoint accepts text output but not response_format.
             payload.pop("response_format")
             payload["reasoning"] = {"enabled": False}
+        from .usage.transport import begin_model, finish_model
+        usage_ticket = begin_model(payload)
+        response_data = None
         try:
             response = httpx.post(self.base_url, headers=headers, json=payload,
                                   timeout=150 if request_timeout is None else request_timeout)
@@ -380,6 +383,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             detail = str(exc).strip()
             suffix = f": {detail[:160]}" if detail else ""
             raise ModelProviderError(f"{service} returned a response the app could not use ({type(exc).__name__}{suffix}). Try again or choose another model.") from exc
+        finally:
+            finish_model(usage_ticket, response_data.get('usage') if isinstance(response_data, dict) else None)
         if not isinstance(parsed, dict):
             raise ModelProviderError("The model must return a JSON object.")
         return parsed
@@ -400,6 +405,9 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         is_openai = bool(getattr(self, "is_openai", False))
         stream_usage: ProviderUsage | None = None
         self.last_usage = None
+        from .usage.transport import begin_model, finish_model
+        usage_ticket = begin_model(payload)
+        raw_usage = None
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=20.0)) as client:
                 async with client.stream("POST", self.base_url, headers=headers, json=payload) as response:
@@ -426,6 +434,7 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                                     nested = event.get("response")
                                     if isinstance(nested, dict) and isinstance(nested.get("usage"), dict):
                                         candidate = nested.get("usage")
+                            if candidate is not None: raw_usage = candidate
                             parsed = normalize_usage(candidate, is_openai=is_openai) if candidate is not None else None
                             if parsed is not None:
                                 stream_usage = parsed
@@ -459,6 +468,9 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             raise ModelProviderError(f"{service} could not complete the request ({status}). Try again shortly.") from exc
         except httpx.HTTPError as exc:
             raise ModelProviderError("PROVIDER_ERROR") from exc
+
+        finally:
+            finish_model(usage_ticket, raw_usage)
 
     def streaming_payload(self, prompt: str | GenerationContext, max_tokens: int, images: list[ImageInput] | None = None) -> dict:
         """Build a provider-native streaming request; kept separate for contract tests."""

@@ -59,6 +59,9 @@ def export_owner(store, owner):
                 'tables': {name: [{key: _json_value(value) for key, value in row.items()} for row in rows]
                            for name, rows in records.items() if rows and name not in PRIVATE_TABLES}}
     import base64
+    for row in exported['tables'].get('voice_sessions', []):
+        row['capability_hash'] = ''
+        row['status'] = 'ended'
     from .identity import digest
     import hashlib
     files = []

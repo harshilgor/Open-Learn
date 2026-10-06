@@ -12,6 +12,7 @@ class Message(Contract):
     client_message_id: str = Field(alias='clientMessageId', min_length=1, max_length=160)
     session_id: str = Field(alias='sessionId', min_length=1, max_length=160)
     text: str = Field(min_length=1, max_length=16000)
+    accepted_usage_cap_micro: int | None = Field(default=None, alias='acceptedUsageCapMicro', ge=1)
     capability: Literal['lab_analysis', 'research', 'sandbox_lab', 'flashcards'] | None = None
     flashcard_spec: FlashcardRequest | None = Field(default=None, alias='flashcardSpec')
     research_spec: dict | None = Field(default=None, alias='researchSpec')

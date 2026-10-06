@@ -32,7 +32,10 @@ class TranscriptionProvider(Protocol):
 
 
 class TranscriptionFailure(RuntimeError):
-    pass
+    def __init__(self, message: str, code: str = "transcription_failed", status_code: int = 502):
+        self.code = code
+        self.status_code = status_code
+        super().__init__(message)
 
 
 _AUDIO_FORMATS = {
@@ -40,6 +43,80 @@ _AUDIO_FORMATS = {
     "audio/mp3": "mp3", "audio/wav": "wav", "audio/x-wav": "wav",
     "audio/ogg": "ogg", "audio/aac": "aac", "audio/flac": "flac",
 }
+
+
+def _usage_failure(exc) -> TranscriptionFailure:
+    """Translate a usage admission/settlement failure without losing its code."""
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        message = str(detail.get("message") or "Usage could not be confirmed for transcription.")
+        code = str(detail.get("code") or "usage_accounting_unavailable")
+    else:
+        message, code = "Usage could not be confirmed for transcription.", "usage_accounting_unavailable"
+    return TranscriptionFailure(message, code=code, status_code=getattr(exc, "status_code", 503))
+
+
+def _reserve_transcription_usage(provider: str, model: str, duration_ms: int):
+    """Reserve the configured per-minute maximum before each paid STT attempt."""
+    from .usage.ledger import UsageError
+    from .usage.operations import begin_external, configured_rate
+
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, int) or duration_ms <= 0:
+        raise TranscriptionFailure("The audio duration is invalid.", code="invalid_audio_duration", status_code=422)
+    rate_name = {
+        "openai": "OPENLEARN_OPENAI_STT_USD_PER_MINUTE",
+        "openrouter": "OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE",
+    }[provider]
+    try:
+        # Rates are operator-confirmed USD/minute ceilings. Prorate by known
+        # media duration, rounding upward at nanodollar precision. Rounding
+        # every short chunk to a whole provider-minute would multiply the
+        # allowance charge for long recordings with many chunks.
+        rate_nano = configured_rate(rate_name)
+        liability = max(1, (rate_nano * duration_ms + 59_999) // 60_000)
+        ticket = begin_external(
+            "stt", {"milliseconds": duration_ms}, liability, seconds=240,
+            provider=provider, model=model,
+            provider_rates={"usd_nano_per_minute": rate_nano, "billing_unit": "minute"},
+        )
+    except UsageError as exc:
+        raise _usage_failure(exc) from exc
+    if ticket is None:
+        raise TranscriptionFailure(
+            "Sign in so usage can be checked before transcription.",
+            code="usage_accounting_unavailable",
+            status_code=503,
+        )
+    return ticket
+
+
+def _settle_transcription_usage(ticket) -> None:
+    """Retain the full estimate because these providers return no cost receipt."""
+    from .usage.ledger import UsageError
+    from .usage.operations import finish_external
+
+    try:
+        finish_external(ticket, source="estimated")
+    except UsageError as exc:
+        raise _usage_failure(exc) from exc
+    except Exception as exc:
+        raise TranscriptionFailure(
+            "Usage could not be recorded after transcription. The saved audio is safe; retry after the service recovers.",
+            code="usage_accounting_unavailable",
+            status_code=503,
+        ) from exc
+
+
+def _metered_transcription_post(provider: str, model: str, duration_ms: int, *args, **kwargs):
+    """Dispatch one request only after reserving; settle even on transport failure."""
+    ticket = _reserve_transcription_usage(provider, model, duration_ms)
+    try:
+        response = httpx.post(*args, **kwargs)
+    except BaseException:
+        _settle_transcription_usage(ticket)
+        raise
+    _settle_transcription_usage(ticket)
+    return response
 
 
 def _transcription_spans(result: dict, duration_ms: int) -> list[TranscribedSpan]:
@@ -78,7 +155,8 @@ class OpenAITranscriptionProvider:
         if previous_tail.strip():
             data["prompt"] = previous_tail[-300:]
         try:
-            response = httpx.post(
+            response = _metered_transcription_post(
+                "openai", self.model, duration_ms,
                 "https://api.openai.com/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self.key}"},
                 data=data,
@@ -87,6 +165,8 @@ class OpenAITranscriptionProvider:
             )
             response.raise_for_status()
             result = response.json()
+        except TranscriptionFailure:
+            raise
         except (httpx.HTTPError, ValueError) as exc:
             raise TranscriptionFailure("The transcription provider could not process this chunk. Retry it later.") from exc
         if not isinstance(result, dict):
@@ -113,11 +193,14 @@ class OpenRouterTranscriptionProvider:
                        if len(content) > 4 * 1024 * 1024 else
                        {"json": {"model": self.model, "input_audio": {
                            "data": base64.b64encode(content).decode("ascii"), "format": audio_format}}})
-            response = httpx.post("https://openrouter.ai/api/v1/audio/transcriptions",
+            response = _metered_transcription_post("openrouter", self.model, duration_ms,
+                "https://openrouter.ai/api/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self.key}"},
                 timeout=httpx.Timeout(75, connect=15), **request)
             response.raise_for_status()
             result = response.json()
+        except TranscriptionFailure:
+            raise
         except (httpx.HTTPError, ValueError) as exc:
             raise TranscriptionFailure("OpenRouter could not transcribe this audio slice. Check model access and credits, then retry.") from exc
         if not isinstance(result, dict) or not isinstance(result.get("text"), str):

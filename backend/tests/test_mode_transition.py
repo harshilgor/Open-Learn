@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from backend.app.storage import Store
 from backend.app.models import Concept, Edge, GraphVersion, TopicScope, utc_now
@@ -9,13 +10,22 @@ from backend.app.session_models import LearningSession
 from backend.app.mode_transition_service import ModeTransitionService
 from backend.app.mode_transition_models import ModeTransitionInteraction
 from backend.app.learning_routes import build_learning_router
+from backend.app.material_routes import material_owner
+from backend.app.usage.context import usage_scope
 import json
 import os
 import httpx
+from pathlib import Path
+from uuid import uuid4
 
 
 def _setup_test_db(tmp_path):
-    store = Store(tmp_path / "test_mode_transition.db")
+    if tmp_path is None:
+        test_path = Path(__file__).resolve().parents[1] / "data" / f"test_mode_transition_{uuid4().hex}.db"
+        store = Store(test_path)
+        store._usage_test_path = test_path
+    else:
+        store = Store(tmp_path / "test_mode_transition.db")
     scope = TopicScope(
         id="scope-ai",
         topic="Machine Learning",
@@ -53,25 +63,34 @@ def _setup_test_db(tmp_path):
     return store, session
 
 
+def _close_test_db(store):
+    test_path = getattr(store, "_usage_test_path", None)
+    store.close()
+    if test_path is not None:
+        test_path.unlink(missing_ok=True)
+        Path(str(test_path) + "-wal").unlink(missing_ok=True)
+        Path(str(test_path) + "-shm").unlink(missing_ok=True)
+
+
 def _add_quiz_attempts(store, session_id, attempts):
     quiz_id = "quiz-transition-fixture"
     ids = [item["id"] for item in attempts]
     quiz = {"id": quiz_id, "sessionId": session_id, "attempts": ids}
+    from backend.app.workflow_store import WorkflowStore
+    records = WorkflowStore(store)
     with store.transaction() as conn:
-        from sqlalchemy import text
-        existing = conn.execute(text("SELECT payload FROM practice_records WHERE id=:id AND owner_id='local'"), {"id": quiz_id}).first()
+        existing = records.read("local", quiz_id, "quiz", conn) if conn.execute(
+            text("SELECT 1 FROM practice_records WHERE id=:id AND owner_id='local'"), {"id": quiz_id}
+        ).first() else None
         if existing:
-            quiz.update(json.loads(existing[0]))
+            quiz.update({key: value for key, value in existing.items() if key not in {"id", "revision"}})
             quiz["attempts"] = list(dict.fromkeys([*quiz.get("attempts", []), *ids]))
-            conn.execute(text("UPDATE practice_records SET payload=:payload WHERE id=:id"), {"id": quiz_id, "payload": json.dumps(quiz)})
-        else:
-            conn.execute(text("INSERT INTO practice_records(id,owner_id,kind,parent_id,revision,payload) VALUES(:id,'local','quiz',:sid,1,:payload)"),
-                {"id": quiz_id, "sid": session_id, "payload": json.dumps(quiz)})
+        records.put(conn, "local", "quiz", quiz, session_id,
+                    expected=existing["revision"] if existing else None)
         for item in attempts:
             item = {"quizId": quiz_id, "conceptId": "attention", "assisted": False, "status": "evaluated",
-                    "outcome": "answer", "score": 0.0, "createdAt": f"2026-09-27T00:00:{len(item['id']):02d}+00:00", **item}
-            conn.execute(text("INSERT INTO practice_records(id,owner_id,kind,parent_id,revision,payload) VALUES(:id,'local','attempt',:parent,1,:payload)"),
-                {"id": item["id"], "parent": quiz_id, "payload": json.dumps(item)})
+                    "outcome": "answer", "score": 0.0, "createdAt": utc_now().isoformat(), **item}
+            records.put(conn, "local", "attempt", item, quiz_id)
 
 
 def test_explicit_learn_signals(tmp_path):
@@ -246,7 +265,7 @@ def test_quiz_to_learn_gap_evaluation(tmp_path):
     # A second missed, independent question should trigger review.
     _add_quiz_attempts(store, session.id, [
         {"id": "attempt-b", "presentationId": "presentation-b", "score": 0.0,
-         "createdAt": "2026-09-27T00:01:00+00:00"},
+         "createdAt": utc_now().isoformat()},
     ])
     sugg_2 = service.evaluate_quiz_gap(
         owner="local",
@@ -268,10 +287,11 @@ def test_transition_api_endpoints(tmp_path):
     _add_quiz_attempts(store, session.id, [
         {"id": "attempt-x", "presentationId": "presentation-x", "score": 0.0},
         {"id": "attempt-y", "presentationId": "presentation-y", "score": 0.0,
-         "createdAt": "2026-09-27T00:01:00+00:00"},
+         "createdAt": utc_now().isoformat()},
     ])
     app = FastAPI()
     app.include_router(build_learning_router(lambda: store, lambda: None))
+    app.dependency_overrides[material_owner] = lambda: "local"
     client = TestClient(app)
 
     classified = client.post(f"/v1/sessions/{session.id}/mode-classification", json={
@@ -370,10 +390,13 @@ def test_ambiguous_classification_uses_configured_provider_with_short_timeout(tm
             os.environ["AI_TUTOR_MODE_CLASSIFICATION"] = previous_mode
 
 
-def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch, tmp_path):
-    store, session = _setup_test_db(tmp_path)
+def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch):
+    store, session = _setup_test_db(None)
     monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENLEARN_JEV_USD_PER_REQUEST", "0.001")
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
     captured = {}
 
     def post(url, **kwargs):
@@ -386,9 +409,10 @@ def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch, tmp
         }})
 
     monkeypatch.setattr(httpx, "post", post)
-    result = ModeTransitionService(store).classify(
-        current_message="Help me prepare for my quiz.", recent_turns=[], current_mode="ask",
-        session_id=session.id, owner="local", concept_title="Attention Mechanism", concept_id="attention")
+    with usage_scope(store, "local", session.id):
+        result = ModeTransitionService(store).classify(
+            current_message="Help me prepare for my quiz.", recent_turns=[], current_mode="ask",
+            session_id=session.id, owner="local", concept_title="Attention Mechanism", concept_id="attention")
     assert captured["url"] == "https://openrouter.ai/api/alpha/decisions"
     assert captured["headers"]["Authorization"] == "Bearer test-openrouter-key"
     assert captured["json"]["model"] == "typesafe/jev-1.13"
@@ -396,7 +420,33 @@ def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch, tmp
     assert result.decision == "suggest"  # Jev suggestions remain subject to learner confirmation.
     assert result.target_mode == "quiz"
     assert result.classification_source == "model"
-    store.close()
+    with store.engine.connect() as conn:
+        event = conn.execute(text("SELECT component,cost_nano,source FROM usage_events WHERE owner_id='local'")).one()
+    assert event.component == "tool"
+    assert event.cost_nano > 0
+    assert event.source == "estimated"
+    _close_test_db(store)
+
+
+def test_jev_missing_usage_rate_falls_back_without_network(monkeypatch):
+    store, session = _setup_test_db(None)
+    monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
+    monkeypatch.delenv("OPENLEARN_JEV_USD_PER_REQUEST", raising=False)
+    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unmetered Jev request")))
+
+    with usage_scope(store, "local", session.id):
+        result = ModeTransitionService(store).classify(
+            current_message="Help me prepare for my quiz.", recent_turns=[], current_mode="ask",
+            session_id=session.id, owner="local", concept_title="Attention Mechanism", concept_id="attention")
+
+    assert result.decision == "stay"
+    assert result.target_mode is None
+    with store.engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM usage_events WHERE owner_id='local'")).scalar_one() == 0
+    _close_test_db(store)
 
 
 def test_jev_missing_key_and_uncertain_result_fall_back_safely(monkeypatch, tmp_path):
@@ -409,12 +459,16 @@ def test_jev_missing_key_and_uncertain_result_fall_back_safely(monkeypatch, tmp_
     assert missing.target_mode is None
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
+    monkeypatch.setenv("OPENLEARN_JEV_USD_PER_REQUEST", "0.001")
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: httpx.Response(200,
         request=httpx.Request("POST", url), json={"answers": {
             "quiz_now": {"noul": 0.51}, "quiz_discussed_or_deferred": {"noul": 0.3},
             "workflow": {"choice": "quiz", "confidence": 0.55},
         }}))
-    uncertain = service.classify("Help me prepare for my quiz.", [], "ask", session_id=session.id)
+    with usage_scope(store, "local", session.id):
+        uncertain = service.classify("Help me prepare for my quiz.", [], "ask", session_id=session.id)
     assert uncertain.decision == "stay"
     assert uncertain.target_mode is None
     store.close()
