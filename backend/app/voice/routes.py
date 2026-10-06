@@ -109,7 +109,16 @@ def _current_voice_slice(store, owner, sid):
         groups.setdefault(index, {})[suffix[1]] = row
     if not groups:
         return None
-    index = max(groups)
+    # Renewal reserves and dispatches two providers in separate transactions.
+    # A poll may see only the first new hold, or two undispatched holds. Keep
+    # enforcing the preceding fully admitted interval until the new pair is
+    # dispatched; never let an incomplete future hold authorize provider work.
+    admitted = [index for index, group in groups.items()
+                if set(group) == {'runtime', 'speech'} and
+                all(row['state'] in {'dispatched', 'settled'} for row in group.values())]
+    if not admitted:
+        return None
+    index = max(admitted)
     group = groups[index]
     if not group:
         return None

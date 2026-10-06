@@ -225,6 +225,28 @@ def test_voice_renewal_overlap_is_bounded_and_metered(env, monkeypatch):
     assert sorted(rows) == ['dispatched', 'dispatched', 'settled', 'settled']
 
 
+def test_poll_keeps_current_paid_interval_during_partial_renewal_and_still_expires(env, monkeypatch):
+    from backend.app.voice.routes import _admit_voice_slice, _current_voice_slice, _voice_slice_keys
+    from backend.app.usage.ledger import Ledger
+    store, _, sid = env
+    _enable_metered_voice(monkeypatch)
+    first = _admit_voice_slice(store, 'alice', sid, 0)
+    ledger = Ledger(store)
+    pending = ledger.reserve('alice', _voice_slice_keys(sid,1)[0], 'voice', {'milliseconds':15000}, root=sid)
+    with store.engine.begin() as conn:
+        conn.execute(text('UPDATE usage_reservations SET created_at=:started WHERE id=:id'), {'started':first['startedAt']+2,'id':pending['id']})
+    assert _current_voice_slice(store,'alice',sid)['index'] == 0
+    ledger.dispatch('alice',pending['id'])
+    assert _current_voice_slice(store,'alice',sid)['index'] == 0
+    import backend.app.voice.routes as routes
+    app=FastAPI();app.include_router(build_voice_router(lambda:store,lambda:None))
+    with TestClient(app) as client:
+        monkeypatch.setattr(routes.time,'time',lambda:first['startedAt']+10)
+        assert client.get(f'/internal/voice/{sid}/poll',headers={'Authorization':'Bearer test-capability'}).status_code == 200
+        monkeypatch.setattr(routes.time,'time',lambda:first['nextAt']+3)
+        assert client.get(f'/internal/voice/{sid}/poll',headers={'Authorization':'Bearer test-capability'}).status_code == 409
+
+
 def test_voice_slice_cannot_be_replayed_after_its_reserved_interval(env, monkeypatch):
     store, records, sid = env
     _enable_metered_voice(monkeypatch)
