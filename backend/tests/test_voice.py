@@ -67,6 +67,66 @@ def test_end_revokes_work_and_settles_usage(env):
     with store.engine.connect() as conn: assert conn.execute(text('SELECT settled_seconds FROM voice_usage')).scalar_one() is not None
 
 
+def test_janitor_retries_room_close_after_ending(env, monkeypatch):
+    from backend.app.voice.maintenance import tick
+    store, records, sid = env
+    with store.transaction() as conn:
+        conn.execute(text('UPDATE voice_sessions SET expires_at=0 WHERE id=:id'), {'id': sid})
+    attempts = []
+    settlements = []
+    async def close(room):
+        attempts.append(room)
+        if len(attempts) == 1:
+            raise RuntimeError('temporary provider failure')
+    monkeypatch.setattr('backend.app.voice.media.configured', lambda: True)
+    monkeypatch.setattr('backend.app.voice.media.close', close)
+    monkeypatch.setattr('backend.app.voice.routes._settle_voice_session', lambda ledger, owner, room: settlements.append(room))
+    assert tick(store, prune_events=False) == 1
+    assert records.session('alice', sid)['status'] == 'ended'
+    assert records.session('alice', sid)['room_closed_at'] is None
+    assert tick(store, prune_events=False) == 1
+    assert records.session('alice', sid)['room_closed_at'] is not None
+    assert tick(store, prune_events=False) == 0
+    assert attempts == [sid, sid] and settlements == [sid, sid]
+
+
+def test_janitor_closes_media_even_when_accounting_fails(env, monkeypatch):
+    from backend.app.voice.maintenance import tick
+    store, records, sid = env
+    records.end('alice', sid)
+    closed = []
+    async def close(room):
+        closed.append(room)
+    def unavailable(*args):
+        raise RuntimeError('accounting unavailable')
+    monkeypatch.setattr('backend.app.voice.media.configured', lambda: True)
+    monkeypatch.setattr('backend.app.voice.media.close', close)
+    monkeypatch.setattr('backend.app.voice.routes._settle_voice_session', unavailable)
+    assert tick(store, prune_events=False) == 1
+    assert closed == [sid]
+
+
+@pytest.mark.parametrize('code,accepted', [('not_found', True), ('bad_route', False)])
+def test_room_delete_only_accepts_known_absent_room(monkeypatch, code, accepted):
+    import asyncio
+    import httpx
+    from backend.app.voice import media
+    class Client:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, *args, **kwargs):
+            return httpx.Response(404, json={'code': code})
+    monkeypatch.setenv('LIVEKIT_URL', 'https://example.test')
+    monkeypatch.setattr(media, 'token', lambda *args, **kwargs: 'test-token')
+    monkeypatch.setattr(media.httpx, 'AsyncClient', Client)
+    if accepted:
+        assert asyncio.run(media.close('voice-test')) == {}
+    else:
+        with pytest.raises(HTTPException):
+            asyncio.run(media.close('voice-test'))
+
+
 def test_executed_action_not_replayed(env, monkeypatch):
     store, records, sid = env
     coordinator = Coordinator(store, None)

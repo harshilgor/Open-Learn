@@ -192,6 +192,11 @@ class Ledger:
                 if row['budget_nano'] is None:
                     conn.execute(text('UPDATE usage_platform_periods SET budget_nano=:budget WHERE id=:id AND budget_nano IS NULL'),{'budget':budget,'id':platform})
                 if row['blocked'] or liability and row['used_nano']+row['held_nano']+liability>budget:
+                    # Operator diagnostics only; no account identifiers or request content.
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        'Provider admission denied period=%s blocked=%s used_nano=%d held_nano=%d requested_nano=%d budget_nano=%d',
+                        platform, bool(row['blocked']), row['used_nano'], row['held_nano'], liability, budget)
                     raise UsageError('usage_capacity_unavailable','AI service capacity is temporarily unavailable.',503)
             account=self.account(conn,owner)
             if account['blocked'] or account['status']!='active': raise UsageError('usage_capacity_unavailable','AI work is paused while usage is reconciled.',503)

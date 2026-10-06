@@ -24,6 +24,12 @@ async def rpc(service, method, room, payload):
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(f'{origin}/twirp/livekit.{service}/{method}', headers={'Authorization': 'Bearer '+token(room, 'openlearn-api', admin=True)}, json=payload)
     if response.is_error:
+        if service == 'RoomService' and method == 'DeleteRoom' and response.status_code == 404:
+            try:
+                if response.json().get('code') == 'not_found':
+                    return {}
+            except ValueError:
+                pass
         fail('voice_media_unavailable', 'Voice could not connect. You can continue typing.', 503)
     return response.json()
 

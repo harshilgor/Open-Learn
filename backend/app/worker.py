@@ -16,6 +16,21 @@ LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "
 USAGE_RECONCILE_INTERVAL_SECONDS = 15
 _last_usage_reconcile = 0.0
 _last_usage_monitor = 0.0
+_last_voice_cleanup = 0.0
+
+
+def cleanup_voice_if_due(store):
+    global _last_voice_cleanup
+    now = time.monotonic()
+    if now - _last_voice_cleanup < 30:
+        return 0
+    _last_voice_cleanup = now
+    from .voice.maintenance import tick as cleanup_voice
+    try:
+        return cleanup_voice(store, prune_events=False)
+    except Exception as exc:
+        log.warning('Voice cleanup iteration failed (%s)', type(exc).__name__)
+        return 0
 
 
 def monitor_usage_if_due(store, now=None):
@@ -118,6 +133,7 @@ def tick(store, provider_getter):
     from .lecture_pipeline import LectureWorker
     from .material_service import MaterialService
     from .identity_data import cleanup_objects
+    cleanup_voice_if_due(store)
     try:
         reconciled_usage = reconcile_usage_if_due(store)
     except Exception as exc:
