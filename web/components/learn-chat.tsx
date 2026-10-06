@@ -1,4 +1,7 @@
 "use client";
+import { useVoice } from "./voice/voice-provider";
+import { VoiceHistory } from "./voice/voice-history";
+import { reportVoiceFocus, VOICE_REFRESH, voiceApi } from "@/lib/voice/client";
 
 import {routeFlashcardRequest} from '@/lib/flashcards-client';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -115,6 +118,8 @@ export function LearnChat({
   onMissingSession?:()=>void;
 }) {
   const reduceMotion = useAppReducedMotion();
+  const voice = useVoice();
+  const [voiceRefresh, setVoiceRefresh] = useState(0);
   const buddies=useBuddies();
   const [conversation,setConversation]=useState(()=>initialSessionId?buddies.snapshot?.modes[initialSessionId]!=='ask':true);
   const restoredPresentation = useRef(initialSessionId ? buddies.snapshot?.modes[initialSessionId] : undefined);
@@ -413,6 +418,21 @@ export function LearnChat({
     }
   }, [turns.length, streaming, scrollToBottom]);
 
+  useEffect(() => {
+    const refresh = (event: Event) => { if ((event as CustomEvent<string>).detail === sessionId) setVoiceRefresh(value => value + 1); };
+    window.addEventListener(VOICE_REFRESH, refresh);
+    return () => window.removeEventListener(VOICE_REFRESH, refresh);
+  }, [sessionId]);
+  useEffect(() => { reportVoiceFocus({ lesson_id: lesson?.id || null }); }, [lesson?.id]);
+  async function startVoice() {
+    try {
+      const capabilities = await voiceApi.capabilities();
+      if (!capabilities.enabled) { await voice?.start(sessionId || ''); return; }
+      const current = sessionId ? { id: sessionId } : await learningApi.createSession({ topic: 'Study conversation', goal: 'Study with Buddy', gear, courseId: courseId ?? undefined, buddyId: buddies.active?.id });
+      if (!sessionId) { setSessionId(current.id); onSessionCreated?.(current.id); }
+      await voice?.start(current.id);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not start voice.'); }
+  }
   function applyJourney(next: Journey) { setJourney(next); setTurns(next.turns); setChatMode(next.mode); setGear(next.gear); }
   useEffect(() => {
     let active = true;
@@ -506,7 +526,7 @@ export function LearnChat({
       }
     }
     void restore(); return () => { active = false; };
-  }, [initialSessionId, recallFiled]);
+  }, [initialSessionId, recallFiled, voiceRefresh]);
 
   useEffect(() => {
     const receiveExcerpt = (event: Event) => {
@@ -974,6 +994,7 @@ export function LearnChat({
     if (sessionId) void buddyApi.mode(sessionId, conversational ? 'conversation' : mode).then(()=>buddies.refresh()).catch(()=>setError('Mode changed for this visit, but could not be saved. Please try again.'));
   }
   return <div className={styles.chatShell}>
+    <VoiceHistory chatId={sessionId} />
     <div ref={scrollArea} className={styles.chatScroll}>
     <div className={`${styles.page} ${turns.length ? styles.reading : styles.empty}`}>
     {courseName ? (
@@ -1071,6 +1092,6 @@ export function LearnChat({
         onDismiss={handleDismissTransition}
       /> : null}
       {buddies.active?.archived&&!sessionId?<p role="status">This Buddy is archived. Choose an active Buddy to start a new conversation.</p>:null}
-      <ChatComposer onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
+      <ChatComposer onVoice={() => void startVoice()} onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={streaming ? () => void activeGeneration.current?.stop() : undefined} busy={busy} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
   </div>;
 }

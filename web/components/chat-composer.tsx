@@ -1,4 +1,6 @@
 "use client";
+import { useVoice } from './voice/voice-provider';
+import { AudioLines } from 'lucide-react';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronDown, CircleHelp, FileText, GraduationCap, MessageCircle, MessageCircleQuestion, Plus, Square, X, Upload, type LucideIcon } from 'lucide-react';
@@ -11,6 +13,7 @@ import styles from './learn-chat.module.css';
 import { learningApi, type Gear, type WorkspaceNoteSummary } from '@/lib/api';
 import type { ChatMode } from '@/lib/learning-workflows';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
+import { refreshAllowance, usagePercent, useAllowance } from '@/lib/usage-allowance';
 
 export type ChatModeOption = {
   value: ChatMode; label: string; description: string; icon: LucideIcon;
@@ -91,6 +94,23 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
   onVoice?: () => void;
   variant?: 'main' | 'compact'; contextConcept?: { id: string; title: string } | null; onRemoveContext?: () => void;
 }) {
+  const voice = useVoice();
+  const { snapshot: allowance, error: allowanceError } = useAllowance(busy || Boolean(voice?.active));
+  const allowancePercent = allowance ? usagePercent(allowance) : null;
+  const allowanceBlocked = !allowance || Boolean(allowanceError || allowance.availability !== 'available' || allowance.availableMicrocredits <= 0);
+  let usageNotice = '';
+  if (!allowance || !allowancePercent) {
+    if (allowanceError) usageNotice = 'AI work is paused while usage is checked. Your draft stays here.';
+  } else if (allowance.reasonCode === 'usage_window_exhausted' || allowance.availableMicrocredits <= 0) {
+    const reset = allowance.resetsAt ? new Date(allowance.resetsAt * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+    usageNotice = allowance.heldMicrocredits > 0 ? 'Remaining allowance is reserved for ongoing work.' : reset ? `Your allowance refreshes at ${reset}. Your draft stays here.` : 'Your AI allowance is used for this window.';
+  } else if (allowance.availability !== 'available') {
+    usageNotice = 'AI work is temporarily unavailable while usage is checked. Your draft stays here.';
+  } else if (allowancePercent.used >= 95) {
+    usageNotice = 'You are close to your AI allowance limit.';
+  } else if (allowancePercent.used >= 80) {
+    usageNotice = 'Most of your AI allowance has been used.';
+  }
   const reduceMotion = useAppReducedMotion();
   const input = useRef<HTMLInputElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -135,9 +155,9 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     window.addEventListener('resize', resizeTextarea);
     return () => window.removeEventListener('resize', resizeTextarea);
   }, [resizeTextarea]);
-
-  return <><div className={styles.connectionStrip}>{unavailable ? <p className={styles.connectionNotice} role="status"><span>{unavailable}</span>{onRetry ? <button type="button" aria-label="Retry connection" onClick={onRetry}>Retry</button> : null}</p> : null}</div><form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : ''} ${dragging ? styles.dragging : ''}`}
-    onSubmit={event => { event.preventDefault(); if (!busy && !unavailable) onSubmit(); }}
+  useEffect(() => { if (!busy) void refreshAllowance(); }, [busy]);
+  return <><div className={styles.connectionStrip}>{unavailable ? <p className={styles.connectionNotice} role="status"><span>{unavailable}</span>{onRetry ? <button type="button" aria-label="Retry connection" onClick={onRetry}>Retry</button> : null}</p> : null}{usageNotice ? <p className={styles.usageNotice} role="status">{usageNotice}</p> : null}</div><form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : ''} ${dragging ? styles.dragging : ''}`}
+    onSubmit={event => { event.preventDefault(); if (!busy && !unavailable && !allowanceBlocked) onSubmit(); }}
     onDragEnter={event => { if (!busy && event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDragging(true); } }}
     onDragOver={event => { if (event.dataTransfer.types.some(type => ['Files', 'text/uri-list'].includes(type))) { event.preventDefault(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; } }}
     onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
@@ -159,10 +179,10 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
       }
       rows={1} onChange={event => onChange(event.target.value)}
       onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); add(Array.from(event.clipboardData.files)); } }}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy && !unavailable) { event.preventDefault(); onSubmit(); } }} />
+      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy && !unavailable && !allowanceBlocked) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />
-    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><div className="flex items-center gap-2">{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || Boolean(unavailable) || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div></div>
+    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><div className="flex items-center gap-2">{onVoice && voice ? <Button type="button" size="icon" variant="ghost" disabled={busy || voice.active || Boolean(unavailable) || allowanceBlocked} onClick={onVoice} aria-label="Talk to Buddy" title="Talk to Buddy"><AudioLines size={20}/></Button> : null}{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || Boolean(unavailable) || allowanceBlocked || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div></div>
     {hasLink && <p className={styles.composerNote}>Public links are imported as readable source material when you send.</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
   </form><Sheet open={optionsOpen} onOpenChange={setOptionsOpen}><SheetContent side="bottom" className={styles.mobileOptionsSheet}><SheetHeader><SheetTitle>Chat options</SheetTitle><SheetDescription>Choose how your Buddy helps, or attach material.</SheetDescription></SheetHeader><div className={styles.mobileOptionsContent}><Button variant="outline" disabled={busy} onClick={() => { setOptionsOpen(false); input.current?.click(); }}><Plus size={18}/>Attach a file or image</Button><div><span>Conversation mode</span><ChatModeSelector conversation={conversation} onConversation={() => { onConversation?.(); setOptionsOpen(false); }} mode={mode} onModeChange={next => { onModeChange?.(next); setOptionsOpen(false); }} disabled={busy}/></div><div><span>Explanation depth</span><Select value={gear} onValueChange={next => onGearChange(next as Gear)} disabled={busy}><SelectTrigger aria-label="Mobile explanation depth"><SelectValue/></SelectTrigger><SelectContent>{(['Quick','Guided','Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><p>Use @ in your message to mention a note.</p></div></SheetContent></Sheet></>;

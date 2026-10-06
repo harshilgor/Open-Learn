@@ -1,4 +1,5 @@
 "use client";
+import { VoiceProvider } from './voice/voice-provider';
 
 import { useCallback, useEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, ChevronsUpDown, CircleHelp, Compass, ExternalLink, FileText, FolderClosed, FolderPlus, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Settings, Sparkles, SquarePen, X } from 'lucide-react';
@@ -82,7 +83,7 @@ function AdaptiveSidebarTrigger({ inSidebar = false }: { inSidebar?: boolean }) 
 
 
 export default function LearningWorkspace(props: { initialSessionId?: string | null; initialCourseId?: string | null; initialSidebarTab?: WorkspaceSidebarTab }) {
-  return <LearningWorkspaceContent {...props} />;
+  return <VoiceProvider><LearningWorkspaceContent {...props} /></VoiceProvider>;
 }
 
 function LearningWorkspaceContent({
@@ -109,6 +110,7 @@ function LearningWorkspaceContent({
   const [courses,setCourses]=useState<CourseSummary[]>([]);
   const [activeCourseId,setActiveCourseId]=useState<string|null>(null);
   const [reminderId,setReminderId]=useState<string|null>(null);
+  useEffect(() => { const open = () => setView('reminders'); window.addEventListener('openlearn-voice-reminders', open); return () => window.removeEventListener('openlearn-voice-reminders', open); }, []);
   const [courseDialogOpen,setCourseDialogOpen]=useState(false);
   const [recordSetupOpen,setRecordSetupOpen]=useState(false);
   const [recordFolder,setRecordFolder]=useState<string|null>(null);
@@ -337,8 +339,8 @@ function LearningWorkspaceContent({
   {view==='settings'?<div className="settings-full"><SettingsPage category={settingsCategory} onCategoryChange={setSettingsCategory} onBack={()=>setView('home')} /></div>:<><Sidebar className="forma-sidebar"><SidebarContent>
     <WorkspaceSidebar tab={sidebarTab} onTabChange={switchSidebarTab} collapseControl={<AdaptiveSidebarTrigger inSidebar />} courses={courses} activeCourseId={activeCourseId} onCourseSelect={selectCourse} onCourseOpen={id=>{setActiveCourseId(id);setView('course');setBranchId(null);}} onNewChat={()=>openSession(null)} onNewCourse={()=>setCourseDialogOpen(true)} onNotesCommand={action=>setNotesCommand(current=>({id:(current?.id||0)+1,action}))} onReminders={()=>setView('reminders')} onReview={()=>{setView('review');setBranchId(null);}} onQuiz={()=>{setView('quiz');setBranchId(null);}} activeSessionId={activeSessionId} refreshKey={historyVersion} onOpenSession={openSession} notesHost={setNotesHost} />
    </SidebarContent><SidebarFooter><DropdownMenu><DropdownMenuTrigger asChild><button className="profile" aria-label="Account menu"><AccountProfile/><ChevronsUpDown size={15}/></button></DropdownMenuTrigger><DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[224px] learner-menu"><DropdownMenuLabel><div className="flex items-center gap-2.5"><span className="avatar">L</span><div className="grid gap-0.5"><strong className="text-sm font-semibold leading-none">Learner</strong><small className="text-xs text-muted-foreground">Your Open Learn account</small></div></div></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem onSelect={()=>openSession(null)}><Plus size={15}/>New topic<DropdownMenuShortcut>⌘ K</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('general');setView('settings');setBranchId(null);}}><Settings size={15}/>Settings<DropdownMenuShortcut>Ctrl+,</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('about');setView('settings');setBranchId(null);}}><CircleHelp size={15}/>Help &amp; app info</DropdownMenuItem><AccountMenuActions/></DropdownMenuContent></DropdownMenu></SidebarFooter></Sidebar>
-    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar workspace-topbar">
-      <div className="topbar-primary flex items-center gap-2">
+    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar">
+      <div className="flex items-center gap-2">
         <AdaptiveSidebarTrigger/>
         <Button className="buddy-desktop-action" variant="ghost" size="sm" onClick={()=>openSession(null)}>Today</Button>
         <Button className="buddy-desktop-action" variant="ghost" size="sm" onClick={()=>setView('reminders')}>Reminders</Button>
@@ -351,7 +353,7 @@ function LearningWorkspaceContent({
           <><strong className="text-foreground font-medium truncate max-w-[250px]" title={view==='home'?chatTitle:undefined}>{view==='topic'?currentMap.title:view==='saved'?'Saved explorations':view==='maps'?'Knowledge maps':view==='quiz'?'Quiz':view==='notes'?'Notes':view==='review'?'Review':view==='reminders'?'Reminders':view==='courses'?'Courses':chatTitle}</strong>{view==='home'&&activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}</>
         )}
       </div>
-      <div className="topbar-actions flex items-center gap-2">
+      <div className="flex items-center gap-2">
         {reviewDueCount > 0 ? <Button variant="outline" size="sm" className="review-due-button" onClick={()=>{setView('review');setBranchId(null);}}>Review · {reviewDueCount} due</Button> : null}
         {view !== 'notes' && view !== 'review' && view !== 'course' ? <NotesPanelTrigger /> : null}
       </div>

@@ -7,12 +7,14 @@ import { ChatComposer } from '@/components/chat-composer';
 import { MessageActionBar, VerificationBadge } from '@/components/message-action-bar';
 
 const { createWorkspaceNote, deleteWorkspaceNote } = vi.hoisted(() => ({ createWorkspaceNote: vi.fn(async () => ({ id: 'note-1', revision: 1 })), deleteWorkspaceNote: vi.fn(async () => undefined) }));
+const allowanceState = vi.hoisted(() => ({ snapshot: null as null | { windowId: string | null; windowState: 'ready' | 'active'; serverTime: number; resetsAt: number | null; grantedMicrocredits: number; usedMicrocredits: number; heldMicrocredits: number; availableMicrocredits: number; revision: number; availability: string; reasonCode: string | null }, error: '' }));
 vi.mock('@/lib/api', () => ({ learningApi: { searchWorkspaceNotes: vi.fn(async () => ({ notes: [] })), createWorkspaceNote, deleteWorkspaceNote } }));
+vi.mock('@/lib/usage-allowance', () => ({ refreshAllowance: vi.fn(), useAllowance: () => allowanceState, usagePercent: (snapshot: NonNullable<typeof allowanceState.snapshot>) => ({ used: snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100, held: snapshot.heldMicrocredits / snapshot.grantedMicrocredits * 100, available: snapshot.availableMicrocredits / snapshot.grantedMicrocredits * 100, label: `${Math.round(snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100)}%` }) }));
 vi.mock('@/lib/use-app-reduced-motion', () => ({ useAppReducedMotion: () => true }));
 
 let root: Root;
 let container: HTMLDivElement;
-beforeEach(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); vi.clearAllMocks(); });
+beforeEach(() => { allowanceState.snapshot = { windowId: null, windowState: 'ready', serverTime: 1, resetsAt: null, grantedMicrocredits: 100_000_000, usedMicrocredits: 0, heldMicrocredits: 0, availableMicrocredits: 100_000_000, revision: 0, availability: 'available', reasonCode: null }; allowanceState.error = ''; (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); vi.clearAllMocks(); });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 function render(node: ReactNode) { act(() => root.render(node)); }
 function button(label: string) { const result = [...container.querySelectorAll('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label); if (!result) throw new Error(`Missing button: ${label}`); return result; }
@@ -80,6 +82,15 @@ describe('composer and message actions', () => {
     click(button('Retry connection'));expect(retry).toHaveBeenCalledOnce();
     render(composer('My retained draft',true));
     expect(container.querySelector('textarea')!.disabled).toBe(false);
+  });
+
+  it('keeps a draft editable but blocks new work until allowance is loaded', () => {
+    allowanceState.snapshot = null;
+    const submit = vi.fn();
+    render(composer('Saved draft', false, submit));
+    expect(button('Send message').hasAttribute('disabled')).toBe(true);
+    expect(container.querySelector('textarea')?.value).toBe('Saved draft');
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it('offers message actions and a data-driven verification badge', async () => {

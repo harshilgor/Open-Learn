@@ -20,6 +20,11 @@ def configuration_errors(env=None):
         if not env.get(key):errors.append(key)
     if env.get('OPENLEARN_MIGRATE_ON_START')!='false':errors.append('OPENLEARN_MIGRATE_ON_START')
     if env.get('FORMA_API_TOKEN'):errors.append('FORMA_API_TOKEN must be absent in hosted services')
+    try:
+        from .usage.policy import Policy
+        Policy.load()
+    except Exception:
+        errors.append('OPENLEARN_USAGE_POLICY_AND_ENABLED_ROUTE_TARIFFS')
     return errors
 
 

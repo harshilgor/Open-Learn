@@ -45,10 +45,10 @@ class Coordinator:
                     elif run['kind']=='research':
                         from .research_contracts import ResearchSpec
                         spec=ResearchSpec.model_validate({**run['researchSpec'],'query':body.text}).model_dump(by_alias=True)
-                        child=self.create(conn,owner,body.session_id,body.text,'followup:'+identifier,None,{},parent=run['id'],kind='research',research_spec=spec)
+                        child=self.create(conn,owner,body.session_id,body.text,'followup:'+identifier,None,{},parent=run['id'],kind='research',research_spec=spec,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                     else:
                         corrected=constraints_from(body.text,run['constraints'],parse_csv(run['csvText']))
-                        child=self.create(conn,owner,body.session_id,body.text,'followup:'+identifier,run['csvText'],corrected,parent=run['id'],kind=run['kind'],input_material=run.get('inputMaterial'))
+                        child=self.create(conn,owner,body.session_id,body.text,'followup:'+identifier,run['csvText'],corrected,parent=run['id'],kind=run['kind'],input_material=run.get('inputMaterial'),accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                     response.update(status='queued',handled=True,references=[{'kind':'task','id':child['id']}])
                 else:
                     input_material=None
@@ -66,11 +66,11 @@ class Coordinator:
                         deck=FlashcardRepository(self.store).get(conn,owner,'decks',spec.target_deck_id,True)
                         if deck['revision']!=spec.expected_deck_revision:fail('revision_conflict','Deck changed.',409)
                         if deck.get('courseId')!=manifest.get('courseId'):fail('source_scope_mismatch','Choose a deck in the current course.',422)
-                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{'flashcardRequest':spec.model_dump(by_alias=True),'flashcardManifest':manifest},kind='flashcards')
+                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{'flashcardRequest':spec.model_dump(by_alias=True),'flashcardManifest':manifest},kind='flashcards',accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                 elif body.capability=='research':
                     from .research_contracts import ResearchSpec
                     spec=ResearchSpec.model_validate(body.research_spec or {'query':body.text}).model_dump(by_alias=True)
-                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{},kind='research',research_spec=spec)
+                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{},kind='research',research_spec=spec,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                 else:
                     if body.capability=='sandbox_lab':
                         from .sandbox_config import readiness
@@ -83,7 +83,7 @@ class Coordinator:
                         from .sandbox_inputs import material_csv
                         csv_value,input_material=material_csv(self.store,owner,body.session_id,body.material_version_id,conn)
                     rows=parse_csv(csv_value);constraints=constraints_from(body.text,{},rows)
-                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,csv_value,constraints,kind=body.capability,input_material=input_material)
+                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,csv_value,constraints,kind=body.capability,input_material=input_material,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                 response.update(status='queued',handled=True,references=[{'kind':'task','id':run['id']}])
             conn.execute(text('INSERT INTO agent_messages(id,owner_id,session_id,client_message_id,command_key,request_hash,payload,response,created_at) VALUES(:id,:owner,:session,:client,:key,:hash,:payload,:response,:now)'),{'id':identifier,'owner':owner,'session':body.session_id,'client':body.client_message_id,'key':key,'hash':hash_value,'payload':encoded(data),'response':encoded(response),'now':time.time()})
             if response['handled']:
@@ -91,11 +91,20 @@ class Coordinator:
                 self.repo.activity(conn,run,'user:'+identifier,'user.message',messageId=identifier,text=body.text)
             return response
 
-    def create(self, conn, owner, session, message, key, csv_value, constraints, parent=None, kind='lab_analysis', research_spec=None,input_material=None):
+    def create(self, conn, owner, session, message, key, csv_value, constraints, parent=None, kind='lab_analysis', research_spec=None,input_material=None,accepted_usage_cap_micro=None,usage_root_id=None):
         if conn.execute(text("SELECT count(*) FROM assistant_runs WHERE owner_id=:owner AND runtime_owner='agent_v2' AND status IN ('queued','running')"),{'owner':owner}).scalar_one()>=2:
             fail('task_limit','Two tasks are already active. Pause or finish one before starting another.',429)
         now=time.time()
-        run={'id':uid('assistant'),'owner_id':owner,'runtime_owner':'agent_v2','revision':1,'desired_input_revision':1,'sessionId':session,'message':message,'kind':kind,'status':'queued','phase':'inspect','waitReason':None,'csvText':csv_value,'researchSpec':research_spec,'inputHash':digest(csv_value or research_spec),'constraints':constraints,'pendingRequests':[],'artifacts':[],'completion':None,'commandCursor':0,'checkpointVersion':0,'parentTaskId':parent,'createdAt':now,'updatedAt':now,'summary':None,'connectionId':None}
+        identifier=uid('assistant')
+        if usage_root_id is None:
+            usage_root_id=identifier
+            from ..usage.ledger import Ledger,UsageError
+            from ..usage.policy import Policy
+            policy=Policy.load();ledger=Ledger(self.store,policy)
+            cap=accepted_usage_cap_micro if accepted_usage_cap_micro is not None else policy.grant
+            try:ledger.accept_task_cap_in_transaction(conn,owner,usage_root_id,cap,now)
+            except UsageError as exc:fail(exc.detail.get('code','usage_task_cap_invalid'),exc.detail.get('message','Task maximum is unavailable.'),exc.status_code)
+        run={'id':identifier,'owner_id':owner,'runtime_owner':'agent_v2','revision':1,'desired_input_revision':1,'sessionId':session,'message':message,'kind':kind,'status':'queued','phase':'inspect','waitReason':None,'csvText':csv_value,'researchSpec':research_spec,'inputHash':digest(csv_value or research_spec),'constraints':constraints,'pendingRequests':[],'artifacts':[],'completion':None,'commandCursor':0,'checkpointVersion':0,'parentTaskId':parent,'usageRootId':usage_root_id,'createdAt':now,'updatedAt':now,'summary':None,'connectionId':None}
         run['inputMaterial']=input_material
         conn.execute(text("INSERT INTO assistant_runs(id,owner_id,revision,session_id,command_key,request_hash,status,payload,created_at,updated_at,runtime_owner,desired_input_revision) VALUES(:id,:owner,1,:session,:key,:hash,'queued',:payload,:now,:now,'agent_v2',1)"),{'id':run['id'],'owner':owner,'session':session,'key':key,'hash':digest(run),'payload':encoded({k:v for k,v in run.items() if k!='owner_id'}),'now':now})
         self.repo.event(conn,run,'task.created');run=self.repo.checkpoint(conn,run);self.repo.schedule(conn,run)

@@ -32,6 +32,8 @@ def parse_when(value, zone, now):
     if suffix:
         if not 1 <= hour <= 12: raise ValueError('Use an hour from 1 to 12 with AM or PM.')
         hour = hour % 12 + (12 if suffix.lower() == 'pm' else 0)
+    elif 1 <= hour <= 12:
+        raise ValueError('Specify AM or PM, or use a 24-hour time from 00:00 to 23:59.')
     base = datetime.fromtimestamp(now, tz).replace(tzinfo=None, hour=hour, minute=minute, second=0, microsecond=0)
     day = day.lower()
     if day == 'tomorrow': base += timedelta(days=1)

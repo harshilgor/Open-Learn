@@ -1,4 +1,5 @@
 "use client";
+import { reportVoiceFocus } from "@/lib/voice/client";
 
 import { memo, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
@@ -152,6 +153,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
   const [courseNames, setCourseNames] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<NoteDraft | null>(null);
   const [savedDraft, setSavedDraft] = useState<NoteDraft | null>(null);
+  useEffect(() => { if (draft?.id) reportVoiceFocus({ note_id: draft.id, expected_revision: draft.revision }); }, [draft?.id, draft?.revision]);
   const [query, setQuery] = useState('');
   const [editorEpoch, setEditorEpoch] = useState(0);
   const [folders, setFolders] = useState<string[]>([]);

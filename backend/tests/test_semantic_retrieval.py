@@ -22,6 +22,9 @@ def test_embedding_model_requires_explicit_opt_in(monkeypatch):
 
 
 def test_openrouter_embedding_uses_existing_key_and_model_slug(monkeypatch):
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
+    monkeypatch.setenv("OPENLEARN_EMBEDDING_USD_PER_MILLION_TOKENS", "0.02")
     monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

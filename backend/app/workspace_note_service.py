@@ -511,13 +511,26 @@ class WorkspaceNoteService:
             updated_at=record.updated_at,
         )
 
-    def create(self, learner_id: str, request: WorkspaceNoteCreate) -> WorkspaceNoteRecord:
+    def create(self, learner_id: str, request: WorkspaceNoteCreate, *, command_id: str | None = None) -> WorkspaceNoteRecord:
         self._validate_learner(learner_id)
         if not request.title.strip():
             raise WorkspaceNoteError("invalid_title", "Note title cannot be blank.", 422)
         now = _utc_now()
-        note_id = f"note_{uuid4().hex}"
+        note_id = f"note_{uuid4().hex}" if command_id is None else 'note_' + hashlib.sha256(f'{learner_id}:{command_id}'.encode()).hexdigest()[:32]
+        if command_id is not None:
+            request_hash = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+            try:
+                existing = self._read_file(learner_id, note_id)
+            except WorkspaceNoteError as exc:
+                if exc.code != 'note_not_found':
+                    raise
+            else:
+                if existing.frontmatter.get('command_hash') != request_hash:
+                    raise WorkspaceNoteError('idempotency_conflict', 'This note command has different content.', 409)
+                return existing
         frontmatter = dict(request.frontmatter)
+        if command_id is not None:
+            frontmatter['command_hash'] = request_hash
         from .content_titles import generate_content_title, looks_like_prompt
         if frontmatter.get("title_source") != "user" and looks_like_prompt(request.title):
             headings = [{"heading": line.lstrip("# ")} for line in request.body.splitlines() if line.startswith("#")]

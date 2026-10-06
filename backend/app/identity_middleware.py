@@ -16,6 +16,8 @@ class IdentityMiddleware:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get('headers', [])}
         token = None
+        from .usage.context import current_store
+        store_token = current_store.set(self.store_provider())
         try:
             principal = await run_in_threadpool(authenticate, self.store_provider(), headers.get('authorization'), headers.get('x-dev-learner-id'))
             path = scope['path']
@@ -47,5 +49,6 @@ class IdentityMiddleware:
         except HTTPException as exc:
             await JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})(scope, receive, send)
         finally:
+            current_store.reset(store_token)
             if token is not None:
                 principal_context.reset(token)

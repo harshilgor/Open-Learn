@@ -14,6 +14,8 @@ desktop/.vite/
 **/.pytest_cache/
 **/pytest-cache-files-*/
 .venv/
+voice-agent/.venv/
+web/.npm-cache/
 backend/data/*.db
 backend/build/
 backend/data/materials/

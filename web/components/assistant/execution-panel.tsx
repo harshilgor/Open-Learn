@@ -8,6 +8,7 @@ import {snapshot,sendMessage,sendCommand,downloadArtifact,type AgentTask,type Ac
 import {ResearchSourceList} from './research-sources';
 import {LearningContinuationPanel} from './learning-continuation';
 import {ConnectedTaskPanel} from './connected-task-panel';
+import {useAllowance} from '@/lib/usage-allowance';
 import styles from './execution-panel.module.css';
 
 type Pending={key:string;body:Record<string,unknown>;taskId?:string};
@@ -21,6 +22,8 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
   const [hasPending,setHasPending]=useState(false);
   const [sandboxState,setSandboxState]=useState('setup_required');
   const [sandboxFixture,setSandboxFixture]=useState(false);
+  const [usageCapPercent,setUsageCapPercent]=useState(20);
+  const {snapshot:usageAllowance}=useAllowance(true);
   const generation=useRef(0),pending=useRef<Pending|null>(null),cursor=useRef<number|undefined>(undefined);
   const refresh=useCallback(async()=>{
     if(!sessionId)return;
@@ -77,11 +80,13 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
     <MakeFlashcards sessionId={sessionId} courseId={courseId}/><ResponsibilitiesPanel sessionId={sessionId} courseId={courseId}/>
     <details><summary>Agent workspace</summary><p>Lab analysis runs offline with a fixed CSV adapter. Daytona runs the same verified analysis remotely when configured. Research uses configured evidence sources. Tasks keep running when this conversation closes.</p>
       {sandboxFixture?<p>Offline sandbox fixture: no live Daytona calls.</p>:null}
-      {enabled?<form onSubmit={event=>{event.preventDefault();void submit({capability:kind,text:query.trim()||'Analyze this lab CSV',...(kind!=='research'?{csvText:csv}:{researchSpec:{query:query,sourcePolicy:'attached_preferred'}})});}}>
+      {enabled?<form onSubmit={event=>{event.preventDefault();if(!usageAllowance||usageAllowance.grantedMicrocredits<=0)return;void submit({capability:kind,text:query.trim()||'Analyze this lab CSV',acceptedUsageCapMicro:Math.max(1,Math.floor(usageAllowance.grantedMicrocredits*usageCapPercent/100)),...(kind!=='research'?{csvText:csv}:{researchSpec:{query:query,sourcePolicy:'attached_preferred'}})});}}>
         <label>Task type <select value={kind} onChange={event=>setKind(event.target.value)}><option value="lab_analysis">Lab CSV analysis</option><option value="research">Research</option><option value="sandbox_lab" disabled={sandboxState!=='available'}>{sandboxFixture?'Offline sandbox CSV fixture':'Daytona CSV analysis'}{sandboxState!=='available'?' — setup required':''}</option></select></label>
         <label>Request <input aria-label="Agent request" value={query} onChange={event=>setQuery(event.target.value)} placeholder={kind==='research'?'Compare the evidence for spaced repetition':'Analyze this lab CSV'}/></label>
         {kind!=='research'?<label>CSV (time in seconds)<textarea aria-label="Lab CSV" rows={4} value={csv} onChange={event=>setCsv(event.target.value)}/></label>:null}
-        <button disabled={busy||(kind==='research'&&!query.trim())||(kind==='sandbox_lab'&&sandboxState!=='available')}>Start task</button>
+        <label>Maximum AI usage for this task<select aria-label="Maximum task usage" value={usageCapPercent} onChange={event=>setUsageCapPercent(Number(event.target.value))}><option value={10}>10% of this window</option><option value={20}>20% of this window</option><option value={50}>50% of this window</option><option value={100}>100% of this window</option></select></label>
+        <p>This is the most this task and its delegated work can use. It will not continue automatically after your allowance refreshes, and it stops with saved work when it reaches this maximum.</p>
+        <button disabled={busy||!usageAllowance||usageAllowance.grantedMicrocredits<=0||(kind==='research'&&!query.trim())||(kind==='sandbox_lab'&&sandboxState!=='available')}>Start task · maximum {usageCapPercent}%</button>
       </form>:<p>New agent tasks are disabled. Existing tasks remain available.</p>}
     </details>
     {items.filter(item=>['user.message','command.applied'].includes(item.type)).map(item=><p key={item.id}>{item.type==='user.message'?'You: ':''}{item.text}</p>)}
@@ -90,9 +95,9 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
       {task.summary?<p>{task.summary}</p>:null}
       <ResearchSourceList sources={task.sources||[]}/>
       {task.pendingRequests.map(question=><div key={question.requestId}><p>{question.question}</p>{question.options.map(option=><button type="button" key={option} disabled={busy} onClick={()=>setAnswers(previous=>({...previous,[task.id]:option}))}>{option}</button>)}</div>)}
-      {task.allowedCommands.includes('steer')||['completed','completed_partial'].includes(task.status)?<form onSubmit={event=>{event.preventDefault();const question=task.pendingRequests[0];void submit({text:answers[task.id],targetTaskId:task.id,expectedRevision:task.revision,...(question?{replyToRequestId:question.requestId,expectedRequestRevision:question.revision}:{})},task.id);}}>
+      {task.allowedCommands.includes('steer')||['completed','completed_partial'].includes(task.status)?<form onSubmit={event=>{event.preventDefault();const question=task.pendingRequests[0];void submit({text:answers[task.id],targetTaskId:task.id,expectedRevision:task.revision,...(!question&&usageAllowance?{acceptedUsageCapMicro:Math.max(1,Math.floor(usageAllowance.grantedMicrocredits*usageCapPercent/100))}:{}),...(question?{replyToRequestId:question.requestId,expectedRequestRevision:question.revision}:{})},task.id);}}>
         <label>{task.pendingRequests.length?'Your answer':'Change the task'}<input aria-label={`Reply to ${task.message}`} value={answers[task.id]||''} onChange={event=>setAnswers(previous=>({...previous,[task.id]:event.target.value}))}/></label>
-        <button disabled={busy||!answers[task.id]?.trim()}>{task.pendingRequests.length?'Send answer':task.status.startsWith('completed')?'Create corrected result':'Send change'}</button>
+        <button disabled={busy||!answers[task.id]?.trim()}>{task.pendingRequests.length?'Send answer':['usage_task_cap_exhausted','usage_task_window_changed','usage_window_exhausted'].includes(task.error||'')?'Continue with a new maximum':task.status.startsWith('completed')?'Create corrected result':'Send change'}</button>
       </form>:null}
       {task.allowedCommands.filter(action=>['pause','resume','cancel'].includes(action)).map(action=><button type="button" key={action} disabled={busy} onClick={()=>void control(task,action)}>{action==='cancel'?'Stop task':action==='pause'?'Pause':'Resume'}</button>)}
       {task.artifacts.map(artifact=><button type="button" key={artifact.id} onClick={()=>void downloadArtifact(artifact).catch(cause=>setError(cause.message))}>Download {artifact.name}</button>)}

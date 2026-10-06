@@ -32,6 +32,9 @@ OMIT.add('class_material_intakes')
 OMIT.add('class_resource_intents')
 OMIT.add('class_caption_interims')
 OMIT.add('flashcard_commands')
+OMIT.update({'voice_sessions', 'voice_turns', 'voice_actions', 'voice_events', 'voice_speech_segments', 'voice_usage'})
+OMIT.update({'usage_accounts','usage_periods','usage_reservations','usage_events','usage_platform_periods',
+             'usage_rate_cards','usage_provider_rate_cards','usage_adjustments','usage_alerts','usage_outbox'})
 
 
 def source_snapshot(conn, profile):

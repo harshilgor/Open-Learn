@@ -8,7 +8,7 @@ vi.mock('@/lib/assistant-client',()=>({...mocks}));
 vi.mock('@/lib/account-session',()=>({ACCOUNT_CHANGED:'account-changed'}));
 let root:Root,container:HTMLDivElement;
 const task={id:'task',schemaVersion:2,revision:7,sessionId:'session',kind:'lab_analysis',message:'Analyze lab',status:'waiting',phase:'clarify',pendingRequests:[{requestId:'input',revision:1,question:'Which units?',options:['Centimeters; ignore trial 3'],state:'open'}],artifacts:[],allowedCommands:['pause','cancel','steer','answer_input']};
-beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.clearAllMocks();sessionStorage.clear();mocks.request.mockResolvedValue({admissionEnabled:true});mocks.snapshot.mockResolvedValue({cursor:1,hasMore:false,items:[{id:'question',sequence:1,type:'input.requested',taskId:'task'}],tasks:[task]});mocks.sendMessage.mockResolvedValue({handled:true,references:[]});container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
+beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.clearAllMocks();sessionStorage.clear();mocks.request.mockImplementation(async(path:string)=>path==='/v1/usage/allowance'?{windowId:null,windowState:'ready',serverTime:100,resetsAt:null,grantedMicrocredits:100_000_000,usedMicrocredits:0,heldMicrocredits:0,availableMicrocredits:100_000_000,revision:0,availability:'available',reasonCode:null}:{admissionEnabled:true});mocks.snapshot.mockResolvedValue({cursor:1,hasMore:false,items:[{id:'question',sequence:1,type:'input.requested',taskId:'task'}],tasks:[task]});mocks.sendMessage.mockResolvedValue({handled:true,references:[]});container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
 afterEach(()=>{act(()=>root.unmount());container.remove();});
 async function mount(){await act(async()=>{root.render(<ExecutionPanel sessionId="session" onSession={vi.fn()}/>);await new Promise(resolve=>setTimeout(resolve,20));});}
 it('answers the exact task/question with steering and revision',async()=>{
@@ -31,4 +31,12 @@ it('pauses with current revision and clears account-specific tasks on logout',as
   await mount();await act(async()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Pause')!.click());
   expect(mocks.sendCommand).toHaveBeenCalledWith(expect.objectContaining({revision:7}),expect.objectContaining({action:'pause',commandId:expect.any(String)}));
   act(()=>window.dispatchEvent(new Event('account-changed')));expect(container.textContent).not.toContain('Analyze lab');
+});
+it('shows and sends the explicit agent-task maximum',async()=>{
+  await mount();
+  const maximum=container.querySelector('select[aria-label="Maximum task usage"]') as HTMLSelectElement;
+  await act(async()=>{maximum.value='50';maximum.dispatchEvent(new Event('change',{bubbles:true}));});
+  const form=container.querySelector('input[aria-label="Agent request"]')!.closest('form')!;
+  await act(async()=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+  expect(mocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({capability:'lab_analysis',acceptedUsageCapMicro:50_000_000}),expect.any(String));
 });

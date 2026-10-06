@@ -115,6 +115,7 @@ def test_parent_child_limits_outputs_and_no_recursive_or_connector_grants(connec
     delegation=Delegation(db);request=ChildRequest(expectedRevision=run['revision'],kind='lab_analysis',assignment='Independently check speeds')
     child=delegation.create('alice',run['id'],request,'child1');assert delegation.create('alice',run['id'],request,'child1')==child
     child_task=repo.read('alice',child['childId'])
+    assert child_task['usageRootId']==run['usageRootId']
     with pytest.raises(HTTPException):delegation.create('alice',child_task['id'],ChildRequest(expectedRevision=child_task['revision'],kind='lab_analysis',assignment='Grandchild'),'grandchild')
     with pytest.raises(ConnectorError):service.draft('alice',child_task['id'],Draft(connectionId='google',expectedTaskRevision=child_task['revision'],kind='gmail_send',mail={'to':['p@example.com'],'subject':'Hello','body':'No'}),'child-write')
     worker.tick();delegation.tick();assert delegation.list('alice',run['id'])['items'][0]['status']=='accepted'

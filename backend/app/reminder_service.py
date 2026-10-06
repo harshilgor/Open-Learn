@@ -182,6 +182,32 @@ class ReminderService:
             conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id AND owner_id=:owner AND kind<>'routine' AND status='pending'"),{'id':row['id'],'owner':owner})
         return {'id':identifier,'status':'pending'}
 
+    def reschedule(self, owner, identifier, when, timezone, key):
+        """Move a pending one-time fire atomically with a deterministic receipt."""
+        try:
+            due = parse_when(when, timezone, time.time())
+            if due <= time.time(): raise ValueError('Choose a future time.')
+        except (ValueError, KeyError, TypeError) as exc:
+            fail('invalid_time', str(exc), 422)
+        replacement = 'move_' + hashlib.sha256(f'{owner}:{identifier}:{key}'.encode()).hexdigest()[:32]
+        request_hash = hashlib.sha256(encoded([identifier, when, timezone]).encode()).hexdigest()
+        with self.store.transaction() as conn:
+            assert_owner_active(conn, owner)
+            existing = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': replacement, 'owner': owner}).mappings().first()
+            if existing:
+                if json.loads(existing['payload']).get('moveRequestHash') != request_hash:
+                    fail('idempotency_conflict', 'That move request has different content.', 409)
+                return self.public(existing)
+            row = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': identifier, 'owner': owner}).mappings().first()
+            if not row: fail('not_found', 'Reminder unavailable.', 404)
+            if row['kind'] == 'routine' or row['status'] != 'pending':
+                fail('invalid_state', 'Only a pending one-time reminder can be moved.', 409)
+            changed = conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id AND owner_id=:owner AND status='pending'"), {'id': identifier, 'owner': owner}).rowcount
+            if changed != 1: fail('revision_conflict', 'This reminder changed. Reload it first.', 409)
+            payload = {**json.loads(row['payload']), 'when': when, 'timezone': timezone, 'moveRequestHash': request_hash}
+            self.insert_fire(conn, owner, replacement, 'chat', due, payload)
+            return self.public(conn.execute(text('SELECT * FROM reminders WHERE id=:id'), {'id': replacement}).mappings().one())
+
     def control_routine(self,owner,identifier,revision,action,command=None):
         if action=='edit':
             if not command or not command.schedule:fail('invalid_input','Provide an updated recurring reminder.',422)

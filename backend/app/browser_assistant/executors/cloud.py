@@ -1,6 +1,7 @@
 """Temporary Browserbase sessions with deterministic Playwright actions."""
 import base64
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -12,16 +13,93 @@ from ..policy import check_url, origin
 from ...identity import fail
 from ...workflow_store import uid, encoded
 
+SESSION_TTL_SECONDS = 600
+RECONCILIATION_GRACE_SECONDS = 120
+SESSION_TTL_MILLISECONDS = SESSION_TTL_SECONDS * 1000
+TERMINAL_SESSION_STATES = {'COMPLETED', 'TIMED_OUT', 'ERROR', 'RELEASED', 'STOPPED'}
+
 OBSERVER = Path(__file__).resolve().parents[1] / 'observer.js'
 
 
 def readiness():
     import importlib.util
+    try:
+        from ...usage.policy import Policy
+        policy = Policy.load()
+        paid_routes = policy.mode == 'enforce' and policy.paid
+    except Exception:
+        paid_routes = False
+    try:
+        from ...usage.operations import configured_rate
+        configured_rate('OPENLEARN_BROWSERBASE_USD_PER_MINUTE')
+        tariff_configured = True
+    except Exception:
+        tariff_configured = False
     return {'enabled': os.getenv('OPENLEARN_CLOUD_BROWSER_ENABLED') == 'true',
+            'paidRoutesEnabled': paid_routes,
+            'tariffConfigured': tariff_configured,
             'credentialsConfigured': bool(os.getenv('BROWSERBASE_API_KEY') and os.getenv('BROWSERBASE_PROJECT_ID')),
             'runtimeInstalled': importlib.util.find_spec('playwright') is not None,
             'egressVerified': os.getenv('OPENLEARN_BROWSER_EGRESS_VERIFIED') == 'true',
-            'privateLoginVerified': os.getenv('OPENLEARN_BROWSER_PRIVATE_VERIFIED') == 'true'}
+            'lifecycleVerified': os.getenv('OPENLEARN_BROWSER_LIFECYCLE_VERIFIED') == 'true',
+            # Browserbase contexts currently outlive their session and have no
+            # metered expiration lifecycle, so configuration cannot enable them.
+            'privateLoginVerified': False}
+
+
+def require_cloud_ready():
+    report = readiness()
+    required = ('enabled', 'paidRoutesEnabled', 'tariffConfigured', 'credentialsConfigured',
+                'runtimeInstalled', 'egressVerified', 'lifecycleVerified')
+    if not all(report[key] for key in required):
+        fail('capability_unavailable',
+             'Cloud browser service is not configured with enforced usage limits and verified network controls.', 503)
+    return report
+
+
+def _actual_browser_usage(started_at, ended_at, rate_nano_per_minute):
+    elapsed_ms = max(0, math.ceil((ended_at - started_at) * 1000))
+    billable_ms = min(SESSION_TTL_MILLISECONDS, max(60_000, elapsed_ms))
+    billable_minutes = min(10, max(1, math.ceil(billable_ms / 60_000)))
+    return {'milliseconds': billable_ms}, rate_nano_per_minute * billable_minutes
+
+
+def _settle_ticket(ticket, started_at, ended_at, rate_nano_per_minute):
+    if ticket is None:
+        raise RuntimeError('Browser session has no usage reservation.')
+    from ...usage.operations import finish_external
+    quantities, cost_nano = _actual_browser_usage(started_at, ended_at, rate_nano_per_minute)
+    finish_external(ticket, quantities=quantities, cost_nano=cost_nano, source='exact')
+
+
+def stop_and_settle(store, provider, row):
+    """Stop a session, confirm provider termination, then settle its stored hold."""
+    try:
+        provider.stop(row['provider_session'])
+        state = provider.request('GET', 'sessions/' + row['provider_session']).get('status', '')
+        if str(state).upper() not in TERMINAL_SESSION_STATES:
+            return False
+        payload = json.loads(row['payload'] or '{}')
+        reservation_id = payload.get('usageReservationId')
+        if reservation_id:
+            started_at = payload.get('usageStartedAt')
+            rate = payload.get('usageRateNanoPerMinute')
+            if not isinstance(started_at, (int, float)) or not isinstance(rate, int) or rate <= 0:
+                # Keep the funded reservation for conservative reconciliation.
+                return False
+            from ...usage.ledger import Ledger
+            from ...usage.policy import Policy
+            quantities, cost_nano = _actual_browser_usage(started_at, time.time(), rate)
+            Ledger(store, Policy()).settle(row['owner_id'], reservation_id, quantities,
+                                           cost=cost_nano, source='exact')
+        with store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE id=:id"),
+                         {'id': row['id']})
+        return True
+    except Exception:
+        # The provider outcome or settlement is uncertain. Keep the lease and
+        # reservation intact so the durable reconciler charges the funded bound.
+        return False
 
 
 class BrowserbaseProvider:
@@ -33,20 +111,24 @@ class BrowserbaseProvider:
         response.raise_for_status()
         return response.json() if response.content else {}
 
-    def create(self, connection):
+    def create(self, connection, usage_ticket=None):
+        require_cloud_ready()
+        if (not usage_ticket or len(usage_ticket) != 3 or
+                usage_ticket[2].get('component') != 'browser' or
+                usage_ticket[2].get('liability_nano', 0) <= 0):
+            fail('usage_accounting_unavailable', 'Cloud browser work requires a funded usage reservation.', 503)
         settings = {'recordSession': False, 'logSession': False, 'solveCaptchas': False,
                     'allowedDomains': [urlsplit(u).hostname for u in [connection['origin'], *connection.get('approvedOrigins', [])]],
                     'viewport': {'width': 1280, 'height': 900}}
-        if connection.get('providerContextId'):
-            settings['context'] = {'id': connection['providerContextId'], 'persist': True}
         return self.request('POST', 'sessions', {'projectId': os.environ['BROWSERBASE_PROJECT_ID'],
-                             'browserSettings': settings, 'timeout': 600, 'keepAlive': True})
+                             'browserSettings': settings, 'timeout': SESSION_TTL_SECONDS, 'keepAlive': True})
 
     def stop(self, identifier):
         self.request('POST', f'sessions/{identifier}', {'projectId': os.environ['BROWSERBASE_PROJECT_ID'], 'status': 'REQUEST_RELEASE'})
 
     def create_context(self):
-        return self.request('POST', 'contexts', {'projectId': os.environ['BROWSERBASE_PROJECT_ID']})['id']
+        fail('capability_unavailable',
+             'Persistent cloud browser contexts are unavailable until their lifecycle is bounded and metered.', 503)
 
     def delete_context(self, identifier):
         self.request('DELETE', 'contexts/' + identifier)
@@ -68,26 +150,58 @@ class CloudExecutor:
         self.store = store; self.provider = provider or BrowserbaseProvider()
 
     def session(self, connection, run):
-        report = readiness()
-        if not all(report[k] for k in ('enabled', 'credentialsConfigured', 'runtimeInstalled', 'egressVerified')):
-            fail('capability_unavailable', 'Cloud browser setup and egress verification are required. Use the browser companion.', 503)
-        if connection.get('cloudLogin') and not report['privateLoginVerified']:
-            fail('capability_unavailable', 'Private cloud login has not been verified for this deployment.', 503)
+        require_cloud_ready()
+        if connection.get('cloudLogin') or connection.get('providerContextId'):
+            fail('capability_unavailable', 'Private cloud login is unavailable until its saved browser context has a bounded, metered lifecycle.', 503)
         with self.store.transaction() as conn:
-            row = conn.execute(text("SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status='active' AND expires_at>:now"),
+            row = conn.execute(text("SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status='active'"),
                                {'owner': run['owner_id'], 'run': run['id'], 'now': time.time()}).mappings().first()
         if row:
-            return row['provider_session'], json.loads(row['payload'])['connectUrl']
-        session = self.provider.create(connection)
+            payload = json.loads(row['payload'] or '{}')
+            if row['expires_at'] > time.time() and payload.get('usageReservationId') and payload.get('connectUrl'):
+                return row['provider_session'], payload['connectUrl']
+            if not stop_and_settle(self.store, self.provider, row):
+                fail('capability_unavailable', 'The previous cloud browser session is still being safely closed. Retry shortly.', 503)
+
+        from ...usage.operations import begin_external, configured_rate, rate_liability
+        rate = configured_rate('OPENLEARN_BROWSERBASE_USD_PER_MINUTE')
+        liability = rate_liability('OPENLEARN_BROWSERBASE_USD_PER_MINUTE', 10, 1)
+        ticket = begin_external('browser', {'milliseconds': SESSION_TTL_MILLISECONDS}, liability,
+                                root=run['id'], seconds=SESSION_TTL_SECONDS + RECONCILIATION_GRACE_SECONDS,
+                                provider='browserbase',model='chromium',
+                                provider_rates={'usd_nano_per_minute':rate})
+        if ticket is None:
+            fail('usage_accounting_unavailable', 'Cloud browser work requires an active usage account.', 503)
+        started_at = time.time()
+        try:
+            session = self.provider.create(connection, usage_ticket=ticket)
+            if (not isinstance(session, dict) or not session.get('id') or
+                    not isinstance(session.get('connectUrl'), str) or not session['connectUrl']):
+                raise ValueError('Browser provider returned an incomplete session.')
+        except Exception:
+            # Creation may have succeeded even if its response was lost. Keep
+            # the dispatched maximum hold for reconciliation.
+            fail('capability_unavailable', 'Cloud browser could not be started. The provider outcome is being safely reconciled.', 503)
+        payload = {'connectUrl': session['connectUrl'], 'usageReservationId': ticket[2]['id'],
+                   'usageStartedAt': started_at, 'usageRateNanoPerMinute': rate}
         try:
             with self.store.transaction() as conn:
                 conn.execute(text('''INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload)
                     VALUES(:id,:owner,:run,:connection,:session,'active',:expires,:payload)
-                    ON CONFLICT(run_id) DO UPDATE SET provider_session=excluded.provider_session,status='active',expires_at=excluded.expires_at,payload=excluded.payload'''),
+                    ON CONFLICT(run_id) DO UPDATE SET connection_id=excluded.connection_id,provider_session=excluded.provider_session,status='active',expires_at=excluded.expires_at,payload=excluded.payload'''),
                     {'id': uid('bs'), 'owner': run['owner_id'], 'run': run['id'], 'connection': connection['id'], 'session': session['id'],
-                     'expires': time.time()+600, 'payload': encoded({'connectUrl': session['connectUrl']})})
+                     'expires': started_at + SESSION_TTL_SECONDS, 'payload': encoded(payload)})
         except Exception:
-            self.provider.stop(session['id']); raise
+            # Do not discard a hold on a storage failure. The session is stopped
+            # and settled only if the provider confirms termination.
+            try:
+                self.provider.stop(session['id'])
+                state = self.provider.request('GET', 'sessions/' + session['id']).get('status', '')
+                if str(state).upper() in TERMINAL_SESSION_STATES:
+                    _settle_ticket(ticket, started_at, time.time(), rate)
+            except Exception:
+                pass
+            fail('capability_unavailable', 'Cloud browser state could not be saved. The provider session is being safely reconciled.', 503)
         return session['id'], session['connectUrl']
 
     def execute(self, action, connection, run, previous=None):
@@ -158,23 +272,15 @@ class CloudExecutor:
 
     def close(self, owner, run_id):
         with self.store.engine.connect() as conn:
-            sessions = conn.execute(text("SELECT id,provider_session FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status IN ('active','login')"), {'owner': owner, 'run': run_id}).mappings().all()
+            sessions = conn.execute(text("SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status IN ('active','login')"), {'owner': owner, 'run': run_id}).mappings().all()
         for row in sessions:
-            try: self.provider.stop(row['provider_session'])
-            except Exception: continue
-            with self.store.engine.begin() as conn:
-                conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE id=:id"), {'id': row['id']})
+            stop_and_settle(self.store, self.provider, row)
 
     def release_control(self, owner, run_id):
         """Revoke all issued human links by confirming session termination."""
         with self.store.engine.connect() as conn:
-            rows=conn.execute(text("SELECT id,provider_session FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status IN ('active','login')"),{'owner':owner,'run':run_id}).mappings().all()
+            rows=conn.execute(text("SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status IN ('active','login')"),{'owner':owner,'run':run_id}).mappings().all()
         for row in rows:
-            try:
-                self.provider.stop(row['provider_session'])
-                result=self.provider.request('GET','sessions/'+row['provider_session'])
-                if result.get('status') not in {'COMPLETED','TIMED_OUT','ERROR'}:return False
-            except Exception:return False
-            with self.store.transaction() as conn:
-                conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE id=:id"),{'id':row['id']})
+            if not stop_and_settle(self.store, self.provider, row):
+                return False
         return True
