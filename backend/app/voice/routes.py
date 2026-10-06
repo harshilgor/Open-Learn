@@ -314,6 +314,12 @@ def build_voice_router(get_store, provider_getter):
 
     @router.post('/v1/voice/sessions', status_code=201)
     async def create(body: SessionCreate, key: str = Header(alias='Idempotency-Key', min_length=1, max_length=160), owner=Depends(material_owner)):
+        # The control flow contains synchronous SQL and a request-local async
+        # media client. Keep both on a worker's isolated loop so pool waits
+        # cannot block health checks, event streams, or other voice requests.
+        return await asyncio.to_thread(lambda: asyncio.run(create_session(body, key, owner)))
+
+    async def create_session(body, key, owner):
         if not _voice_usage_ready() or not _voice_account_allowed():
             fail('voice_unavailable', 'Voice providers are not configured. You can continue typing.', 503)
         if not body.consent:
@@ -439,7 +445,7 @@ def build_voice_router(get_store, provider_getter):
 
     @router.get('/v1/voice/sessions/{sid}/events')
     async def events(sid: str, after: int = 0, owner=Depends(material_owner)):
-        records.session(owner, sid)
+        await asyncio.to_thread(records.session, owner, sid)
         async def stream():
             cursor = max(0, after)
             while True:
@@ -508,14 +514,16 @@ def build_voice_router(get_store, provider_getter):
 
     @router.post('/v1/voice/sessions/{sid}/end')
     async def end(sid: str, owner=Depends(material_owner)):
+        return await asyncio.to_thread(lambda: asyncio.run(end_session(sid, owner)))
+
+    async def end_session(sid, owner):
         _settle_voice_session(Ledger(get_store(), Policy.load()), owner, sid)
         result = records.end(owner, sid)
         if media.configured():
             await media.close(sid)
         return public(result)
 
-    async def agent_identity(sid: str, request: Request):
-        supplied = request.headers.get('Authorization', '').removeprefix('Bearer ')
+    def validate_agent(sid, supplied):
         with get_store().engine.connect() as conn:
             row = conn.execute(text('SELECT owner_id,capability_hash,status,expires_at FROM voice_sessions WHERE id=:id'), {'id': sid}).mappings().first()
             if not row or not hmac.compare_digest(row['capability_hash'], hashlib.sha256(supplied.encode()).hexdigest()):
@@ -523,6 +531,11 @@ def build_voice_router(get_store, provider_getter):
             assert_owner_active(conn, row['owner_id'])
             if row['status'] not in {'active', 'connecting'} or row['expires_at'] <= time.time():
                 fail('voice_ended', 'Voice session ended.', 403)
+            return dict(row)
+
+    async def agent_identity(sid: str, request: Request):
+        supplied = request.headers.get('Authorization', '').removeprefix('Bearer ')
+        row = await asyncio.to_thread(validate_agent, sid, supplied)
         token = principal_context.set(Principal(row['owner_id'], 'voice_agent', expires_at=row['expires_at']))
         try:
             yield row['owner_id']

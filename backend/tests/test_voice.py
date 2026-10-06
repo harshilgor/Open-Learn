@@ -104,6 +104,35 @@ def test_agent_capability_is_session_scoped(env, monkeypatch):
         assert client.get(f'/internal/voice/{sid}/poll', headers={'Authorization': 'Bearer test-capability'}).status_code == 200
 
 
+def test_slow_agent_authentication_does_not_block_the_server_loop(env, monkeypatch):
+    import asyncio
+    import httpx
+    from contextlib import contextmanager
+    store, _, sid = env
+    _enable_metered_voice(monkeypatch)
+    from backend.app.voice.routes import _admit_voice_slice
+    _admit_voice_slice(store, 'alice', sid, 0)
+    app = FastAPI(); app.include_router(build_voice_router(lambda: store, lambda: None))
+    original = store.engine.connect
+    @contextmanager
+    def slow_connect():
+        time.sleep(.15)
+        with original() as conn:
+            yield conn
+    monkeypatch.setattr(store.engine, 'connect', slow_connect)
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            request = asyncio.create_task(client.get(f'/internal/voice/{sid}/poll', headers={'Authorization':'Bearer invalid'}))
+            beats = 0
+            while not request.done():
+                await asyncio.sleep(.01)
+                beats += 1
+            response = await request
+            assert response.status_code == 401
+            assert beats >= 8, 'Synchronous database authentication blocked the event loop'
+    asyncio.run(scenario())
+
+
 def _enable_metered_voice(monkeypatch):
     monkeypatch.setenv('OPENLEARN_USAGE_MODE', 'enforce')
     monkeypatch.setenv('OPENLEARN_USAGE_PAID_ROUTES_ENABLED', 'true')
