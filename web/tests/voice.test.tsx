@@ -31,6 +31,14 @@ it('confirms the exact action hash instead of issuing a fresh mutation', async (
   expect(request).toHaveBeenCalledWith('/v1/voice/actions/action/confirm', expect.objectContaining({ body: JSON.stringify({ arguments_hash: 'a'.repeat(64), approve: true }) }));
 });
 
+it('offers spoken replies from typed input without choosing microphone start', () => {
+  const textStart = vi.fn();
+  act(() => root.render(<VoiceDock {...props} session={null} setup onStartText={textStart} />));
+  act(() => [...container.querySelectorAll('button')].find(b => b.textContent === 'Start with text')!.click());
+  expect(textStart).toHaveBeenCalledOnce();
+  expect(props.onStart).not.toHaveBeenCalled();
+});
+
 it('deduplicates replayed events across arbitrary byte boundaries', async () => {
   const first = JSON.stringify({ sequence: 1, voiceSessionId: 'voice', type: 'turn.started', text: 'Quiz' });
   const last = JSON.stringify({ sequence: 2, voiceSessionId: 'voice', type: 'session.ended' });

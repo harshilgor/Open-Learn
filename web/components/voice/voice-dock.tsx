@@ -8,7 +8,7 @@ type Props = {
   session: VoiceSession | null; state: string; error: string; muted: boolean; captions: boolean; interim?: string; events: VoiceEvent[]; setup: boolean;
   devices: MediaDeviceInfo[]; device: string; onDevice: (id: string) => void;
   manual?: boolean; onMode?: () => void; onHold?: (speaking: boolean) => void; onDone?: () => void;
-  onStart: () => void; onDismiss: () => void; onEnd: () => void; onMute: () => void; onStop: () => void;
+  onStart: () => void; onStartText?: () => void; onDismiss: () => void; onEnd: () => void; onMute: () => void; onStop: () => void;
   onCaptions: () => void; onOpen: (event: VoiceEvent) => void; onResume: () => void;
 };
 
@@ -57,7 +57,7 @@ export function VoiceDock(props: Props) {
     <AudioLines size={30} /><h2 id="voice-title">Talk to Buddy</h2><p>Ask questions, create quizzes and diagrams, or set a reminder while you study.</p>
     <p>Your microphone audio is processed by our voice providers. Conversation text and action receipts are saved with your study account. Open Learn does not record the audio.</p>
     <label>Microphone<select value={props.device} onChange={event => props.onDevice(event.target.value)}><option value="">System default</option>{props.devices.map(device => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Microphone'}</option>)}</select></label>
-    <button className={styles.primary} onClick={props.onStart}>Start conversation</button><button onClick={props.onDismiss}>Keep typing</button>
+    <button className={styles.primary} onClick={props.onStart}>Start conversation</button>{props.onStartText ? <button onClick={props.onStartText}>Start with text</button> : null}<button onClick={props.onDismiss}>Keep typing</button>
   </section></div>;
   if (!props.session) return props.error ? <aside className={styles.notice} role="status">{props.error}<button onClick={props.onDismiss} aria-label="Dismiss voice message"><X size={16} /></button></aside> : null;
   const latestActions = new Map<string, VoiceEvent>();

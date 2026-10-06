@@ -30,6 +30,7 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const focusUpdates = useRef<Promise<unknown>>(Promise.resolve());
   const resuming = useRef<Promise<void> | null>(null);
   const connecting = useRef(false);
+  const microphoneWanted = useRef(true);
 
   const end = useCallback(async () => {
     generation.current++;
@@ -56,7 +57,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
   const receive = useCallback((event: VoiceEvent) => {
     setEvents(previous => [...previous, event].slice(-200));
-    if (event.type === 'session.ready') void room.current?.localParticipant.setMicrophoneEnabled(true).then(() => setState('Listening')).catch(() => { setError('Allow microphone access to talk, or use text.'); void end(); });
+    if (event.type === 'session.ready') {
+      if (!microphoneWanted.current) { setMuted(true); setState('Muted'); }
+      else void room.current?.localParticipant.setMicrophoneEnabled(true).then(() => setState('Listening')).catch(() => { setError('Allow microphone access to talk, or use text.'); void end(); });
+    }
     if (event.type === 'turn.started') setState('Thinking');
     if (event.type === 'turn.completed') setState('Listening');
     if (event.type === 'speech.ready') audio.current.forEach(element => { element.volume = 1; void element.play().catch(() => undefined); });
@@ -100,9 +104,11 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     return recovery;
   }, [end]);
 
-  const connect = useCallback(async (chatId: string) => {
+  const connect = useCallback(async (chatId: string, startMuted = false) => {
     if (connecting.current || sessionRef.current) return;
     connecting.current = true;
+    microphoneWanted.current = !startMuted;
+    setMuted(startMuted);
     setSetup(null); setError(''); setState('Connecting');
     const epoch = ++generation.current;
     try {
@@ -176,13 +182,13 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
     const current = sessionRef.current;
     if (current) { await room.current?.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ type: 'interrupt' })), { reliable: true, topic: 'openlearn-control' }); await voiceApi.interrupt(current.id); }
   };
-  const mute = async () => { await room.current?.localParticipant.setMicrophoneEnabled(muted); setMuted(!muted); setState(muted ? 'Listening' : 'Muted'); };
+  const mute = async () => { microphoneWanted.current = muted; await room.current?.localParticipant.setMicrophoneEnabled(muted); setMuted(!muted); setState(muted ? 'Listening' : 'Muted'); };
   const control = async (value: Record<string, unknown>) => { await room.current?.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(value)), { reliable: true, topic: 'openlearn-control' }); };
   const changeMode = async () => { await control({ type: 'mode', manual: !manual }); await room.current?.localParticipant.setMicrophoneEnabled(manual); setManual(!manual); setMuted(!manual); };
   const hold = async (speaking: boolean) => { await room.current?.localParticipant.setMicrophoneEnabled(speaking); setMuted(!speaking); if (!speaking) await control({ type: 'done' }); };
   const changeDevice = async (id: string) => { setDevice(id); if (room.current) { try { await room.current.switchActiveDevice('audioinput', id || 'default'); } catch { await room.current.localParticipant.setMicrophoneEnabled(false); setMuted(true); setError('Microphone could not change. Choose an available device.'); } } };
 
   return <Context.Provider value={{ start, active: Boolean(session), state, error }}>{children}
-    <VoiceDock session={session} state={state} error={error} muted={muted} manual={manual} onMode={() => void changeMode().catch(() => setError('Could not change microphone mode.'))} onHold={speaking => void hold(speaking).catch(() => setError('Microphone unavailable.'))} onDone={() => void control({ type: 'done' })} captions={captions} interim={interim} events={events} setup={Boolean(setup)} devices={devices} device={device} onDevice={id => void changeDevice(id)} onStart={() => setup && void connect(setup)} onDismiss={() => { setSetup(null); setError(''); }} onEnd={() => void end()} onMute={() => void mute().catch(() => setError('Microphone unavailable.'))} onStop={() => void stop().catch(() => setError('Speech stopped locally.'))} onCaptions={() => setCaptions(!captions)} onOpen={intent} onResume={() => { audio.current.forEach(element => { element.volume = 1; void element.play(); }); }} />
+    <VoiceDock session={session} state={state} error={error} muted={muted} manual={manual} onMode={() => void changeMode().catch(() => setError('Could not change microphone mode.'))} onHold={speaking => void hold(speaking).catch(() => setError('Microphone unavailable.'))} onDone={() => void control({ type: 'done' })} captions={captions} interim={interim} events={events} setup={Boolean(setup)} devices={devices} device={device} onDevice={id => void changeDevice(id)} onStart={() => setup && void connect(setup)} onStartText={() => setup && void connect(setup, true)} onDismiss={() => { setSetup(null); setError(''); }} onEnd={() => void end()} onMute={() => void mute().catch(() => setError('Microphone unavailable.'))} onStop={() => void stop().catch(() => setError('Speech stopped locally.'))} onCaptions={() => setCaptions(!captions)} onOpen={intent} onResume={() => { audio.current.forEach(element => { element.volume = 1; void element.play(); }); }} />
   </Context.Provider>;
 }
