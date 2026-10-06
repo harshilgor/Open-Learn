@@ -27,11 +27,30 @@ VOICE_SLICE_SECONDS = 15
 VOICE_SLICE_MILLISECONDS = VOICE_SLICE_SECONDS * 1000
 
 
+def _voice_acceptance_mode():
+    try:
+        seconds = int(os.getenv('OPENLEARN_VOICE_SESSION_SECONDS', '1800'))
+    except ValueError:
+        return False
+    return (os.getenv('OPENLEARN_VOICE_ACCEPTANCE_MODE') == 'true' and
+            bool(os.getenv('OPENLEARN_VOICE_TEST_EMAILS', '').strip()) and
+            os.getenv('OPENLEARN_VOICE_MAX_CONCURRENT') == '1' and
+            60 <= seconds <= 120)
+
+
+def _voice_account_allowed():
+    if not _voice_acceptance_mode():
+        return os.getenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED') == 'true'
+    principal = principal_context.get()
+    allowed = {value.strip().lower() for value in os.getenv('OPENLEARN_VOICE_TEST_EMAILS', '').split(',') if value.strip()}
+    return bool(principal and principal.kind == 'web' and principal.email in allowed)
+
+
 def _voice_usage_ready():
     """Voice requires accounting plus an operator-verified bounded shutdown path."""
     if (os.getenv('OPENLEARN_USAGE_PAID_ROUTES_ENABLED') != 'true' or
             os.getenv('OPENLEARN_VOICE_ENABLED') != 'true' or
-            os.getenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED') != 'true'):
+            (os.getenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED') != 'true' and not _voice_acceptance_mode())):
         return False
     try:
         if Policy.load().mode != 'enforce':
@@ -284,13 +303,13 @@ def build_voice_router(get_store, provider_getter):
 
     @router.get('/v1/voice/capabilities')
     def capabilities(owner=Depends(material_owner)):
-        ready = _voice_usage_ready()
+        ready = _voice_usage_ready() and _voice_account_allowed()
         return {'enabled': ready, 'configured': ready, 'languages': ['en'],
                 'message': 'Talk to Buddy is ready.' if ready else 'Voice is not enabled on this server yet. You can continue typing.'}
 
     @router.post('/v1/voice/sessions', status_code=201)
     async def create(body: SessionCreate, key: str = Header(alias='Idempotency-Key', min_length=1, max_length=160), owner=Depends(material_owner)):
-        if not _voice_usage_ready():
+        if not _voice_usage_ready() or not _voice_account_allowed():
             fail('voice_unavailable', 'Voice providers are not configured. You can continue typing.', 503)
         if not body.consent:
             fail('voice_consent_required', 'Accept microphone processing before starting.', 422)

@@ -130,6 +130,11 @@ def tick(store, provider_getter):
         pending = conn.execute(text("""SELECT id,kind FROM learning_jobs WHERE cancellation_requested=false
             AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY priority DESC,created_at,id LIMIT 100"""), {"now": time.time()}).all()
     for job_id, kind in pending:
+        if kind in {'voice_turn', 'voice_action'}:
+            from .voice.worker import run_voice_job
+            run_voice_job(store, provider_getter(), job_id)
+            did_work = True
+            break
         if kind in LEARNING_KINDS:
             run_job(store, provider_getter(), job_id)
             did_work = True

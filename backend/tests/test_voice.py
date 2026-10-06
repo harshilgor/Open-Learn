@@ -116,6 +116,31 @@ def _enable_metered_voice(monkeypatch):
     monkeypatch.setattr('backend.app.voice.routes.media.configured', lambda: True)
 
 
+def test_acceptance_rollout_only_admits_configured_authenticated_email(env, monkeypatch):
+    store, _, _ = env
+    _enable_metered_voice(monkeypatch)
+    monkeypatch.setenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED', 'false')
+    monkeypatch.setenv('OPENLEARN_VOICE_ACCEPTANCE_MODE', 'true')
+    monkeypatch.setenv('OPENLEARN_VOICE_TEST_EMAILS', 'tester@example.com')
+    monkeypatch.setenv('OPENLEARN_VOICE_SESSION_SECONDS', '120')
+    monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '1')
+    from backend.app.voice.routes import _voice_usage_ready, _voice_account_allowed
+    assert _voice_usage_ready()
+    for principal, expected in [(Principal('alice', 'local', email='tester@example.com'), False),
+                                (Principal('alice', 'web', email='other@example.com'), False),
+                                (Principal('alice', 'web', email='tester@example.com'), True)]:
+        token = principal_context.set(principal)
+        try:
+            assert _voice_account_allowed() is expected
+        finally:
+            principal_context.reset(token)
+    monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '2')
+    assert not _voice_usage_ready()
+    monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '1')
+    monkeypatch.setenv('OPENLEARN_VOICE_SESSION_SECONDS', 'invalid')
+    assert not _voice_usage_ready()
+
+
 def test_voice_slices_are_reserved_once_and_replayed_with_same_deadline(env, monkeypatch):
     store, _, sid = env
     _enable_metered_voice(monkeypatch)

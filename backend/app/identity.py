@@ -20,6 +20,7 @@ class Principal:
     device_id: str | None = None
     display_name: str = ''
     expires_at: float | None = None
+    email: str = ''
 
 
 principal_context: ContextVar[Principal | None] = ContextVar('openlearn_principal', default=None)
@@ -134,7 +135,8 @@ def authenticate(store, authorization: str | None, local_owner: str | None) -> P
         with store.engine.begin() as conn:
             conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at) VALUES(:id,:hash,:name,'active',:now) ON CONFLICT(subject_hash) DO NOTHING"), {'id': owner, 'hash': subject_hash, 'name': display, 'now': time.time()})
             assert_owner_active(conn, owner)
-        return Principal(owner, 'web', display_name=display, expires_at=float(claims['exp']))
+        return Principal(owner, 'web', display_name=display, expires_at=float(claims['exp']),
+                         email=str(claims.get('email') or '').strip().lower())
     if hosted() and not all(os.getenv('OPENLEARN_OIDC_' + name) for name in ('ISSUER', 'AUDIENCE', 'JWKS_URL')):
         fail('authentication_unconfigured', 'Configure the account provider before signing in.', 503)
     if hosted() or os.getenv('AI_TUTOR_DEV_IDENTITY', 'true').lower() not in {'true', '1', 'yes'}:

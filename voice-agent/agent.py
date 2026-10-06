@@ -241,6 +241,7 @@ async def entrypoint(ctx: JobContext):
                         pass
 
     await voice.start(agent=Buddy(backend), room=ctx.room, record=False)
+    log.info('Voice media ready for session %s', sid)
     spawn(poll()); spawn(speak()); spawn(usage_slices())
     try:
         await stopped.wait()
@@ -255,6 +256,7 @@ async def entrypoint(ctx: JobContext):
             pass  # Backend janitor settles orphaned sessions.
         await backend.client.aclose()
         await ctx.room.disconnect()
+        log.info('Voice media stopped for session %s', sid)
 
 
 if __name__ == '__main__':
