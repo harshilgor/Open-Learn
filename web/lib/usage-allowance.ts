@@ -80,7 +80,7 @@ export async function refreshAllowance():Promise<Allowance|null>{
    if(!state.snapshot||snapshot.revision>state.snapshot.revision)emit({snapshot,error:'',fetchedAt:Date.now()});
    else if(snapshot.revision===state.snapshot.revision){
     const old=state.snapshot;
-    if(snapshot.usedMicrocredits!==old.usedMicrocredits||snapshot.heldMicrocredits!==old.heldMicrocredits||snapshot.availableMicrocredits!==old.availableMicrocredits||snapshot.availability!==old.availability||snapshot.reasonCode!==old.reasonCode)emit({snapshot,error:'',fetchedAt:Date.now()});
+    if(state.error||snapshot.testUnlimited!==old.testUnlimited||snapshot.grantedMicrocredits!==old.grantedMicrocredits||snapshot.windowId!==old.windowId||snapshot.resetsAt!==old.resetsAt||snapshot.usedMicrocredits!==old.usedMicrocredits||snapshot.heldMicrocredits!==old.heldMicrocredits||snapshot.availableMicrocredits!==old.availableMicrocredits||snapshot.availability!==old.availability||snapshot.reasonCode!==old.reasonCode)emit({snapshot,error:'',fetchedAt:Date.now()});
    }
    return snapshot;
   }catch{if(fence===generation)emit({...state,error:'Usage is temporarily unavailable.'});return null;}
