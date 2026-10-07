@@ -11,6 +11,8 @@ import type { LocalLecture } from '@/lib/lecture-local-store';
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), update: vi.fn(), create: vi.fn(), chats: vi.fn(), refresh: vi.fn() }));
 vi.mock('@/lib/api', async original => ({ ...await original<object>(), learningApi: { listWorkspaceNotes: mocks.list, getWorkspaceNote: mocks.get, updateWorkspaceNote: mocks.update, createWorkspaceNote: mocks.create, listChatSessions: mocks.chats, refreshNoteTitles: mocks.refresh } }));
+const buddyFixture = vi.hoisted(() => ({ snapshot: { chats: { s1: 'buddy', s2: 'buddy' }, profiles: [{ id: 'buddy', name: 'Buddy' }] }, active: { id: 'buddy' }, refresh: vi.fn(async () => {}) }));
+vi.mock('@/components/buddies', () => ({ useBuddies: () => buddyFixture }));
 vi.mock('@/components/study-note-bar', () => ({ StudyNoteBar: () => null }));
 vi.mock('@/components/study-note-panel', () => ({ NoteProposalList: () => null }));
 vi.mock('@/components/visualization-reference', () => ({ NoteVisualReferences: () => null }));
@@ -41,7 +43,7 @@ function button(label:string){const found=[...container.querySelectorAll('button
 function click(label:string){act(()=>button(label).click());}
 function Harness(){
   const [tab,setTab]=useState<WorkspaceSidebarTab>('notes');const [course,setCourse]=useState<string|null>(null);const [host,setHost]=useState<HTMLDivElement|null>(null);const [command,setCommand]=useState<NotesCommand|null>(null);
-  return <><WorkspaceSidebar tab={tab} onTabChange={setTab} collapseControl={<button aria-label="Toggle Sidebar"/>} courses={courses} activeCourseId={course} onCourseSelect={setCourse} onCourseOpen={()=>{}} onNewChat={()=>{}} onNewCourse={()=>{}} onNotesCommand={action=>setCommand({id:Date.now(),action})} onReview={()=>{}} onQuiz={()=>{}} activeSessionId={null} refreshKey={0} onOpenSession={()=>{}} notesHost={setHost}/><div hidden={tab!=='notes'}><NotesWorkspace listHost={host} courses={courses} courseFilter={course} onCourseFilter={setCourse} command={command} noteToOpen={null} onNoteOpenConsumed={()=>{}}/></div><button onClick={()=>setCommand({id:1,action:'new-note'})}>Test new note</button><button onClick={()=>setCommand({id:2,action:'new-folder'})}>Test new folder</button></>;
+  return <><WorkspaceSidebar tab={tab} onTabChange={setTab} collapseControl={<button aria-label="Toggle Sidebar"/>} courses={courses} activeCourseId={course} onCourseSelect={setCourse} onCourseOpen={()=>{}} onNewChat={()=>{}} onNewCourse={()=>{}} onNotesCommand={action=>setCommand({id:Date.now(),action})} onDashboard={()=>{}} activeSessionId={null} refreshKey={0} onOpenSession={()=>{}} notesHost={setHost}/><div hidden={tab!=='notes'}><NotesWorkspace listHost={host} courses={courses} courseFilter={course} onCourseFilter={setCourse} command={command} noteToOpen={null} onNoteOpenConsumed={()=>{}}/></div><button onClick={()=>setCommand({id:1,action:'new-note'})}>Test new note</button><button onClick={()=>setCommand({id:2,action:'new-folder'})}>Test new folder</button></>;
 }
 describe('unified sidebar and notes',()=>{
   it('restores an explicitly selected note and does not reload it on parent rerenders',async()=>{

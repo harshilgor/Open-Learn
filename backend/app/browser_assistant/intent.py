@@ -10,17 +10,21 @@ URL = re.compile(r'https://[^\s<>"\)]+', re.I)
 
 
 def candidate(message):
+    from ..agent_execution.admission import plan_message
+    if plan_message(message).kind == 'browser': return True
     return bool((SITE_WORDS.search(message) and VERBS.search(message)) or
                 (URL.search(message) and re.search(r'\b(open|visit|browse|go|read|check|find)\b', message, re.I)) or
                 re.search(r'\b(what|which|show|list)\b.*\b(classes|exams|assignments).*\b(tomorrow|week|taking|upcoming)\b', message, re.I))
 
 
 def fallback_intent(message):
+    from ..agent_execution.admission import plan_message
+    plan = plan_message(message)
     lower = message.lower()
     save = bool(re.search(r'\b(save|remember|store|update)\b', lower)) and not bool(re.search(r"\b(?:don't|do not|never)\s+(?:save|remember|store)|just summarize", lower))
     reminders = bool(re.search(r'\bremind me\b', lower)) and not bool(re.search(r"(?:don't|do not|never)\s+(?:save\s+or\s+)?remind", lower))
     operations = ['browse', 'summarize']
-    if re.search(r'classes.*taking|my (?:classes|courses)|enrollments', lower): operations.insert(0, 'discover_courses')
+    if re.search(r'classes.*taking|my (?:classes|courses)|enrollments', lower) or (plan.source_alias == 'Canvas' and not re.search(r'assignment|syllabus|announcement|module|grade|calendar', lower)): operations.insert(0, 'discover_courses')
     if re.search(r'midterm|exam|final', lower): operations.insert(0, 'collect_exam_dates')
     if re.search(r'deadline|assignment', lower): operations.insert(0, 'collect_assignments')
     if save: operations.append('save_academic_facts')
@@ -30,7 +34,7 @@ def fallback_intent(message):
     external = re.findall(r'\b(submit|purchase|pay|delete|send)\b', lower)
     url = URL.search(message)
     return TaskIntent(handled=candidate(message), goal=message, operations=operations,
-                      source_url=url.group().rstrip('.,;') if url else None, save=save,
+                      source_url=(url.group().rstrip('.,;') if url else plan.source_url), source_alias=plan.source_alias, save=save,
                       reminder_requested=reminders, external_write_requests=external)
 
 
@@ -42,6 +46,8 @@ def compile_intent(message, provider=None, connections=(), previous=None):
     if previous:
         previous = {**previous,'facts':[{k:f.get(k) for k in ('entityId','courseId','title','date','saved')} for f in previous.get('facts',[])[:40]]}
     fallback = fallback_intent(message)
+    from ..agent_execution.admission import plan_message
+    if plan_message(message).kind == 'browser': return fallback
     if previous and followup(message) and not re.search(r'\b(open|go|browse|check|refresh)\b',message,re.I):
         fallback.handled = True
         if not fallback.save: fallback.operations = ['query_saved','summarize']

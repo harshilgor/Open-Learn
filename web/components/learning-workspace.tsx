@@ -1,22 +1,22 @@
 "use client";
 import { VoiceProvider } from './voice/voice-provider';
+import dynamic from 'next/dynamic';
+import mobileLayout from './mobile-workspace.module.css';
+import { useMobileViewport } from '@/hooks/use-mobile-viewport';
+import { DeferredWorkspace } from './deferred-workspace';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, ChevronsUpDown, CircleHelp, Compass, ExternalLink, FileText, FolderClosed, FolderPlus, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Settings, Sparkles, SquarePen, X } from 'lucide-react';
 import { Sidebar, SidebarContent, SidebarFooter, SidebarProvider, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AccountMenuActions, AccountProfile } from '@/components/account-access';
 import { LearnChat } from '@/components/learn-chat';
-import { useIsMobile } from '@/hooks/use-mobile';
-import { MobileNavigation } from '@/components/mobile-navigation';
+import { MobileHeader } from './mobile-header';
 import { buddyApi } from '@/lib/buddies';
 import { BuddyRail, BuddyHeader, useBuddies } from '@/components/buddies';
-import { BuddyToday } from './buddy-today';
-import { BuddyReminders } from './buddy-reminders';
+import { StudyDashboard } from './study-dashboard';
 import {CLASS_OPEN_EVENT,classApi,openClassWorkspace} from '@/lib/in-class';
-import { QuizWorkspace } from '@/components/quiz-workspace';
-import { ReviewWorkspace } from '@/components/review-workspace';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -24,14 +24,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { maps, mapEdges, positions, type Gear, type LearningMap } from '@/lib/learning-content';
 import { learningApi, type LessonArtifact, type CourseSummary } from '@/lib/api';
 import { getJourney, navigateToSession, rememberSessionHint, resolveSessionHint, sessionIdFromPath, workflow } from '@/lib/learning-workflows';
-import { LocalDataSettings } from '@/components/local-data-settings';
 import { WorkspaceSplit, useWorkspacePanel } from '@/components/workspace-split';
-import { NotesWorkspace } from '@/components/workspace-panel';
+import { WorkspacePanel, type WorkspacePanelLayout, NotesWorkspace } from '@/components/workspace-panel';
 import { ChatHistory } from '@/components/chat-history';
-import { CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceNote, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
-import { SettingsPage, type SettingsCategory } from '@/components/settings-page';
-import { CourseDialog } from '@/components/course-dialog';
-import { CourseHome } from '@/components/course-home';
+import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceNote, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
+import type { SettingsCategory } from '@/components/settings-page';
 import type { Task } from '@/components/course-study-planner';
 import { ClassRecorder } from '@/components/class-recorder';
 import { WorkspaceSidebar, type WorkspaceSidebarTab, type NotesCommand } from './workspace-sidebar';
@@ -43,10 +40,14 @@ const INITIAL:Stored={version:1,mapId:null,conceptId:'whole',gear:'Quick',visite
 const STORAGE='forma-workspace-v1';
 const validGear=(v:string):v is Gear=>['Quick','Guided','Deep'].includes(v);
 
-function StudyOverview({ children }: { children: ReactNode }) {
- const mobile = useIsMobile(1024);
- return mobile ? <details className="mobile-today"><summary>Today · Your study space</summary>{children}</details> : <>{children}</>;
-}
+function FeatureLoading() { return <div role="status" className="p-6 text-sm text-muted-foreground">Opening your study tools…</div>; }
+const BuddyReminders = dynamic(() => import('./buddy-reminders').then(module => module.BuddyReminders), { loading: FeatureLoading });
+const QuizWorkspace = dynamic(() => import('./quiz-workspace').then(module => module.QuizWorkspace), { loading: FeatureLoading });
+const ReviewWorkspace = dynamic(() => import('./review-workspace').then(module => module.ReviewWorkspace), { loading: FeatureLoading });
+const SettingsPage = dynamic(() => import('./settings-page').then(module => module.SettingsPage), { loading: FeatureLoading });
+const CourseHome = dynamic(() => import('./course-home').then(module => module.CourseHome), { loading: FeatureLoading });
+const CourseDialog = dynamic(() => import('./course-dialog').then(module => module.CourseDialog));
+const LocalDataSettings = dynamic(() => import('./local-data-settings').then(module => module.LocalDataSettings), { loading: FeatureLoading });
 
 function MobileNavigationDismiss({ navigationKey }: { navigationKey: string }) {
  const { setOpenMobile } = useSidebar();
@@ -96,6 +97,7 @@ function LearningWorkspaceContent({
   initialSidebarTab?: WorkspaceSidebarTab;
 }) {
  const [state,setState]=useState<Stored>(INITIAL);
+ const viewportRef = useMobileViewport();
  const buddies=useBuddies();
  const appliedReminderLink=useRef('');
  const buddySnapshot=useRef(buddies.snapshot);
@@ -103,7 +105,25 @@ function LearningWorkspaceContent({
  const lastBuddyChats=useRef<Record<string,string|null>>({});
  const [learnVersion,setLearnVersion]=useState(0);
  const [ready,setReady]=useState(false);
-  const [view,setView]=useState<'home'|'maps'|'saved'|'topic'|'quiz'|'notes'|'review'|'settings'|'course'|'reminders'|'courses'>(initialSidebarTab);
+  const [mobile, setMobile] = useState(false);
+  useEffect(() => { const media = window.matchMedia('(max-width: 1023px)'); const sync = () => setMobile(media.matches); sync(); media.addEventListener('change',sync); return () => media.removeEventListener('change',sync); }, []);
+  const [view,setView]=useState<'home'|'maps'|'saved'|'topic'|'quiz'|'notes'|'review'|'settings'|'course'|'reminders'|'courses'|'dashboard'|'mobile-tool'>(initialSidebarTab);
+ const [mobileToolLayout,setMobileToolLayout]=useState<WorkspacePanelLayout>({width:100,collapsed:false,tabs:['notes'],activeTab:'notes'});
+ const [mobileTool,setMobileTool]=useState<Partial<Parameters<typeof WorkspacePanel>[0]>>({});
+ useEffect(() => {
+   if (!mobile) return;
+   const note = (event:Event) => { const id=(event as CustomEvent<string>).detail; if(id){setRecordedNoteId(id);setSidebarTab('notes');setView('notes');} };
+   const open = (event:Event) => {
+     const detail=(event as CustomEvent).detail;
+     const tab=event.type===WORKSPACE_SOURCE_OPEN_EVENT?'sources':event.type===WORKSPACE_CANVAS_EVENT?'canvas':event.type===WORKSPACE_FLASHCARDS_OPEN_EVENT?'flashcards':event.type===WORKSPACE_QUIZ_OPEN_EVENT?'quiz':'notes';
+     setMobileTool({sourceToOpen:tab==='sources'?detail:null,canvasValue:tab==='canvas'?detail:null,flashcardLaunch:tab==='flashcards'?detail:undefined,quizToOpen:tab==='quiz'?detail:null,noteSeed:tab==='notes'?detail:null});
+     setMobileToolLayout({width:100,collapsed:false,tabs:[tab],activeTab:tab});setView('mobile-tool');
+   };
+   const events=[WORKSPACE_NOTE_SEED_EVENT,WORKSPACE_SOURCE_OPEN_EVENT,WORKSPACE_CANVAS_EVENT,WORKSPACE_FLASHCARDS_OPEN_EVENT,WORKSPACE_QUIZ_OPEN_EVENT];
+   window.addEventListener(WORKSPACE_NOTE_OPEN_EVENT,note);events.forEach(name=>window.addEventListener(name,open));
+   return()=>{window.removeEventListener(WORKSPACE_NOTE_OPEN_EVENT,note);events.forEach(name=>window.removeEventListener(name,open));};
+ }, [mobile]);
+
   const [sidebarTab, setSidebarTab] = useState<WorkspaceSidebarTab>(initialSidebarTab);
   const [notesHost, setNotesHost] = useState<HTMLDivElement | null>(null);
   const [notesCommand, setNotesCommand] = useState<NotesCommand | null>(null);
@@ -288,20 +308,6 @@ function LearningWorkspaceContent({
     }
   }, [initialCourseId]);
 
-  useEffect(() => {
-    if (!activeSessionId) return;
-    if (new URLSearchParams(window.location.search).has('course') || window.location.pathname === '/notes') return;
-    let cancelled = false;
-    void learningApi.getSession(activeSessionId).then((sess) => {
-      if (!cancelled && sess.courseId !== undefined) {
-        setActiveCourseId(sess.courseId || null);
-      }
-    }).catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSessionId]);
-
   useEffect(()=>{let active=true;void learningApi.getReviewDashboard().then(dash=>{if(active)setReviewDueCount(dash.dueCount||0);}).catch(()=>undefined);return()=>{active=false;};},[view,historyVersion]);
   function openMap(id:string){const m=maps.find(x=>x.id===id);if(!m)return;setAssistantLesson(null);setState(s=>({...s,mapId:id,conceptId:s.mapId===id?s.conceptId:m.concepts[0].id}));setView('topic');setMode('map');setBranchId(null);setZoom(1);setQuery('');setSelection('');}
  function openConcept(id:string){if(!currentMap.concepts.some(c=>c.id===id))return;setState(s=>({...s,conceptId:id,visited:Array.from(new Set([...s.visited,`${currentMap.id}:${id}`]))}));setMode('lesson');setLocalAction('');setAnswer(null);setCheckOpen(false);setSelection('');setBranchId(null);}
@@ -333,38 +339,42 @@ function LearningWorkspaceContent({
   const register=async()=>{await ctx.registerTool({name:'open_sample_learning_map',description:'Open one of the three sample learning maps in this preview. Does not generate an AI map.',inputSchema:{type:'object',properties:{mapId:{type:'string',enum:maps.map(m=>m.id)}},required:['mapId'],additionalProperties:false},annotations:{readOnlyHint:false},execute:async(input:unknown)=>{const id=(input as {mapId?:string})?.mapId;if(!id||!maps.some(m=>m.id===id))throw new Error('Choose systems, light, or calculus.');openMap(id);await new Promise(resolve=>setTimeout(resolve,0));return{mapId:id,status:'opened',content:'sample'};}},{signal:lifecycle.signal});await ctx.registerTool({name:'read_learning_workspace',description:'Read the selected sample map, teaching gear, and locally explored concepts.',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true},execute:()=>({mapId:liveState.current.mapId,conceptId:liveState.current.conceptId,gear:liveState.current.gear,explored:liveState.current.visited})},{signal:lifecycle.signal});};void register().catch(()=>{});return()=>lifecycle.abort();
  },[]);
 
-   return <SidebarProvider className="forma-app-shell" style={{'--sidebar-width':'260px'} as CSSProperties}>
+   return <SidebarProvider ref={viewportRef} className={`forma-app-shell ${mobileLayout.shell}`} style={{'--sidebar-width':'260px'} as CSSProperties}>
   <MobileNavigationDismiss navigationKey={`${view}:${activeSessionId}:${activeCourseId}:${sidebarTab}`} />
   <BuddyRail onSwitch={switchBuddy} onHome={()=>openSession(null)} onSettings={()=>{setSettingsCategory('general');setView('settings');}} />
   {view==='settings'?<div className="settings-full"><SettingsPage category={settingsCategory} onCategoryChange={setSettingsCategory} onBack={()=>setView('home')} /></div>:<><Sidebar className="forma-sidebar"><SidebarContent>
-    <WorkspaceSidebar tab={sidebarTab} onTabChange={switchSidebarTab} collapseControl={<AdaptiveSidebarTrigger inSidebar />} courses={courses} activeCourseId={activeCourseId} onCourseSelect={selectCourse} onCourseOpen={id=>{setActiveCourseId(id);setView('course');setBranchId(null);}} onNewChat={()=>openSession(null)} onNewCourse={()=>setCourseDialogOpen(true)} onNotesCommand={action=>setNotesCommand(current=>({id:(current?.id||0)+1,action}))} onReminders={()=>setView('reminders')} onReview={()=>{setView('review');setBranchId(null);}} onQuiz={()=>{setView('quiz');setBranchId(null);}} activeSessionId={activeSessionId} refreshKey={historyVersion} onOpenSession={openSession} notesHost={setNotesHost} />
+    <WorkspaceSidebar tab={sidebarTab} onTabChange={switchSidebarTab} collapseControl={<AdaptiveSidebarTrigger inSidebar />} courses={courses} activeCourseId={activeCourseId} onCourseSelect={selectCourse} onCourseOpen={id=>{setActiveCourseId(id);setView('course');setBranchId(null);}} onNewChat={()=>openSession(null)} onNewCourse={()=>setCourseDialogOpen(true)} onNotesCommand={action=>setNotesCommand(current=>({id:(current?.id||0)+1,action}))} onDashboard={()=>{setView('dashboard');setBranchId(null);}} dashboardActive={view==='dashboard'} activeSessionId={activeSessionId} refreshKey={historyVersion} onOpenSession={openSession} notesHost={setNotesHost} />
    </SidebarContent><SidebarFooter><DropdownMenu><DropdownMenuTrigger asChild><button className="profile" aria-label="Account menu"><AccountProfile/><ChevronsUpDown size={15}/></button></DropdownMenuTrigger><DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[224px] learner-menu"><DropdownMenuLabel><div className="flex items-center gap-2.5"><span className="avatar">L</span><div className="grid gap-0.5"><strong className="text-sm font-semibold leading-none">Learner</strong><small className="text-xs text-muted-foreground">Your Open Learn account</small></div></div></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem onSelect={()=>openSession(null)}><Plus size={15}/>New topic<DropdownMenuShortcut>⌘ K</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('general');setView('settings');setBranchId(null);}}><Settings size={15}/>Settings<DropdownMenuShortcut>Ctrl+,</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('about');setView('settings');setBranchId(null);}}><CircleHelp size={15}/>Help &amp; app info</DropdownMenuItem><AccountMenuActions/></DropdownMenuContent></DropdownMenu></SidebarFooter></Sidebar>
-    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar">
-      <div className="flex items-center gap-2">
+    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={mobile||view==='dashboard'||view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar workspace-topbar">
+      <MobileHeader title={view==='mobile-tool'?({notes:'Notes',sources:'Sources',canvas:'Canvas',quiz:'Practice',flashcards:'Flashcards',practice:'Practice',class:'Class'}[mobileToolLayout.activeTab]):view==='home'?'Buddy':view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='courses'||view==='course'?'Courses':view==='review'?'Review':view==='reminders'?'Reminders':'Open Learn'} onNewChat={()=>openSession(null)} onNavigate={destination=>{if(destination==='home'||destination==='notes')switchSidebarTab(destination);else if(destination==='courses')setView('courses');else if(destination==='dashboard')setView('dashboard');else if(destination==='review')setView('review');else if(destination==='settings'){setSettingsCategory('general');setView('settings');}}}/>
+
+      <div className="topbar-primary">
         <AdaptiveSidebarTrigger/>
-        <Button className="buddy-desktop-action" variant="ghost" size="sm" onClick={()=>openSession(null)}>Today</Button>
-        <Button className="buddy-desktop-action" variant="ghost" size="sm" onClick={()=>setView('reminders')}>Reminders</Button>
         <BuddyHeader onSwitch={switchBuddy} />
+      </div>
+      <div className="topbar-context" aria-label="Current workspace">
         {view === 'course' ? (
           <><button className="text-muted-foreground hover:text-foreground transition-colors" onClick={()=>{setView('courses');setActiveCourseId(null);}}>Courses</button><ChevronRight size={13}/><strong className="truncate max-w-[200px]">{courses.find((c) => c.id === activeCourseId)?.name || 'Course'}</strong></>
         ) : view === 'home' && activeCourseId ? (
           <><button className="text-muted-foreground hover:text-foreground transition-colors truncate max-w-[160px]" onClick={()=>{setView('course');}}>{courses.find((c) => c.id === activeCourseId)?.name || 'Course'}</button><ChevronRight size={13}/><strong className="truncate max-w-[210px]" title={chatTitle}>{chatTitle}</strong>{activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}{(courses.find(c=>c.id===activeCourseId)?.roadmapProgress||0)>0?<span className="header-progress" role="img" aria-label={`${courses.find(c=>c.id===activeCourseId)?.roadmapProgress}% course progress`} style={{'--progress':`${courses.find(c=>c.id===activeCourseId)?.roadmapProgress}%`} as CSSProperties}/>:null}</>
         ) : (
-          <><strong className="text-foreground font-medium truncate max-w-[250px]" title={view==='home'?chatTitle:undefined}>{view==='topic'?currentMap.title:view==='saved'?'Saved explorations':view==='maps'?'Knowledge maps':view==='quiz'?'Quiz':view==='notes'?'Notes':view==='review'?'Review':view==='reminders'?'Reminders':view==='courses'?'Courses':chatTitle}</strong>{view==='home'&&activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}</>
+          <><strong className="text-foreground font-medium truncate max-w-[250px]" title={view==='home'?chatTitle:undefined}>{view==='topic'?currentMap.title:view==='saved'?'Saved explorations':view==='maps'?'Knowledge maps':view==='quiz'?'Quiz':view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='review'?'Review':view==='reminders'?'Reminders':view==='courses'?'Courses':chatTitle}</strong>{view==='home'&&activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}</>
         )}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="topbar-actions">
+
         {reviewDueCount > 0 ? <Button variant="outline" size="sm" className="review-due-button" onClick={()=>{setView('review');setBranchId(null);}}>Review · {reviewDueCount} due</Button> : null}
-        {view !== 'notes' && view !== 'review' && view !== 'course' ? <NotesPanelTrigger /> : null}
+        {view !== 'dashboard' && view !== 'notes' && view !== 'review' && view !== 'course' ? <NotesPanelTrigger /> : null}
       </div>
     </header>
    {reviewReturnBanner?<div className="toast-message" role="status"><RotateCcw size={16}/>Return to your review when you are ready.<button type="button" onClick={()=>{if(reviewReturnBanner.startsWith('fcr_'))openWorkspaceFlashcards({view:'review',reviewSessionId:reviewReturnBanner});else{setReviewContext({sessionId:reviewReturnBanner});setView('review');}setReviewReturnBanner(null);}}>Return to Review</button><button onClick={()=>setReviewReturnBanner(null)} aria-label="Dismiss"><X size={14}/></button></div>:null}
-   {view==='home'&&!activeSessionId?<StudyOverview><BuddyToday onClass={id=>{setActiveCourseId(id);setRecordSetupOpen(true);}} onPrep={(id,title)=>{const buddy=buddies.snapshot?.courses[id]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);setActiveCourseId(id);openSession(null);setAskTutorPrompt(`Help me prepare for ${title}. Use my course materials when available.`);setAutoSubmitTutorPrompt(false);}} courses={courses} due={reviewDueCount} onCourse={id=>{setActiveCourseId(id);setView('course');}} onReview={()=>setView('review')} onAdd={()=>setCourseDialogOpen(true)} onReminders={()=>setView('reminders')}/></StudyOverview>:null}
+   {view==='mobile-tool'?<div className="mobile-tool-page"><WorkspacePanel {...mobileTool} layout={mobileToolLayout} onLayoutChange={setMobileToolLayout} onCollapse={()=>setView('home')} onExpand={()=>{}} noteSeed={mobileTool.noteSeed||null} noteToOpen={null} onNoteSeedConsumed={()=>setMobileTool(current=>({...current,noteSeed:null}))} onNoteOpenConsumed={()=>{}}/></div>:null}
+   {view==='dashboard'?<StudyDashboard courses={courses} onReview={()=>{setReviewContext({});setView('review');}} onCourse={id=>{setActiveCourseId(id);setView('course');}} onAddCourse={()=>setCourseDialogOpen(true)} onReminders={()=>setView('reminders')} onStudy={()=>openSession(activeSessionId)} onClass={id=>{setActiveCourseId(id);setRecordSetupOpen(true);}} onPrep={(id,title)=>{const buddy=buddies.snapshot?.courses[id]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);setActiveCourseId(id);openSession(null);setAskTutorPrompt(`Help me prepare for ${title}. Use my course materials when available.`);setAutoSubmitTutorPrompt(false);}}/>:null}
    {view==='reminders'?<BuddyReminders initialReminderId={reminderId} onCourse={id=>{setActiveCourseId(id);setView('course');}}/>:null}
    {view==='courses'?<section className="buddy-home"><h2>Your courses</h2><Button onClick={()=>setCourseDialogOpen(true)}>Add a course</Button>{courses.map(course=>{const id=buddies.snapshot?.courses[course.id]||buddies.snapshot?.defaultBuddyId;return <button className="nav-item" key={course.id} onClick={()=>{setActiveCourseId(course.id);setView('course');}}>{course.name} · {buddies.snapshot?.profiles.find(p=>p.id===id)?.name||'Buddy'}</button>;})}{!courses.length?<p>Add a course to organize your chats and class sessions.</p>:null}</section>:null}
-   <div className="chat-view" hidden={view!=='home'}><LearnChat onMissingSession={()=>openSession(null)} key={`${learnVersion}:${buddies.active?.id}`} onInClass={()=>setRecordSetupOpen(true)} onSessionCreated={id=>{setActiveSessionId(id);if(buddies.active){lastBuddyChats.current[buddies.active.id]=id;void buddyApi.remember(buddies.active.id,id).catch(()=>{});try{localStorage.setItem(`openlearn-last-chat:${buddies.active.id}`,id);}catch{}}}} initialSessionId={activeSessionId} initialPrompt={askTutorPrompt||undefined} preferredMode={askTutorMode} autoSubmitInitialPrompt={autoSubmitTutorPrompt} studyTask={studyTask} onStudyTaskCompleted={()=>setStudyTask(null)} onInitialPromptConsumed={()=>{setAskTutorPrompt(null);setAutoSubmitTutorPrompt(false);}} onQuiz={async (sessionId,conceptId,origin='ask',requestedTopic,sourceTransitionId)=>{const lessonNoteId=origin==='learn'?(await learningApi.createStudyNote(sessionId)).noteId:undefined;setQuizContext({sessionId,conceptId});setView('home');openWorkspaceQuiz({sessionId,conceptId,origin,requestedTopic,lessonNoteId,sourceTransitionId});}} onReview={(sessionId,conceptId)=>{setReviewContext({sessionId,conceptId});setView('review')}} courseId={activeCourseId} courseName={courses.find(c => c.id === activeCourseId)?.name} onCourseClick={(cid)=>{setActiveCourseId(cid);setView('course');}} /></div>
+   <div className={`chat-view ${mobileLayout.chat}`} hidden={view!=='home'}><LearnChat onMissingSession={()=>openSession(null)} key={`${learnVersion}:${buddies.active?.id}`} onInClass={()=>setRecordSetupOpen(true)} onSessionCreated={id=>{setActiveSessionId(id);if(buddies.active){lastBuddyChats.current[buddies.active.id]=id;void buddyApi.remember(buddies.active.id,id).catch(()=>{});try{localStorage.setItem(`openlearn-last-chat:${buddies.active.id}`,id);}catch{}}}} initialSessionId={activeSessionId} initialPrompt={askTutorPrompt||undefined} preferredMode={askTutorMode} autoSubmitInitialPrompt={autoSubmitTutorPrompt} studyTask={studyTask} onStudyTaskCompleted={()=>setStudyTask(null)} onInitialPromptConsumed={()=>{setAskTutorPrompt(null);setAutoSubmitTutorPrompt(false);}} onQuiz={async (sessionId,conceptId,origin='ask',requestedTopic,sourceTransitionId)=>{const lessonNoteId=origin==='learn'?(await learningApi.createStudyNote(sessionId)).noteId:undefined;setQuizContext({sessionId,conceptId});setView('home');openWorkspaceQuiz({sessionId,conceptId,origin,requestedTopic,lessonNoteId,sourceTransitionId});}} onReview={(sessionId,conceptId)=>{setReviewContext({sessionId,conceptId});setView('review')}} courseId={activeCourseId} courseName={courses.find(c => c.id === activeCourseId)?.name} onCourseClick={(cid)=>{setActiveCourseId(cid);setView('course');}} /></div>
    {view==='course'&&activeCourseId?<CourseHome key={activeCourseId} onSavedQuiz={quiz=>{openSession(quiz.sessionId);openWorkspaceQuiz({sessionId:quiz.sessionId,quizId:quiz.id,lessonNoteId:quiz.lessonNoteId||undefined,origin:quiz.origin==='learn'?'learn':'ask'});}} onStartClass={()=>setRecordSetupOpen(true)} courseId={activeCourseId} onOpenSession={(sid)=>openSession(sid)} onNewSession={()=>{const buddy=buddies.snapshot?.courses[activeCourseId]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);openSession(null);}} onOpenNote={(nid)=>{setRecordedNoteId(nid);switchSidebarTab('notes');}} onQuizSession={(sid)=>{void Promise.all([learningApi.getSession(sid),learningApi.getStudyNote(sid)]).then(([session,note])=>{setActiveSessionId(sid);setQuizContext({sessionId:sid});setView('home');openWorkspaceQuiz({sessionId:sid,origin:note?'learn':'ask',lessonNoteId:note?.noteId,requestedTopic:session.goal||undefined});}).catch(cause=>setNotice(cause instanceof Error?cause.message:'Could not open this quiz.'));}} onLaunchTask={async(task:Task)=>{const topic=String(task.launch.requestedTopic||task.reason).slice(0,200);const session=await learningApi.createSession({topic,goal:task.reason,courseId:activeCourseId||undefined});setActiveCourseId(activeCourseId);openSession(session.id);return session.id;}} onLaunchReady={(task:Task,sessionId:string,revision:number)=>{const workflow=String(task.launch.workflow);const topic=String(task.launch.requestedTopic||task.reason);const canonicalConceptIds=task.conceptIds||[];if(workflow==='quiz'){setQuizContext({sessionId,conceptId:undefined});openWorkspaceQuiz({sessionId,origin:'ask',requestedTopic:topic,taskId:task.id,taskCourseId:activeCourseId||undefined,taskRevision:revision,canonicalConceptIds});return;}setStudyTask({taskId:task.id,courseId:activeCourseId||'',revision,canonicalConceptIds});setAskTutorMode('learn');setAskTutorPrompt(`Teach me ${topic}. Focus on the learning task: ${task.reason}`);setAutoSubmitTutorPrompt(true);}} onUpdated={()=>{void refreshCourses();setHistoryVersion(v=>v+1);}} onDeleted={()=>{setActiveCourseId(null);setView('home');void refreshCourses();}} />:null}
-  <div className="notes-view" hidden={view!=='notes'}><NotesWorkspace listHost={notesHost} courses={courses} courseFilter={activeCourseId} onCourseFilter={selectCourse} command={notesCommand} onRecordClass={folder=>{setRecordFolder(folder);setRecordSetupOpen(true);}} noteToOpen={recordedNoteId || selectedNoteId} onNoteOpenConsumed={()=>setRecordedNoteId(null)} onNoteSelected={selectNote} /></div>
+  <div className="notes-view" hidden={view!=='notes'}><DeferredWorkspace active={view==='notes'}><NotesWorkspace compact={mobile} listHost={notesHost} courses={courses} courseFilter={activeCourseId} onCourseFilter={selectCourse} command={notesCommand} onRecordClass={folder=>{setRecordFolder(folder);setRecordSetupOpen(true);}} noteToOpen={recordedNoteId || selectedNoteId} onNoteOpenConsumed={()=>setRecordedNoteId(null)} onNoteSelected={selectNote} /></DeferredWorkspace></div>
   {view==='quiz' ? <QuizWorkspace historyOnly sessionId={quizContext?.sessionId} conceptId={quizContext?.conceptId} onStartQuiz={()=>{setView('home');requestWorkspaceQuiz();}} onReturn={()=>setView('home')} onReviewInLearn={suggestion=>{
     const sid = quizContext?.sessionId || activeSessionId;
     if (!sid) { setNotice('Open the original conversation to review this topic.'); return; }
@@ -375,7 +385,7 @@ function LearningWorkspaceContent({
       return learningApi.recordTransitionInteraction(suggestion.id, 'applied', 'learn', sid);
     }).catch(cause=>setNotice(cause instanceof Error?cause.message:'The review could not be started.'));
   }} /> : null}
-  {view==='review' ? <ReviewWorkspace resumeSessionId={reviewContext?.sessionId} focusConceptId={reviewContext?.conceptId} onDone={()=>setView('home')} onStartLearning={()=>setView('home')} /> : null}
+  {view==='review' ? <ReviewWorkspace resumeSessionId={reviewContext?.sessionId} focusConceptId={reviewContext?.conceptId} onDone={()=>setView('dashboard')} onStartLearning={()=>setView('home')} /> : null}
   {view==='maps'?<div className="library-content"><div className="eyebrow">YOUR SPACE</div><h1>Knowledge maps</h1><p className="intro">A growing collection of connected ideas.</p><div className="search-field"><Search size={16}/><input aria-label="Search maps" placeholder="Find a map…" value={query} onChange={e=>setQuery(e.target.value)}/></div><div className="map-cards">{maps.filter(m=>m.title.toLowerCase().includes(query.toLowerCase())).map(m=><button className="map-card" key={m.id} onClick={()=>openMap(m.id)}><MiniMap index={maps.indexOf(m)}/><div className="map-card-body"><small>SAMPLE MAP</small><h3>{m.title}<ArrowUpRight size={16}/></h3><p>{m.description}</p></div></button>)}</div>{!maps.some(m=>m.title.toLowerCase().includes(query.toLowerCase()))?<div className="empty-state"><Search size={24}/><h2>No matching maps</h2><p>Try “systems”, “light”, or “calculus”.</p><Button variant="outline" onClick={()=>setQuery('')}>Clear search</Button></div>:null}{state.ideas.length>0?<section className="ideas"><h2>Ideas for later</h2><p>Saved on this device. Live map generation is not connected yet.</p>{state.ideas.map(t=><div key={t}><Sparkles size={15}/>{t}</div>)}</section>:null}</div>:null}
   {view==='saved'?<div className="library-content"><div className="eyebrow">YOUR SPACE</div><h1>Keep the useful parts.</h1><p className="intro">Saved lessons and the questions you followed.</p>{state.saved.length+state.branches.length===0?<div className="empty-state"><Bookmark size={28}/><h2>A little space for your discoveries.</h2><p>Save a lesson or open an exploration. It will be waiting here.</p><Button variant="outline" onClick={()=>setView('maps')}>Explore the maps <ArrowRight size={15}/></Button></div>:<div className="saved-list">{state.saved.map(id=>{const [mi,ci]=id.split(':');const m=maps.find(m=>m.id===mi);const c=m?.concepts.find(c=>c.id===ci);return c&&m?<button key={id} onClick={()=>{setState(s=>({...s,mapId:mi,conceptId:ci}));setView('topic');setMode('lesson')}}><Bookmark size={18}/><span><strong>{c.title}</strong><small>{m.title} · Saved lesson</small></span><ChevronRight size={16}/></button>:null})}{state.branches.map(b=><button key={b.id} onClick={()=>{setState(s=>({...s,mapId:b.mapId,conceptId:b.conceptId}));setView('topic');setMode('lesson');setBranchId(b.id)}}><GitBranch size={18}/><span><strong>{b.anchor}</strong><small>{maps.find(m=>m.id===b.mapId)?.title} · {b.mode}</small></span><ChevronRight size={16}/></button>)}</div>}</div>:null}
   {view==='topic'?<div className="topic-workspace"><div className="topic-heading"><div><span className="eyebrow">{currentMap.id.startsWith('generated:')?'LIMITED DRAFT GRAPH':'SAMPLE LEARNING MAP'}</span><h1>{currentMap.title}</h1><p>{currentMap.description}</p></div><button className="source-button" onClick={()=>setSources(true)}><BookOpen size={15}/>{currentMap.id.startsWith('generated:')?'Trust status':'Reading reference'}<ArrowUpRight size={13}/></button></div>
@@ -400,7 +410,7 @@ function LearningWorkspaceContent({
   <Dialog open={dialog!==null} onOpenChange={v=>{if(!v)setDialog(null)}}><DialogContent className={dialog==='setup'?'settings-dialog':undefined}><DialogHeader><DialogTitle>{dialog==='topic'?'Keep that curiosity.':dialog==='setup'?'Set up Open Learn on this device.':'A first look at Open Learn.'}</DialogTitle><DialogDescription>{dialog==='topic'?'The graph service could not complete this request. You can save the idea and explore one of the sample maps.':dialog==='setup'?'Add a provider key to enable model-powered lessons and quizzes. Keys stay in this device encrypted credential store.':'This workspace combines authored sample lessons with a functional draft-graph backend.'}</DialogDescription></DialogHeader>{dialog==='topic'?<div className="dialog-body"><div className="pending-topic"><Sparkles size={18}/>{topic}</div><Button onClick={()=>{setState(s=>({...s,ideas:Array.from(new Set([...s.ideas,topic.trim()]))}));setDialog(null);setNotice('Topic saved to Knowledge maps → Ideas for later.')}}>Save topic for later<Bookmark size={15}/></Button><Button variant="outline" onClick={()=>{setDialog(null);openMap('systems')}}>Explore a sample map<ArrowRight size={15}/></Button></div>:dialog==='setup'?<div className="dialog-body"><LocalDataSettings onDone={()=>{localStorage.setItem('forma-desktop-setup-v1','done');setDialog(null)}}/><Button variant="ghost" onClick={()=>{localStorage.setItem('forma-desktop-setup-v1','done');setDialog(null)}}>Continue with the built-in tutor</Button></div>:<div className="dialog-body"><p>Try the maps, change teaching gear, select a passage, and follow an exploration without losing your place.</p><p>Progress here means <strong>explored</strong>, not mastered. Your saved lessons, branches, and preferences stay in this browser. Live model teaching, source retrieval, and account sync are the next backend layers.</p><Button onClick={()=>setDialog(null)}>Back to learning<ArrowRight size={15}/></Button></div>}</DialogContent></Dialog>
   {notice?<div className="toast-message" role="status"><Check size={16}/>{notice}<button onClick={()=>setNotice('')} aria-label="Dismiss notification"><X size={14}/></button></div>:null}
   <ClassRecorder courseName={courses.find(c=>c.id===activeCourseId)?.name} setupOpen={recordSetupOpen} onSetupOpenChange={setRecordSetupOpen} folder={recordFolder} courseId={activeCourseId} onNoteCreated={noteId=>{setRecordedNoteId(noteId);switchSidebarTab('notes');}} />
-  <CourseDialog
+  {courseDialogOpen ? <CourseDialog
     open={courseDialogOpen}
     onOpenChange={setCourseDialogOpen}
     onCreated={(c) => {
@@ -408,7 +418,6 @@ function LearningWorkspaceContent({
       setView('course');
       void refreshCourses();
     }}
-  />
- <MobileNavigation conversationOpen={view==='home'&&Boolean(activeSessionId)} onCourses={()=>setView('courses')} view={view} onBuddy={()=>switchSidebarTab('home')} onNotes={()=>{setView('review');setBranchId(null);}} />
+  /> : null}
  </SidebarProvider>
 }

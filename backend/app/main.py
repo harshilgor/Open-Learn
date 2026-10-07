@@ -162,9 +162,11 @@ app.include_router(build_canvas_router(get_store))
 from .browser_assistant.routes import build_assistant_router
 app.include_router(build_assistant_router(get_store, lambda: lesson_provider))
 from .agent_execution.routes import build_agent_router
-app.include_router(build_agent_router(get_store))
+app.include_router(build_agent_router(get_store, lambda: lesson_provider))
 from .mobile_routes import build_mobile_router
 app.include_router(build_mobile_router(get_store))
+from .dictation_routes import build_dictation_router
+app.include_router(build_dictation_router(get_store))
 from .buddy_routes import build_buddy_router
 app.include_router(build_buddy_router(get_store))
 from .reminder_routes import build_reminder_router

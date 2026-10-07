@@ -184,14 +184,20 @@ class Connections:
             if not found:
                 from .contracts import ConnectionCreate
                 academic = 'canvas' in run['message'].lower() or 'discover_courses' in intent.operations
+                executor = os.getenv('OPENLEARN_BROWSER_DEFAULT_EXECUTOR', '').strip()
+                if executor and executor not in {'local', 'cloud', 'public_fetch'}:
+                    fail('capability_unavailable', 'The default browser executor is misconfigured.', 503)
+                if not executor:
+                    executor = 'local' if academic else 'cloud' if os.getenv('OPENLEARN_CLOUD_BROWSER_ENABLED') == 'true' else 'public_fetch'
                 self.create(owner, ConnectionCreate(label=selected_origin, origin=selected_origin, category='university_lms' if academic else 'public_web',
                             platform='canvas' if 'canvas' in run['message'].lower() else 'generic',
-                            executor='local' if academic else 'cloud' if os.getenv('OPENLEARN_CLOUD_BROWSER_ENABLED') == 'true' else 'public_fetch'))
+                            executor=executor))
                 return self.resolve(owner, run, intent)
         alias = (intent.source_alias or '').lower()
         if alias:
-            found = [c for c in connections if alias in [c['label'].lower(), *[a.lower() for a in c.get('aliases', [])]]]
+            found = [c for c in connections if alias in [c['label'].lower(), c.get('platform','').lower(), *[a.lower() for a in c.get('aliases', [])]]]
             if len(found) == 1: return found[0]
+            return None  # An explicit unknown destination must not select an unrelated preferred login.
         message = run['message'].lower()
         explicit = [c for c in connections if any(a.lower() in message for a in [c['label'], *c.get('aliases', [])] if len(a) > 2)]
         if len(explicit) == 1: return explicit[0]

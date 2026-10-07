@@ -21,7 +21,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 }
 const json = (body: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-export function MaterialLibrary({courseId}:{courseId?:string}={}) {
+export function MaterialLibrary({courseId, initiallyOpen=false}:{courseId?:string;initiallyOpen?:boolean}={}) {
   const materialPath='/materials'+(courseId?`?course_id=${encodeURIComponent(courseId)}`:'');
   const [items, setItems] = useState<Material[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
@@ -31,7 +31,7 @@ export function MaterialLibrary({courseId}:{courseId?:string}={}) {
   const [busy, setBusy] = useState(false);
   const [role, setRole] = useState('reference');
   const [passages, setPassages] = useState<Source[]>([]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const pending = items.some(item => ['queued', 'running', 'uploaded'].includes(item.status));
 
   async function refresh() {

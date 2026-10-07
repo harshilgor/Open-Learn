@@ -16,7 +16,18 @@ export const CHAT_SESSION_OPEN_EVENT = 'forma:chat-session-open';
 export const WORKSPACE_PANEL_TOGGLE_EVENT = 'forma:workspace-panel-toggle';
 export const WORKSPACE_PANEL_SET_COLLAPSED_EVENT = 'forma:workspace-panel-set-collapsed';
 
-export type WorkspaceNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
+export type WorkspaceNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string; prompt?: string };
+export const WORKSPACE_CAPTURE_EVENT = 'forma:workspace-capture';
+export const WORKSPACE_CANVAS_EVENT = 'forma:workspace-canvas';
+export const WORKSPACE_ASK_EVENT = 'forma:workspace-ask';
+export const WORKSPACE_NOTE_IMPROVE_EVENT = 'forma:workspace-note-improve';
+export function askWorkspacePassage(prompt: string): void {
+  window.dispatchEvent(new CustomEvent<string>(WORKSPACE_ASK_EVENT, { detail: prompt }));
+  setWorkspacePanelCollapsed(true);
+}
+export function openWorkspaceCanvas(value: unknown): void {
+  window.dispatchEvent(new CustomEvent(WORKSPACE_CANVAS_EVENT, { detail: value }));
+}
 export type WorkspaceQuizOpen = {
   id: string;
   sessionId: string;

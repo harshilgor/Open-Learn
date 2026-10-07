@@ -7,11 +7,20 @@ class Contract(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra='forbid')
 
 
+class Attachment(Contract):
+    version_id: str = Field(alias='versionId', min_length=1, max_length=160)
+    name: str = Field(default='', max_length=200)
+
+
 class Message(Contract):
     schema_version: Literal[2] = Field(default=2, alias='schemaVersion')
     client_message_id: str = Field(alias='clientMessageId', min_length=1, max_length=160)
     session_id: str = Field(alias='sessionId', min_length=1, max_length=160)
     text: str = Field(min_length=1, max_length=16000)
+    previous_browser_task_id: str | None = Field(default=None, alias='previousBrowserTaskId', max_length=160)
+    course_id: str | None = Field(default=None, alias='courseId', max_length=160)
+    presentation: Literal['conversation','ask','learn','quiz'] = 'conversation'
+    timezone: str = Field(default='America/Los_Angeles', max_length=100)
     accepted_usage_cap_micro: int | None = Field(default=None, alias='acceptedUsageCapMicro', ge=1)
     capability: Literal['lab_analysis', 'research', 'sandbox_lab', 'flashcards'] | None = None
     flashcard_spec: FlashcardRequest | None = Field(default=None, alias='flashcardSpec')
@@ -23,7 +32,7 @@ class Message(Contract):
     target_task_id: str | None = Field(default=None, alias='targetTaskId', max_length=160)
     expected_revision: int | None = Field(default=None, alias='expectedRevision', ge=1)
     expected_request_revision: int | None = Field(default=None, alias='expectedRequestRevision', ge=1)
-    attachments: list[dict] = Field(default_factory=list, max_length=0)
+    attachments: list[Attachment] = Field(default_factory=list, max_length=20)
 
 
 class Command(Contract):

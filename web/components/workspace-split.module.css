@@ -92,7 +92,7 @@
   }
 }
 
-@media (max-width: 620px) {
+@media (max-width: 1023px) {
   .compact > .panel:not(.collapsed) {
     width: 100vw;
   }

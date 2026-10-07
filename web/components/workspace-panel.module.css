@@ -706,3 +706,7 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Compact note picker overlays the editor instead of consuming a second column. */
+.notes:not(.notesHome) { position: relative; grid-template-columns: minmax(0, 1fr); }
+.notes:not(.notesHome) > .noteList { position: absolute; inset: 0 auto 0 0; z-index: 10; width: min(320px, 92%); max-height: none; background: var(--background); box-shadow: 8px 0 24px #0003; }

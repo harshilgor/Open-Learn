@@ -6,13 +6,15 @@ import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { WorkspacePanel, type WorkspacePanelLayout } from './workspace-panel';
 import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_PANEL_SET_COLLAPSED_EVENT, WORKSPACE_PANEL_TOGGLE_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, type WorkspaceNoteSeed, type WorkspaceQuizOpen } from '@/lib/workspace-events';
 import styles from './workspace-split.module.css';
+import { DeferredWorkspace } from './deferred-workspace';
 import {WORKSPACE_FLASHCARDS_OPEN_EVENT} from '@/lib/workspace-events';
+import {WORKSPACE_CANVAS_EVENT} from '@/lib/workspace-events';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
-const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes'], activeTab: 'notes' };
+const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes', 'sources', 'practice'], activeTab: 'notes' };
 
 export type WorkspaceSplitContextValue = {
   collapsed: boolean;
@@ -34,13 +36,15 @@ function validLayout(value: unknown): value is WorkspacePanelLayout {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<WorkspacePanelLayout>;
   return typeof candidate.width === 'number' && typeof candidate.collapsed === 'boolean'
-    && Array.isArray(candidate.tabs) && candidate.tabs.every(tab => tab === 'notes' || tab === 'quiz' || tab === 'sources' || tab==='class' || tab==='flashcards')
-    && (candidate.activeTab === 'notes' || candidate.activeTab === 'quiz' || candidate.activeTab === 'sources' || candidate.activeTab==='class' || candidate.activeTab==='flashcards');
+    && Array.isArray(candidate.tabs) && candidate.tabs.every(tab => tab === 'notes' || tab === 'quiz' || tab === 'sources' || tab==='class' || tab==='flashcards' || tab==='practice' || tab==='canvas')
+    && (candidate.activeTab === 'notes' || candidate.activeTab === 'quiz' || candidate.activeTab === 'sources' || candidate.activeTab==='class' || candidate.activeTab==='flashcards' || candidate.activeTab==='practice' || candidate.activeTab==='canvas');
 }
 
 export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePanel = false }: { children: ReactNode; quizSessionId?: string | null; quizConceptId?: string; hidePanel?: boolean }) {
   const reduceMotion = useAppReducedMotion();
   const [layout, setLayout] = useState<WorkspacePanelLayout>(DEFAULT_LAYOUT);
+  const [accountGeneration, setAccountGeneration] = useState(0);
+  const [canvasValue, setCanvasValue] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
   const [compact, setCompact] = useState(false);
   const [noteSeed, setNoteSeed] = useState<WorkspaceNoteSeed | null>(null);
@@ -52,7 +56,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   useEffect(()=>{
     const open=(event:Event)=>{const detail=(event as CustomEvent<FlashcardView>).detail;if(!detail)return;setFlashcardLaunch(detail);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('flashcards')?current.tabs:[...current.tabs,'flashcards'],activeTab:'flashcards'}));const url=new URL(window.location.href);url.searchParams.set('flashcards',detail.deckId||'library');if(detail.reviewSessionId)url.searchParams.set('flashcardReview',detail.reviewSessionId);else url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     const restore=()=>{const query=new URLSearchParams(window.location.search);const deckId=query.get('flashcards'),reviewSessionId=query.get('flashcardReview');if(deckId||reviewSessionId)open(new CustomEvent(WORKSPACE_FLASHCARDS_OPEN_EVENT,{detail:{deckId:deckId==='library'?undefined:deckId||undefined,view:reviewSessionId?'review':deckId==='library'?'library':'editor',reviewSessionId:reviewSessionId||undefined}}));};
-    const clear=()=>{setFlashcardLaunch(null);setClassId(null);setActiveClassContext(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
+    const clear=()=>{setAccountGeneration(value => value + 1);setNoteSeed(null);setNoteToOpen(null);setSourceToOpen(null);setQuizToOpen(null);setCanvasValue(null);setFlashcardLaunch(null);setClassId(null);setActiveClassContext(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     window.addEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.addEventListener('popstate',restore);window.addEventListener(ACCOUNT_CHANGED,clear);restore();return()=>{window.removeEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.removeEventListener('popstate',restore);window.removeEventListener(ACCOUNT_CHANGED,clear);};
   },[]);
   useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setActiveClassContext(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
@@ -135,7 +139,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
         const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
         if (validLayout(stored)) {
           const hasSavedQuiz = Boolean(localStorage.getItem(`forma-quiz:${quizSessionId || 'panel'}`) || localStorage.getItem('forma-quiz'));
-          const tabs = stored.tabs.filter(tab => tab !== 'class' && (tab !== 'quiz' || hasSavedQuiz));
+          const tabs = [...new Set<import('./workspace-panel').WorkspaceTab>(['notes', 'sources', 'practice', ...stored.tabs])].filter(tab => tab !== 'class' && (tab !== 'quiz' || hasSavedQuiz));
           setLayout(current=>current.tabs.includes('class')||current.tabs.includes('flashcards')?current:{ ...stored, width: Math.min(70, Math.max(30, stored.width)), tabs: tabs.length ? tabs : ['notes'], activeTab: tabs.includes(stored.activeTab) ? stored.activeTab : 'notes' });
         }
       } catch { /* A session remains usable without browser storage. */ }
@@ -160,13 +164,18 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     return () => { window.removeEventListener('pointermove', resize); window.removeEventListener('pointerup', stop); };
   }, []);
 
+  useEffect(() => {
+    const receive = (event: Event) => { setCanvasValue((event as CustomEvent).detail); setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('canvas') ? current.tabs : [...current.tabs, 'canvas'], activeTab: 'canvas' })); };
+    window.addEventListener(WORKSPACE_CANVAS_EVENT, receive); return () => window.removeEventListener(WORKSPACE_CANVAS_EVENT, receive);
+  }, []);
+
   const contextValue = useMemo<WorkspaceSplitContextValue>(() => ({
     collapsed: layout.collapsed,
     setCollapsed: (collapsed: boolean) => setLayout(current => ({ ...current, collapsed })),
     toggle: () => setLayout(current => ({ ...current, collapsed: !current.collapsed })),
   }), [layout.collapsed]);
 
-  const panel = <WorkspacePanel flashcardLaunch={flashcardLaunch} classId={classId} quizSessionId={quizSessionId} quizConceptId={quizConceptId} quizToOpen={quizToOpen} layout={layout} onLayoutChange={setLayout} noteSeed={noteSeed} noteToOpen={noteToOpen} sourceToOpen={sourceToOpen} onNoteSeedConsumed={id => setNoteSeed(current => current?.id === id ? null : current)} onNoteOpenConsumed={noteId => setNoteToOpen(current => current === noteId ? null : current)}
+  const panel = <WorkspacePanel key={accountGeneration} canvasValue={canvasValue} flashcardLaunch={flashcardLaunch} classId={classId} quizSessionId={quizSessionId} quizConceptId={quizConceptId} quizToOpen={quizToOpen} layout={layout} onLayoutChange={setLayout} noteSeed={noteSeed} noteToOpen={noteToOpen} sourceToOpen={sourceToOpen} onNoteSeedConsumed={id => setNoteSeed(current => current?.id === id ? null : current)} onNoteOpenConsumed={noteId => setNoteToOpen(current => current === noteId ? null : current)}
     onCollapse={() => setLayout(current => ({ ...current, collapsed: true }))}
     onExpand={() => setLayout(current => ({ ...current, collapsed: false }))} />;
 
@@ -198,7 +207,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
         animate={reduceMotion ? undefined : { opacity: layout.collapsed ? 0 : 1 }}
         transition={{ duration: 0.2, ease: 'easeOut' }}
       >
-        {panel}
+        <DeferredWorkspace active={!layout.collapsed && !hidePanel}>{panel}</DeferredWorkspace>
       </motion.div>
     </div>
   </WorkspaceSplitContext.Provider>;

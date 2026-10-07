@@ -358,3 +358,52 @@ does not read as a solid white empty slab. */
  .chatShell .empty{padding-bottom:24px;min-height:100%;justify-content:center}
  .chatScroll{padding-inline:12px;scrollbar-gutter:auto}
 }
+/* Quiet, compact message bubbles. Rich study content stays inside the bubble. */
+.turn{gap:16px;margin-bottom:20px}
+.lessonArticle{width:fit-content;max-width:min(86%,720px);padding:12px 16px;border-radius:20px 20px 20px 5px;background:var(--muted);line-height:1.6}
+:global(.dark) .lessonArticle{background:#262626}
+.userPrompt{max-width:85%;padding:9px 15px;border-radius:22px;background:var(--secondary);color:var(--foreground)}
+:global(.dark) .userPrompt{background:#424242;color:var(--foreground)}
+.lessonArticle section[data-reading-block]{margin:0 0 14px!important}
+.lessonArticle section[data-reading-block]:last-child{margin-bottom:0!important}
+.lessonArticle section[data-reading-block] h2{font-size:1em;margin-bottom:6px}
+.lessonArticle section[data-reading-block] p:last-child{margin-bottom:0!important}
+.lessonArticle section[data-reading-block] strong{background:transparent;color:inherit;padding:0;border-radius:0;font-weight:650}
+.lessonArticle section[data-reading-block] ul,.lessonArticle section[data-reading-block] ol{margin-block:8px;padding-left:1.4em}
+.lessonArticle section[data-reading-block] li{margin-block:4px}
+.lessonArticle section[data-reading-block] li p{margin-block:0!important}
+@media(max-width:620px){.turn{gap:12px;margin-bottom:18px}.lessonArticle{max-width:94%;padding:10px 13px;border-radius:18px 18px 18px 5px}.userPrompt{max-width:90%;padding:8px 13px}}
+/* Main composer: writing surface above, preferences below. */
+.mainComposer{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:4px;padding:8px 10px;border-radius:24px;min-height:60px;box-shadow:0 4px 18px #0000000a}
+.mainComposer textarea{grid-column:2;grid-row:10;align-self:center;min-height:28px;padding:8px 3px;line-height:24px;font-size:16px}
+.mainComposer .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:10;width:36px;height:40px;border-radius:50%;color:var(--muted-foreground);transition:background .18s,color .18s}
+.mainComposer .mobileOptionsButton:hover{background:var(--accent);color:var(--foreground)}
+.mainComposer .composerBottom{display:contents}
+.mainComposer .composerTools{display:none}
+.mainComposer .composerBottom>div:last-child{grid-column:3;grid-row:10;align-self:center;gap:5px;padding-bottom:0}
+.mainComposer .composerBottom>div:last-child button{width:36px;height:36px;border-radius:50%;transition:background .18s,transform .18s}
+.mainComposer .composerBottom>div:last-child button[aria-label="Send message"]{background:var(--foreground);color:var(--background)}
+.mainComposer .composerBottom>div:last-child button[aria-label="Send message"]:disabled{background:var(--muted);color:var(--muted-foreground);opacity:.5}
+.mainComposer .attachments,.mainComposer .contextRow,.mainComposer .noteReceipt,.mainComposer .notePicker,.mainComposer .composerNote,.mainComposer .error{grid-column:1/-1;margin:6px 8px}
+.composerFooter{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 8px 0;min-height:38px}
+.composerFooter .modeTrigger{display:inline-flex;align-items:center;gap:6px;background:transparent;font-size:12px;padding:0 7px;color:var(--foreground);border-radius:9px}
+.composerFooter .modeTrigger:hover{background:var(--accent)}
+.composerFooter .modeTile{display:none}
+.composerFooter .modeChevron{width:12px;color:var(--muted-foreground)}
+:global(.dark) .mainComposer{background:#222;box-shadow:none;border-color:#ffffff26}
+:global(.dark) .mainComposer:focus-within{border-color:#ffffff45;box-shadow:0 0 0 2px #ffffff08}
+@media(max-width:620px){.mainComposer{padding:6px;border-radius:22px;grid-template-columns:36px minmax(0,1fr) auto;min-height:54px}.mainComposer textarea{padding-block:6px}.mainComposer .composerBottom>div:last-child{gap:2px}.composerFooter{padding-inline:3px;gap:6px}}
+@media(prefers-reduced-motion:reduce){.mainComposer .mobileOptionsButton,.mainComposer .composerBottom>div:last-child button{transition:none}}
+.dictationStrip{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:8px 5px 2px;padding:12px;border:1px solid var(--border);border-radius:16px;background:var(--background);overflow:hidden;font-size:12px}
+.dictationStrip>button{display:grid;place-items:center;min-height:32px;padding:4px 9px;border-radius:9px;color:var(--foreground)}
+.dictationStrip>button:last-of-type{margin-left:auto;background:var(--foreground);color:var(--background);font-weight:600}
+.dictationStrip>button:disabled{opacity:.4}
+.dictationStrip>p,.dictationStrip>small{flex-basis:100%;margin:0;overflow-wrap:anywhere;line-height:1.5;max-height:120px;overflow:auto}
+.dictationStrip>small{color:var(--muted-foreground)}
+.dictationWave{height:28px;display:flex;align-items:center;gap:3px}
+.dictationWave span{width:3px;height:15px;border-radius:3px;background:#438ef7}
+.dictationInterim{color:var(--muted-foreground)}
+.dictationReview{grid-column:1/-1;margin:8px;padding:12px;border:1px solid var(--border);border-radius:12px;font-size:12px}
+.dictationReview textarea{display:block;width:100%;max-height:140px!important;min-height:70px!important;margin:8px 0;overflow:auto!important;font-size:14px!important}
+.dictationReview button{padding:7px 10px;border-radius:8px;background:var(--accent);margin-right:8px}
+.dictationStrip button:focus-visible,.dictationReview button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}

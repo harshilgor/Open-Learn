@@ -16,6 +16,7 @@ export async function proxyHostedApi(request: Request, segments: string[]): Prom
   const headers = new Headers();
   for (const name of requestHeaders) { const value = request.headers.get(name); if (value) headers.set(name, value); }
   try {
+    const startedAt = performance.now();
     const response = await fetch(upstream, {
       method: request.method, headers, cache: 'no-store', redirect: 'manual', signal: request.signal,
       ...(!['GET', 'HEAD'].includes(request.method) ? { body: request.body, duplex: 'half' } : {}),
@@ -23,6 +24,8 @@ export async function proxyHostedApi(request: Request, segments: string[]): Prom
     // Do not forward redirects that could leak the learner's credentials.
     if (response.status >= 300 && response.status < 400) return unavailable();
     const returned = new Headers({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+    const upstreamTiming = response.headers.get('server-timing');
+    returned.set('Server-Timing', [upstreamTiming, `proxy_upstream;dur=${(performance.now() - startedAt).toFixed(1)}`].filter(Boolean).join(', '));
     for (const name of responseHeaders) { const value = response.headers.get(name); if (value) returned.set(name, value); }
     return new Response(response.body, { status: response.status, headers: returned });
   } catch { return unavailable(); }

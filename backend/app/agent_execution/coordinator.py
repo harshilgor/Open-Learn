@@ -15,13 +15,46 @@ class Coordinator:
 
     def admit(self, owner, body, key):
         if not key or len(key)>200: fail('invalid_input','Provide a stable Idempotency-Key.',422)
-        data=body.model_dump(by_alias=True);hash_value=digest(data)
+        data=body.model_dump(by_alias=True)
+        # Preserve hashes for pre-admission clients whose schema had no routing context.
+        for field, default in [('courseId', None), ('previousBrowserTaskId', None), ('presentation','conversation'), ('timezone','America/Los_Angeles')]:
+            if data.get(field) == default: data.pop(field, None)
+        hash_value=digest(data)
+        from .admission import plan_message
+        plan = plan_message(body.text) if not body.capability and not body.target_task_id and not body.reply_to_request_id else None
+        if plan and body.previous_browser_task_id:
+            from ..browser_assistant.intent import followup
+            if followup(body.text):
+                from .admission import AdmissionPlan
+                plan = AdmissionPlan(kind='browser')
+        inferred_csv = body.material_version_id or (body.attachments[0].version_id if len(body.attachments) == 1 and body.attachments[0].name.lower().endswith('.csv') else None)
+        capability = body.capability or ('research' if plan and plan.kind == 'research' else 'lab_analysis' if plan and plan.kind == 'analysis' and (inferred_csv or body.csv_text) else None)
         with self.repo.transaction() as conn:
             self.repo.session(conn,owner,body.session_id)
+            if body.attachments:
+                from ..material_service import MaterialService
+                for attachment in body.attachments:
+                    version = MaterialService(self.store).version(owner, attachment.version_id, conn)
+                    if version['role'] in {'answer_key','sample_paper'} and (body.capability or plan and plan.kind != 'direct'): fail('source_scope_denied','Assessment sources cannot enter general agent execution.',403)
+                    if not conn.execute(text('SELECT 1 FROM material_attachments WHERE session_id=:session AND version_id=:version'), {'session':body.session_id,'version':attachment.version_id}).first():
+                        fail('source_scope_denied','Attach this owned material to the conversation before using it.',403)
             existing=conn.execute(text('SELECT * FROM agent_messages WHERE owner_id=:owner AND (client_message_id=:client OR command_key=:key)'),{'owner':owner,'client':body.client_message_id,'key':key}).mappings().first()
             if existing:
                 if existing['request_hash']!=hash_value: fail('idempotency_conflict','That message identity has different content.',409)
                 return json.loads(existing['response'])
+            if plan and plan.kind == 'flashcards':
+                from ..flashcards.contracts import FlashcardRequest
+                refs = []
+                if body.attachments:
+                    from ..material_service import MaterialService
+                    refs = [{'kind':'material','id':attachment.version_id,'revision':MaterialService(self.store).version(owner,attachment.version_id,conn)['version']} for attachment in body.attachments]
+                else:
+                    from ..study_note_service import StudyNoteService
+                    note = StudyNoteService(self.store).find_note(owner,body.session_id)
+                    if note: refs = [{'kind':'lesson','id':note.id,'revision':note.revision}]
+                if refs:
+                    body = body.model_copy(update={'flashcard_spec':FlashcardRequest(sessionId=body.session_id,courseId=body.course_id,origin=body.presentation,sourceRefs=refs,objective=body.text[:1000],clientCommandId=body.client_message_id)})
+                    capability = 'flashcards'
             identifier=uid('message')
             response={'schemaVersion':2,'messageId':identifier,'admissionId':identifier,'status':'direct','handled':False,'references':[]}
             if body.target_task_id or body.reply_to_request_id:
@@ -54,9 +87,36 @@ class Coordinator:
                     input_material=None
                     ack=self.apply_command(conn,owner,target,command)
                     response.update(status='accepted',handled=True,references=[{'kind':'task','id':target},{'kind':'command','id':ack['commandId']}])
-            elif body.capability:
+            elif plan and plan.kind == 'browser':
+                import os
+                if os.getenv('OPENLEARN_BROWSER_ASSISTANT_ENABLED', 'true') != 'true':
+                    fail('capability_unavailable', 'Browser assistance is disabled. Enable a browser connection to continue this request.', 503)
+                from ..browser_assistant.service import AssistantService
+                from ..browser_assistant.contracts import TaskCreate
+                run = AssistantService(self.store).create(owner, TaskCreate(message=body.text, sessionId=body.session_id, courseId=body.course_id, previousTaskId=body.previous_browser_task_id), 'message:' + identifier, connection=conn)
+                response.update(status='queued', handled=True, runtimeOwner='browser_legacy', references=[{'kind':'task','id':run['id']}])
+            elif plan and plan.kind == 'control':
+                rows = conn.execute(text("SELECT id,payload FROM assistant_runs WHERE owner_id=:owner AND session_id=:session AND status NOT IN ('completed','completed_partial','failed','cancelled') ORDER BY updated_at DESC LIMIT 10"), {'owner':owner,'session':body.session_id}).mappings().all()
+                if len(rows) == 1:
+                    target = json.loads(rows[0]['payload'])
+                    if target.get('runtime_owner') == 'agent_v2':
+                        ack = self.apply_command(conn, owner, rows[0]['id'], Command(commandId='control_'+identifier, action=plan.action, expectedRevision=target['revision']))
+                        response.update(status='accepted',handled=True,references=[{'kind':'task','id':rows[0]['id']}])
+                    else:
+                        response.update(status='requires_action',handled=True,directive={'kind':'browser_control','taskId':rows[0]['id'],'action':plan.action},references=[{'kind':'task','id':rows[0]['id']}],runtimeOwner='browser_legacy')
+                else:
+                    response.update(status='needs_input',handled=True,question='Which task should I '+plan.action+'?' if rows else 'There is no active task in this conversation to '+plan.action+'.',references=[{'kind':'task','id':row['id']} for row in rows])
+            elif plan and plan.kind in {'flashcards','reminder','analysis','connected_action','memory','responsibility'} and capability is None:
+                response.update(status='requires_action',handled=True,directive={'kind':plan.kind},references=[])
+                if plan.kind == 'analysis':
+                    response.update(status='needs_input',question='Attach the dataset and tell me what you want to calculate. Supported analysis currently requires a CSV with trial, distance, and time columns.')
+                if plan.kind == 'responsibility':
+                    response.update(status='needs_input',question='Choose a course, schedule, and run limit in Ongoing work before I start monitoring. A one-time website check does not enable recurring work.')
+                if plan.kind == 'connected_action':
+                    response.update(status='needs_input',question='Connect the relevant app in Agent workspace, then prepare a concrete action for review. Sending or changing an external calendar requires its approval card.')
+            elif capability:
                 if not admission_enabled(): fail('capability_unavailable','New agent admission is disabled. Existing work remains available.',503)
-                if body.capability=='flashcards':
+                if capability=='flashcards':
                     from ..flashcards.sources import resolve
                     spec=body.flashcard_spec
                     if not spec or spec.session_id!=body.session_id:fail('invalid_input','Provide flashcard sources for this conversation.',422)
@@ -67,26 +127,26 @@ class Coordinator:
                         if deck['revision']!=spec.expected_deck_revision:fail('revision_conflict','Deck changed.',409)
                         if deck.get('courseId')!=manifest.get('courseId'):fail('source_scope_mismatch','Choose a deck in the current course.',422)
                     run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{'flashcardRequest':spec.model_dump(by_alias=True),'flashcardManifest':manifest},kind='flashcards',accepted_usage_cap_micro=body.accepted_usage_cap_micro)
-                elif body.capability=='research':
+                elif capability=='research':
                     from .research_contracts import ResearchSpec
                     spec=ResearchSpec.model_validate(body.research_spec or {'query':body.text}).model_dump(by_alias=True)
                     run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,None,{},kind='research',research_spec=spec,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                 else:
-                    if body.capability=='sandbox_lab':
+                    if capability=='sandbox_lab':
                         from .sandbox_config import readiness
                         state=readiness()
                         if state['state']!='available':fail('capability_unavailable',state['reasonCode'],503)
                     input_material=None
                     csv_value=body.csv_text or FIXTURE
-                    if body.material_version_id:
-                        if body.capability!='sandbox_lab' or body.csv_text:fail('invalid_input','Select one sandbox CSV input: inline text or material version.',422)
+                    if inferred_csv:
+                        if capability not in {'sandbox_lab','lab_analysis'} or body.csv_text:fail('invalid_input','Select one sandbox CSV input: inline text or material version.',422)
                         from .sandbox_inputs import material_csv
-                        csv_value,input_material=material_csv(self.store,owner,body.session_id,body.material_version_id,conn)
+                        csv_value,input_material=material_csv(self.store,owner,body.session_id,inferred_csv,conn)
                     rows=parse_csv(csv_value);constraints=constraints_from(body.text,{},rows)
-                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,csv_value,constraints,kind=body.capability,input_material=input_material,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
+                    run=self.create(conn,owner,body.session_id,body.text,'message:'+identifier,csv_value,constraints,kind=capability,input_material=input_material,accepted_usage_cap_micro=body.accepted_usage_cap_micro)
                 response.update(status='queued',handled=True,references=[{'kind':'task','id':run['id']}])
             conn.execute(text('INSERT INTO agent_messages(id,owner_id,session_id,client_message_id,command_key,request_hash,payload,response,created_at) VALUES(:id,:owner,:session,:client,:key,:hash,:payload,:response,:now)'),{'id':identifier,'owner':owner,'session':body.session_id,'client':body.client_message_id,'key':key,'hash':hash_value,'payload':encoded(data),'response':encoded(response),'now':time.time()})
-            if response['handled']:
+            if response['handled'] and response.get('runtimeOwner') != 'browser_legacy' and response['references'] and response['status'] in {'queued','accepted'}:
                 run=self.repo.run(conn,owner,next(r['id'] for r in response['references'] if r['kind']=='task'))
                 self.repo.activity(conn,run,'user:'+identifier,'user.message',messageId=identifier,text=body.text)
             return response

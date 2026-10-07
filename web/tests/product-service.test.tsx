@@ -2,7 +2,7 @@ import {afterEach,describe,expect,it,vi} from 'vitest';
 import {proxyHostedApi} from '@/lib/hosted-api-proxy';
 import {apiBaseUrl} from '@/lib/api';
 import {serviceConnectionMessage} from '@/lib/product-runtime';
-vi.mock('@/lib/account-session',()=>({authenticatedFetch:vi.fn()}));
+vi.mock('@/lib/account-session',()=>({ACCOUNT_CHANGED:'openlearn-account-changed',sessionToken:async()=>undefined,authenticatedFetch:vi.fn()}));
 afterEach(()=>{vi.unstubAllGlobals();vi.unstubAllEnvs();delete (window as Window & {formaDesktop?:unknown}).formaDesktop;});
 
 describe('product service boundaries',()=>{
@@ -34,7 +34,7 @@ describe('product service boundaries',()=>{
     expect(String(fetch.mock.calls[0][0])).toBe('https://api.example/v1/events?cursor=1');
     const options=fetch.mock.calls[0][1] as RequestInit;const headers=new Headers(options.headers);
     expect(headers.get('authorization')).toBe('Bearer learner-token');expect(headers.has('x-dev-learner-id')).toBe(false);expect(headers.has('x-forma-desktop-token')).toBe(false);
-    expect(result.headers.get('cache-control')).toContain('no-store');expect(await result.text()).toContain('event: ready');
+    expect(result.headers.get('cache-control')).toContain('no-store');expect(result.headers.get('server-timing')).toMatch(/proxy_upstream;dur=\d+(?:\.\d+)?/);expect(await result.text()).toContain('event: ready');
   });
   it('rejects unsafe origins and redirects',async()=>{
     const fetch=vi.fn(async(_input: RequestInfo | URL,_init?: RequestInit)=>new Response(null,{status:302,headers:{location:'https://other.example'}}));vi.stubGlobal('fetch',fetch);

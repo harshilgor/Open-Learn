@@ -1,5 +1,7 @@
 import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
-import { authenticatedFetch, sessionToken } from './account-session';
+import { ACCOUNT_CHANGED, authenticatedFetch, sessionToken } from './account-session';
+import { ApiReadCache, readFreshness } from './api-read-cache';
+import { recordApiTiming } from './api-performance';
 import { uploadMaterialParts, type MaterialUploadSession } from './material-upload';
 /**
  * Browser client for the learning-kernel API.
@@ -398,7 +400,38 @@ export async function authenticatedResource(path:string):Promise<{url:string;htt
   return {url:url(path),httpHeaders:headers};
 }
 
+const readCache = new ApiReadCache();
+let cacheEpoch = 0;
+function invalidateReads() { cacheEpoch++; readCache.clear(); }
+if (typeof window !== 'undefined') {
+  window.addEventListener(ACCOUNT_CHANGED, invalidateReads);
+  window.addEventListener('focus', invalidateReads);
+  window.addEventListener('online', invalidateReads);
+  window.addEventListener('forma:chat-history-changed', invalidateReads);
+  window.addEventListener('forma:chat-title-changed', invalidateReads);
+  window.addEventListener('openlearn-voice-refresh', invalidateReads);
+}
+
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const method = (init.method || 'GET').toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') {
+    invalidateReads();
+    try { return await requestUncached<T>(path, init); }
+    finally { invalidateReads(); }
+  }
+  // Each abortable caller owns its request; SSR must never share private data.
+  if (typeof window === 'undefined' || method !== 'GET' || init.signal || init.cache === 'no-store' || init.cache === 'reload') {
+    return requestUncached<T>(path, init);
+  }
+  const epoch = cacheEpoch;
+  const identity = await sessionToken();
+  if (epoch !== cacheEpoch) return request<T>(path, init);
+  const headers = [...new Headers(init.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
+  const key = JSON.stringify([epoch, identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
+  return readCache.read(key, () => requestUncached<T>(path, init), init.cache === 'no-cache' ? 0 : readFreshness(path));
+}
+
+async function requestUncached<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set('Accept', 'application/json');
   const token = desktopToken();
@@ -406,13 +439,16 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
   let response: Response;
+  const startedAt = performance.now();
   try {
     response = await authenticatedFetch(url(path), { ...init, headers });
   } catch (cause) {
+    recordApiTiming(path, startedAt, 0);
     if (init.signal?.aborted) throw cause;
     throw new LearningApiError(503, 'service_unavailable', serviceConnectionMessage());
   }
   const text = await response.text();
+  recordApiTiming(path, startedAt, response.status);
   let body: unknown = null;
   if (text) {
     try {

@@ -36,6 +36,9 @@ import {FlashcardWorkspace} from './flashcard-workspace';
 import {MakeFlashcards} from './flashcard-create';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import {InClassWorkspace} from './in-class-workspace';
+import { Visualization } from './visualization';
+import { parseVisualization } from '@/lib/visualization-spec';
+import { WORKSPACE_CAPTURE_EVENT, WORKSPACE_NOTE_IMPROVE_EVENT, askWorkspacePassage, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
 import { mentionWorkspaceNoteExcerpt, WORKSPACE_SOURCE_OPEN_EVENT, type WorkspaceNoteSeed } from '@/lib/workspace-events';
 import { StudyNoteBar } from './study-note-bar';
 import { NoteProposalList } from './study-note-panel';
@@ -47,11 +50,11 @@ import type { NotesCommand } from './workspace-sidebar';
 import { noteDisplayTitle } from '@/lib/note-list';
 import { CompactTutorChat, type TutorChatContext } from './compact-tutor-chat';
 
-export type WorkspaceTab = 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards';
+export type WorkspaceTab = 'practice' | 'canvas' | 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards';
 export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTab[]; activeTab: WorkspaceTab };
 type NoteDraft = (Pick<WorkspaceNote, 'id' | 'title' | 'body' | 'revision' | 'frontmatter'>) | { id: null; title: string; body: string; revision: null; frontmatter: Record<string, unknown> };
 
-const tabNames: Record<WorkspaceTab, string> = { notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards' };
+const tabNames: Record<WorkspaceTab, string> = { practice: 'Practice', canvas: 'Canvas', notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards' };
 const noteTools = [
   { format: 'heading', label: 'Heading', icon: Heading2 },
   { format: 'bold', label: 'Bold (Ctrl+B)', icon: Bold },
@@ -85,6 +88,10 @@ const RichNoteBody = memo(function RichNoteBody({ initialBody, editorRef, onChan
     {initialBody.trim() ? <ReactMarkdown remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{
       a: ({ href, children }) => <a href={href} onClick={event => event.preventDefault()}>{children}</a>,
       img: ({ alt }) => <span>{alt || 'Image reference'}</span>,
+      input: ({ checked, type }) => <input type={type} defaultChecked={checked} aria-label="Mark checklist item complete" contentEditable={false} onChange={event => {
+        const editor = event.currentTarget.closest<HTMLElement>('[contenteditable="true"]');
+        if (editor) onChangeRef.current(richNoteToMarkdown(editor));
+      }}/>,
     }}>{normalizeMathMarkdown(initialBody)}</ReactMarkdown> : <p><br /></p>}
   </article>;
 }, () => true);
@@ -125,9 +132,10 @@ type SourceBlock = { id: string; versionId: string; pageIndex: number; kind: str
 type SourceMaterial = { id: string; title: string; versionId: string; status: string; role: string };
 
 function SourcesPanel({ sourceToOpen }: { sourceToOpen?: { spanId: string; versionId?: string } | null }) {
+  const [selectedSource, setSelectedSource] = useState('');
   const [materials, setMaterials] = useState<SourceMaterial[]>([]), [blocks, setBlocks] = useState<SourceBlock[]>([]), [active, setActive] = useState<SourceBlock | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('');
   const load = useCallback(async () => { setLoading(true); setError(''); try { setMaterials((await request<{ materials: SourceMaterial[] }>('/v1/materials')).materials); } catch (cause) { const friendly = friendlyServiceError(cause, 'Sources'); setError(`${friendly.message} ${friendly.detail}`); } finally { setLoading(false); } }, []);
-  const openVersion = useCallback(async (versionId: string, spanId?: string) => { try {
+  const openVersion = useCallback(async (versionId: string, spanId?: string) => { setSelectedSource(''); try {
     if (versionId.startsWith('quiz-context:')) {
       const source = await request<{ spanId: string; versionId: string; pageIndex: number; text: string }>(`/v1/quizzes/${encodeURIComponent(versionId.slice('quiz-context:'.length))}/study-context`);
       const block = { id: source.spanId, versionId: source.versionId, pageIndex: 0, kind: 'study_context', text: source.text };
@@ -137,7 +145,25 @@ function SourcesPanel({ sourceToOpen }: { sourceToOpen?: { spanId: string; versi
   useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
   useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{ spanId: string; versionId?: string }>).detail; if (!detail?.spanId) return; if (detail.versionId || detail.spanId.startsWith('quiz-context:')) { void openVersion(detail.versionId || detail.spanId, detail.spanId); return; } void request<SourceBlock>(`/v1/source-spans/${encodeURIComponent(detail.spanId)}`).then(block => openVersion(block.versionId, block.id)).catch(cause => setError(cause instanceof Error ? cause.message : 'This cited passage is no longer available.')); }; window.addEventListener(WORKSPACE_SOURCE_OPEN_EVENT, receive); return () => window.removeEventListener(WORKSPACE_SOURCE_OPEN_EVENT, receive); }, [openVersion]);
   useEffect(() => { if (!sourceToOpen?.spanId) return; const timer = window.setTimeout(() => { if (sourceToOpen.versionId || sourceToOpen.spanId.startsWith('quiz-context:')) void openVersion(sourceToOpen.versionId || sourceToOpen.spanId, sourceToOpen.spanId); else void request<SourceBlock>(`/v1/source-spans/${encodeURIComponent(sourceToOpen.spanId)}`).then(block => openVersion(block.versionId, block.id)).catch(cause => setError(cause instanceof Error ? cause.message : 'This cited passage is no longer available.')); }, 0); return () => window.clearTimeout(timer); }, [openVersion, sourceToOpen]);
-  return <section className={styles.sourcesPanel} aria-label="Sources workspace"><header><div><span>YOUR MATERIALS</span><h2>Sources</h2></div><Button size="sm" variant="ghost" onClick={() => void load()}>Refresh</Button></header><p className={styles.sourceNotice}>Attached passages and clearly labeled study context can support a quiz. Coverage can be limited.</p><div className={styles.sourceLayout}><div className={styles.sourceList}>{loading ? <p>Loading sources…</p> : materials.length ? materials.map(material => <button type="button" key={material.versionId} onClick={() => void openVersion(material.versionId)}><strong>{material.title}</strong><small>{material.status.replaceAll('_', ' ')} · {material.role.replaceAll('_', ' ')}</small></button>) : <p>No uploaded sources yet. Attach a text-based file in chat to inspect its passages here.</p>}</div><div className={styles.sourceDetail}>{active ? <><p className={styles.sourceMeta}>{active.kind === 'study_context' ? 'Study context · Not independently verified' : `Passage · Page ${active.pageIndex + 1}`}</p><pre>{active.text}</pre><p className={styles.sourceNotice}>This text is not independently verified.</p></> : blocks.length ? <div>{blocks.map(block => <button className={styles.passageButton} type="button" key={block.id} onClick={() => setActive(block)}>Page {block.pageIndex + 1} · {block.text.slice(0, 100)}…</button>)}</div> : <Empty className="h-full justify-center p-8"><EmptyHeader><EmptyMedia><BookOpen className="size-8 text-muted-foreground" /></EmptyMedia><EmptyTitle>Inspect support</EmptyTitle><EmptyDescription>Select a source or citation to see the exact passage behind it.</EmptyDescription></EmptyHeader></Empty>}</div></div>{error ? <p className={styles.error} role="alert">{error}</p> : null}</section>;
+  return <section className={styles.sourcesPanel} aria-label="Sources workspace"><header><div><span>YOUR MATERIALS</span><h2>Sources</h2></div><Button size="sm" variant="ghost" onClick={() => void load()}>Refresh</Button></header><p className={styles.sourceNotice}>Attached passages and clearly labeled study context can support a quiz. Coverage can be limited.</p><div className={styles.sourceLayout}><div className={styles.sourceList}>{loading ? <p>Loading sources…</p> : materials.length ? materials.map(material => <button type="button" key={material.versionId} onClick={() => void openVersion(material.versionId)}><strong>{material.title}</strong><small>{material.status.replaceAll('_', ' ')} · {material.role.replaceAll('_', ' ')}</small></button>) : <p>No uploaded sources yet. Attach a text-based file in chat to inspect its passages here.</p>}</div><div className={styles.sourceDetail}>{active ? <><p className={styles.sourceMeta}>{active.kind === 'study_context' ? 'Study context · Not independently verified' : `Passage · Page ${active.pageIndex + 1}`}</p><pre tabIndex={0} onKeyUp={event => { const selection = window.getSelection(); setSelectedSource(selection && event.currentTarget.contains(selection.anchorNode) ? selection.toString().trim().slice(0, 6000) : ''); }} onMouseUp={event => { const selection = window.getSelection(); setSelectedSource(selection && event.currentTarget.contains(selection.anchorNode) ? selection.toString().trim().slice(0, 6000) : ''); }}>{active.text}</pre><Button size="sm" variant="outline" onClick={() => askWorkspacePassage(`Explain this learner-provided passage (page ${active.pageIndex + 1}, span ${active.id}):\n\n${selectedSource || active.text}`)}>Ask Buddy about {selectedSource ? 'selection' : 'passage'}</Button><details><summary>Other passages</summary>{blocks.map(block => <button className={styles.passageButton} type="button" key={block.id} onClick={() => { setActive(block); setSelectedSource(''); }}>Page {block.pageIndex + 1} · {block.text.slice(0, 100)}</button>)}</details><p className={styles.sourceNotice}>This text is not independently verified.</p></> : blocks.length ? <div>{blocks.map(block => <button className={styles.passageButton} type="button" key={block.id} onClick={() => setActive(block)}>Page {block.pageIndex + 1} · {block.text.slice(0, 100)}…</button>)}</div> : <Empty className="h-full justify-center p-8"><EmptyHeader><EmptyMedia><BookOpen className="size-8 text-muted-foreground" /></EmptyMedia><EmptyTitle>Inspect support</EmptyTitle><EmptyDescription>Select a source or citation to see the exact passage behind it.</EmptyDescription></EmptyHeader></Empty>}</div></div>{error ? <p className={styles.error} role="alert">{error}</p> : null}</section>;
+}
+
+function PracticePanel({ sessionId, conceptId }: { sessionId?: string | null; conceptId?: string }) {
+  const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
+  const [note, setNote] = useState<WorkspaceNote | null>(null);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState('');
+  useEffect(() => { let live = true; void learningApi.listWorkspaceNotes().then(value => { if (live) setNotes(value); }).catch(cause => { if (live) setError(cause instanceof Error ? cause.message : 'Notes unavailable.'); }); return () => { live = false; }; }, []);
+  useEffect(() => { let live = true; setNote(null); if (selected) void learningApi.getWorkspaceNote(selected).then(value => { if (live) { setNote(value); setError(''); } }).catch(cause => { if (live) setError(cause instanceof Error ? cause.message : 'Note unavailable.'); }); return () => { live = false; }; }, [selected]);
+  const linkedSession = note && Array.isArray(note.frontmatter.session_ids) && typeof note.frontmatter.session_ids[0] === 'string' ? note.frontmatter.session_ids[0] : null;
+  return <div className="study-practice"><h2>Practice what you learned</h2><p>Use a saved note for cards and targeted questions, or continue a quiz and revisit your feedback.</p>
+    {!selected ? <Button size="sm" variant="outline" onClick={requestWorkspaceQuiz}>Start a short quiz</Button> : null}
+    <label>Study note<select aria-label="Practice note" value={selected} onChange={event => setSelected(event.target.value)}><option value="">Current conversation</option>{notes.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+    <div className="study-actions"><MakeFlashcards key={selected} sessionId={linkedSession || sessionId} sourceRefs={note ? [{kind: note.frontmatter.study_note ? 'lesson' : 'note', id: note.id, revision: note.revision}] : undefined}/></div>
+    {note ? <Button size="sm" variant="outline" onClick={() => { const excerpt = note.body.slice(0, 6000); mentionWorkspaceNoteExcerpt({noteId: note.id, title: note.title, revision: note.revision, startOffset: 0, endOffset: excerpt.length, excerpt, prompt: 'Check my understanding of this note. Ask one question at a time and help me work through mistakes.'}); setWorkspacePanelCollapsed(true); }}>Check my understanding</Button> : null}
+    {note && linkedSession && note.frontmatter.study_note ? <LessonPractice key={note.id} noteId={note.id} sessionId={linkedSession} noteTitle={note.title}/> : !note ? <QuizWorkspace sessionId={sessionId} conceptId={conceptId} compact/> : <p>Use Check my understanding for this personal note, or prepare a flashcard deck.</p>}
+    {error ? <p role="alert">{error}</p> : null}
+  </div>;
 }
 
 type NoteEditorProps = {
@@ -169,7 +195,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
   // sync the persisted preference on the client after mount.
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      try { if (!fullPage) setListCollapsed(localStorage.getItem('forma-notes-list-v1') === 'collapsed'); } catch { /* Stay expanded. */ }
+      try { if (!fullPage) setListCollapsed(localStorage.getItem('forma-notes-list-v1') !== 'expanded'); } catch { /* Stay expanded. */ }
     }, 0);
     return () => window.clearTimeout(timer);
   }, [fullPage]);
@@ -296,6 +322,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
       await ensureTitles();
       const note = await learningApi.getWorkspaceNote(noteId);
       onNoteSelected?.(note.id);
+      if (!fullPage) setListCollapsed(true);
       setDraft(toDraft(note));
       setSavedDraft(toDraft(note));
       setEditorEpoch(value => value + 1);
@@ -401,15 +428,17 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
     setSelectedExcerpt({ text, start, x: Math.max(8, Math.min(range.left - wrap.left, wrap.width - 145)), y: Math.max(8, range.top - wrap.top - 42) });
   }
 
-  function mentionExcerpt() {
+  function mentionExcerpt(action = 'Explain this') {
     if (!draft?.id || !draft.revision || !selectedExcerpt) return;
     const { text, start } = selectedExcerpt;
     if (onDiscuss) {
-      onDiscuss({ id: draft.id, title: draft.title, excerpt: text, courseId: typeof draft.frontmatter.course_id === 'string' ? draft.frontmatter.course_id : null, note: { noteId: draft.id, expectedRevision: draft.revision, startOffset: start, endOffset: start + text.length } });
+      onDiscuss({ id: draft.id, title: draft.title, excerpt: text, prompt: `${action}:\n\n${text}`, courseId: typeof draft.frontmatter.course_id === 'string' ? draft.frontmatter.course_id : null, note: { noteId: draft.id, expectedRevision: draft.revision, startOffset: start, endOffset: start + text.length } });
       setSelectedExcerpt(null);
       return;
     }
-    mentionWorkspaceNoteExcerpt({ noteId: draft.id, title: draft.title, revision: draft.revision, startOffset: start, endOffset: start + text.length, excerpt: text });
+    if (action === 'Suggest improvements') { window.dispatchEvent(new CustomEvent(WORKSPACE_NOTE_IMPROVE_EVENT, {detail: {noteId: draft.id, title: draft.title, revision: draft.revision, startOffset: start, endOffset: start + text.length, excerpt: text}})); setWorkspacePanelCollapsed(true); setSelectedExcerpt(null); return; }
+    mentionWorkspaceNoteExcerpt({ noteId: draft.id, title: draft.title, revision: draft.revision, startOffset: start, endOffset: start + text.length, excerpt: text, prompt: `${action}:\n\n${text}` });
+    setWorkspacePanelCollapsed(true);
     setSelectedExcerpt(null);
     onUseInChat?.();
   }
@@ -524,6 +553,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
     <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`}>
       {draft || listCollapsed ? <div className={styles.editorTop}>
         {listCollapsed ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
+        {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" onClick={startBlank}><Plus size={16}/></Button> : null}
         {draft ? <input ref={titleInput} value={draft.title} onChange={event => setDraft(current => current ? { ...current, title: event.target.value } : current)} aria-label="Note title" placeholder="Note title" /> : null}
         {draft && fullPage ? <div className={styles.editorActions}>
           <Button type="button" size="icon-sm" variant="ghost" aria-label="Discuss this note" title="Discuss this note" onClick={discussNote}><Send size={16} /></Button>
@@ -554,6 +584,8 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
+            {!fullPage ? <Button type="button" variant="outline" onClick={() => window.dispatchEvent(new Event(WORKSPACE_CAPTURE_EVENT))}>Capture this conversation</Button> : null}
+            {notes.slice(0, 3).map(note => <Button key={note.id} type="button" variant="ghost" onClick={() => openNote(note.id)}>{note.title}</Button>)}
             <Button type="button" onClick={startBlank}>
               <Plus size={16} />New note
             </Button>
@@ -566,11 +598,14 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
         {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void loadNote(draft.id); }} /> : null}
         {typeof draft.frontmatter?.lecture_recording_id === 'string' && draft.id ? <LectureNotesView recordingId={draft.frontmatter.lecture_recording_id} /> : null}
         {draft.body.trim() ? <div className={styles.formatBar} data-note-toolbar role="toolbar" aria-label="Note formatting"><div className={styles.formatTools}>{noteTools.map(({ format, label, icon: Icon }) => <button key={format} type="button" title={label} aria-label={label} onMouseDown={event => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={16} /></button>)}</div></div> : null}
-        <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={inspectSelection}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} />{selectedExcerpt ? <button type="button" className={styles.excerptFloat} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onClick={mentionExcerpt}><Send size={13} />Ask in chat</button> : null}</div>
+        <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={inspectSelection}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} />{selectedExcerpt ? <button type="button" className={styles.excerptFloat} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onClick={() => mentionExcerpt()}><Send size={13} />Explain this</button> : null}</div>
+        {selectedExcerpt ? <div className="study-actions" aria-label="Selected passage actions">{['Give an example', 'Check my understanding', 'Make flashcards', 'Suggest improvements'].map(action => <Button key={action} size="sm" variant="outline" onClick={() => mentionExcerpt(action)}>{action}</Button>)}<Button size="sm" variant="outline" onClick={() => { setDraft(current => current ? { ...current, body: `${current.body}\n\n## Question to revisit\n\n- [ ] ${selectedExcerpt.text}` } : current); setSelectedExcerpt(null); setEditorEpoch(value => value + 1); }}>Revisit later</Button></div> : null}
+        {Array.isArray(draft.frontmatter.session_ids) && typeof draft.frontmatter.session_ids[0] === 'string' ? <Button variant="ghost" size="sm" onClick={() => openChatSession((draft.frontmatter.session_ids as string[])[0])}>Back to original conversation</Button> : null}
+        <div className="study-actions" aria-label="Original explanations">{[...new Set(Array.from(draft.body.matchAll(/\[Original explanation\]\((\/s\/[A-Za-z0-9_%.-]+(?:#[A-Za-z0-9_%.-]+)?)\)/g), match => match[1]))].map((href, index) => <a key={href} href={href}>Original explanation {index + 1}</a>)}</div>
         <NoteVisualReferences body={draft.body}/>
         {draft.id && draft.frontmatter?.study_note === true && Array.isArray(draft.frontmatter?.session_ids) && typeof draft.frontmatter.session_ids[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={draft.frontmatter.session_ids[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
         {draft.id && draft.revision && !dirty ? <MakeFlashcards sessionId={Array.isArray(draft.frontmatter.session_ids)?draft.frontmatter.session_ids[0] as string:undefined} courseId={typeof draft.frontmatter.course_id==='string'?draft.frontmatter.course_id:undefined} sourceRefs={[{kind:draft.frontmatter.study_note?'lesson':'note',id:draft.id,revision:draft.revision}]} origin="learn"/> : null}
-        <div className={styles.status} role="status">{saving ? 'Saving…' : dirty ? 'Saving changes…' : draft.id ? 'Saved locally' : 'Start typing to create this note'}</div>
+        <div className={styles.status} role="status">{saving ? 'Saving…' : dirty ? 'Saving changes…' : draft.id ? 'Saved' : 'Start typing to create this note'}</div>
       </>}
       {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     </div>
@@ -617,18 +652,19 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
 }
 
 /** Full notes destination. The chat side panel uses the same editor in a compact frame. */
-export function NotesWorkspace({ onRecordClass, noteToOpen = null, onNoteOpenConsumed = () => undefined, ...sidebar }: Pick<NoteEditorProps, 'onRecordClass' | 'noteToOpen' | 'onNoteOpenConsumed' | 'listHost' | 'courses' | 'courseFilter' | 'onCourseFilter' | 'command' | 'onNoteSelected'>) {
+export function NotesWorkspace({ compact = false, onRecordClass, noteToOpen = null, onNoteOpenConsumed = () => undefined, ...sidebar }: Pick<NoteEditorProps, 'onRecordClass' | 'noteToOpen' | 'onNoteOpenConsumed' | 'listHost' | 'courses' | 'courseFilter' | 'onCourseFilter' | 'command' | 'onNoteSelected'> & { compact?: boolean }) {
   const [, setDirty] = useState(false);
   const [discussion, setDiscussion] = useState<TutorChatContext | null>(null);
   return <div className={styles.notesDestination}>
-    <NoteEditor {...sidebar} closeRequest={false} onClose={() => undefined} onCloseRequestHandled={() => undefined} onDirtyChange={setDirty} seed={null} onSeedConsumed={() => undefined} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} fullPage onRecordClass={onRecordClass} onDiscuss={setDiscussion} />
+    <NoteEditor {...sidebar} closeRequest={false} onClose={() => undefined} onCloseRequestHandled={() => undefined} onDirtyChange={setDirty} seed={null} onSeedConsumed={() => undefined} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} fullPage={!compact} onRecordClass={onRecordClass} onDiscuss={setDiscussion} />
     {discussion ? <CompactTutorChat key={discussion.id} context={discussion} onClose={() => { setDiscussion(null); document.querySelector<HTMLButtonElement>('[aria-label="Discuss this note"]')?.focus(); }} /> : null}
   </div>;
 }
 
-export function WorkspacePanel({ flashcardLaunch, classId, quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, sourceToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
+export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, sourceToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
   flashcardLaunch?:FlashcardView|null;
   classId?:string|null;
+  canvasValue?: unknown;
   quizSessionId?: string | null;
   quizConceptId?: string;
   quizToOpen?: WorkspaceQuizOpen | null;
@@ -685,7 +721,7 @@ export function WorkspacePanel({ flashcardLaunch, classId, quizSessionId, quizCo
           </Button>
           {launcherOpen ? (
             <div className={styles.launcherMenu}>
-              {(['notes', 'sources', 'flashcards'] as WorkspaceTab[]).map(tab => (
+              {(['notes', 'sources', 'practice', 'canvas', 'flashcards'] as WorkspaceTab[]).map(tab => (
                 <button type="button" key={tab} onClick={() => openTab(tab)}>{tabNames[tab]}</button>
               ))}
             </div>
@@ -693,7 +729,7 @@ export function WorkspacePanel({ flashcardLaunch, classId, quizSessionId, quizCo
         </div>
       </div>
       <div className={styles.headerActions}>
-        {layout.tabs.length > 1 ? (
+        {layout.tabs.length > 1 && !['notes', 'sources', 'practice'].includes(active) ? (
           <Button type="button" size="icon-xs" variant="ghost" onClick={closeActiveTab} aria-label={`Close ${tabNames[active]} tab`} title={`Close ${tabNames[active]} tab`}>
             <X size={15} />
           </Button>
@@ -711,9 +747,11 @@ export function WorkspacePanel({ flashcardLaunch, classId, quizSessionId, quizCo
       </div>
     </header>
     <div className={styles.content}>
-      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'} className={styles.preservedTab}><NoteEditor closeRequest={noteCloseRequest} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} quizToOpen={quizToOpen} onCloseRequestHandled={() => setNoteCloseRequest(false)} onClose={() => { setNoteCloseRequest(false); removeActiveTab(); }} /></div> : null}
+      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'} className={styles.preservedTab}><NoteEditor closeRequest={noteCloseRequest} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => setNoteCloseRequest(false)} onClose={() => { setNoteCloseRequest(false); removeActiveTab(); }} /></div> : null}
       {layout.tabs.includes('quiz') ? <div hidden={active !== 'quiz'} className={styles.preservedTab}><QuizWorkspace sessionId={quizToOpen?.sessionId || quizSessionId} conceptId={quizToOpen?.conceptId || quizConceptId} compact launch={quizToOpen?.origin === 'ask' ? quizToOpen : null} quizId={quizToOpen?.quizId} /></div> : null}
-      {active === 'sources' ? <SourcesPanel sourceToOpen={sourceToOpen} /> : null}
+      {active === 'practice' ? <PracticePanel sessionId={quizSessionId} conceptId={quizConceptId}/> : null}
+      {active === 'canvas' ? <div className="study-practice"><h2>Canvas</h2>{parseVisualization(canvasValue) ? <Visualization value={canvasValue} lessonId={parseVisualization(canvasValue)?.sourceLessonId}/> : <p>Open a diagram or interactive visual from an explanation to keep it beside your conversation.</p>}</div> : null}
+      {active === 'sources'  ? <SourcesPanel sourceToOpen={sourceToOpen} /> : null}
       {layout.tabs.includes('flashcards') ? <div hidden={active!=='flashcards'} className={styles.preservedTab}><FlashcardWorkspace launch={flashcardLaunch}/></div> : null}
       {layout.tabs.includes('class') ? <div hidden={active!=='class'} className={styles.preservedTab}><InClassWorkspace classId={classId||null}/></div> : null}
     </div>

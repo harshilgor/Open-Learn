@@ -1,4 +1,4 @@
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExerciseCard } from '@/components/exercise-card';
@@ -20,6 +20,30 @@ function render(node: ReactNode) { act(() => root.render(node)); }
 function button(label: string) { const result = [...container.querySelectorAll('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label); if (!result) throw new Error(`Missing button: ${label}`); return result; }
 function click(element: HTMLElement) { act(() => element.click()); }
 function typeInto(input: HTMLInputElement, value: string) { act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
+
+describe('composer preferences', () => {
+  it('keeps preferences outside the writing surface and changes all explanation depths', () => {
+    function Preferences() {
+      const [gear, setGear] = useState<'Quick' | 'Guided' | 'Deep'>('Quick');
+      return <ChatComposer value="Draft stays here" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={vi.fn()} busy={false} followup={false} gear={gear} onGearChange={setGear} mode="ask" onModeChange={vi.fn()}/>;
+    }
+    render(<Preferences/>);
+    expect(button('Conversation mode').closest('form')).toBeNull();
+    const trigger = button('Explanation depth: Quick');
+    expect(trigger.closest('form')).toBeNull();
+    click(trigger);
+    const find = (name: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === name || item.getAttribute('aria-label') === name)!;
+    click(find('Deep'));
+    expect(button('Explanation depth: Deep')).toBeTruthy();
+    const range = document.querySelector<HTMLInputElement>('input[type="range"]')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(range, '1'); range.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(button('Explanation depth: Guided')).toBeTruthy();
+    expect(range.getAttribute('aria-valuetext')).toBe('Guided');
+    click(find('Reset explanation depth to Quick'));
+    expect(button('Explanation depth: Quick')).toBeTruthy();
+    expect(container.querySelector('textarea')?.value).toBe('Draft stays here');
+  });
+});
 
 describe('tutor response', () => {
   it('renders a heading, keyboard concept control, and exercise from a sample response', () => {

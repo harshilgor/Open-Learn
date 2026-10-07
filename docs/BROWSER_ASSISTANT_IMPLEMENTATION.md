@@ -36,6 +36,8 @@ The migration creates separate assistant aggregates, ordered events, fenced comm
 
 The assistant is enabled by default locally. Set `OPENLEARN_BROWSER_ASSISTANT_ENABLED=false` to disable task creation and embedded workers. Existing database startup applies additive migrations.
 
+For local companion acceptance, set `OPENLEARN_BROWSER_DEFAULT_EXECUTOR=local`. This selects the companion for newly resolved website origins; existing connections retain their executor. Other accepted values are `cloud` and `public_fetch`. A local connection remains unpaired until the user approves its scoped pairing in the extension. See [the conversational audit](CONVERSATIONAL_AGENT_AUDIT.md) for current shared-chat integration and outstanding gates.
+
 Development/desktop uses `OPENLEARN_WORKER_MODE=embedded`. Hosted deployments require the existing PostgreSQL and OIDC configuration and use `OPENLEARN_WORKER_MODE=external`.
 
 Run external assistant workers from the repository root:

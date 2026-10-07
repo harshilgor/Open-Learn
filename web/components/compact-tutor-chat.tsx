@@ -1,6 +1,5 @@
 "use client";
 
-import {routeFlashcardRequest} from '@/lib/flashcards-client';
 import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { ChatComposer, type ChatAttachment } from './chat-composer';
@@ -16,7 +15,7 @@ import {ExecutionPanel} from './assistant/execution-panel';
 
 /** A shared context boundary for note discussions and future concept explanations. */
 export type TutorChatContext = {
-  id: string; title: string; courseId?: string | null; excerpt: string; truncated?: boolean;
+  id: string; title: string; prompt?: string; courseId?: string | null; excerpt: string; truncated?: boolean;
   note?: { noteId: string; expectedRevision: number; startOffset: number; endOffset: number };
 };
 type Block = { id: string; heading: string; body: string };
@@ -26,7 +25,7 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
   const browserAssistant = useBrowserAssistant(sessionId, context.courseId);
   const [revision, setRevision] = useState(1);
   const [turns, setTurns] = useState<Journey['turns']>([]);
-  const [prompt, setPrompt] = useState('');
+  const [prompt, setPrompt] = useState(context.prompt || '');
   const [gear, setGear] = useState<Gear>('Quick');
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [busy, setBusy] = useState(false);
@@ -69,14 +68,13 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
         setSessionId(sid);
         try { localStorage.setItem(storageKey, sid); } catch { /* Server conversation is still durable. */ }
       }
-      if (!attachments.length && await routeFlashcardRequest(question,sid,context.courseId ?? undefined)) {setPrompt('');setPending(null);return;}
-      if (!attachments.length && await browserAssistant.tryStart(question, sid)) {
-        setPrompt(''); setPending(null); return;
-      }
+      const admittedAttachments: {versionId:string;name:string}[] = [];
       for (const attachment of attachments) {
         const uploaded = await prepareAttachment(attachment, controller.signal, item => setAttachments(current => current.map(existing => existing.id === item.id ? item : existing)));
         await materialRequest(`/sessions/${sid}/materials`, materialCommand({ materialVersionId: uploaded.versionId }, controller.signal));
+        admittedAttachments.push({versionId:uploaded.versionId!,name:uploaded.name});
       }
+      if (await browserAssistant.tryStart(question,sid,admittedAttachments,'ask')) { setPrompt('');setPending(null);return; }
       controller.signal.throwIfAborted();
       const nextStream = new GenerationStream(); stream.current = nextStream;
       let generationError = '';
@@ -120,7 +118,7 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
       {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? pending.blocks.map(block => <div key={block.id}>{block.heading ? <h3>{block.heading}</h3> : null}<RichContent body={block.body} /></div>) : <p role="status">Thinking…</p>}</div> : null}
       <ExecutionPanel sessionId={sessionId} courseId={context.courseId} onSession={id => { setSessionId(id); try { localStorage.setItem(storageKey, id); } catch { /* Durable server state remains available. */ } }} />
       {browserAssistant.tasks.map(task=><BrowserTaskCard key={task.id} task={task} onCommand={browserAssistant.command}/>)}
-      {browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
+      {browserAssistant.notice?<p role="status">{browserAssistant.notice}</p>:null}{browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </div>
     <div className={styles.composer}><ChatComposer variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>

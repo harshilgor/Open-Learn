@@ -1,0 +1,31 @@
+.trigger{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 9px;border-radius:9px;color:var(--muted-foreground);font-size:12px;cursor:pointer;transition:background .18s,color .18s}
+.trigger strong{color:var(--foreground);font-weight:550}
+.trigger:hover{background:var(--accent);color:var(--foreground)}
+.trigger:disabled{opacity:.5;cursor:default}
+.trigger:focus-visible{outline:2px solid var(--ring);outline-offset:3px}
+.panel{width:310px;max-width:calc(100vw - 24px);padding:18px 16px 14px;border:1px solid color-mix(in srgb,var(--foreground) 13%,transparent);border-radius:22px;background:linear-gradient(155deg,color-mix(in srgb,var(--popover) 95%,var(--foreground)),var(--popover));color:var(--foreground);box-shadow:0 16px 50px #0003,0 2px 8px #0002;backdrop-filter:blur(20px)}
+.heading{display:grid;grid-template-columns:24px 1fr 24px;align-items:center;text-align:center;gap:8px}
+.heading>svg{color:var(--muted-foreground)}
+.heading>div>span{font-size:11px;color:var(--muted-foreground)}
+.value{display:flex;align-items:center;justify-content:center;min-height:30px;font-size:18px;letter-spacing:-.4px;color:#438ef7}
+.value strong{font-weight:600}
+.heading>button{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;color:var(--muted-foreground);cursor:pointer;transition:background .18s,transform .18s}
+.heading>button:hover{background:var(--accent);transform:rotate(-30deg)}
+.heading>button:disabled{opacity:.35;cursor:default;transform:none}
+.track{position:relative;height:36px;margin-top:15px;border-radius:999px;background:color-mix(in srgb,var(--foreground) 13%,var(--popover));box-shadow:inset 0 1px 2px #0002}
+.rail{position:absolute;inset:0 18px}
+.fill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,#438ef714,#438ef72b)}
+.dot{position:absolute;top:50%;width:5px;height:5px;transform:translate(-50%,-50%);border-radius:50%;background:color-mix(in srgb,var(--foreground) 25%,transparent);transition:background .2s}
+.dot[data-active=true]{background:#438ef7}
+.thumb{position:absolute;top:3px;width:30px;height:30px;transform:translateX(-50%);border-radius:50%;background:#fff;box-shadow:0 1px 4px #0003,0 0 0 1px #ffffff40;pointer-events:none}
+.track input{position:absolute;inset:0;width:100%;height:36px;margin:0;appearance:none;background:transparent;cursor:grab;outline:none}
+.track input:active{cursor:grabbing}
+.track input::-webkit-slider-thumb{appearance:none;width:36px;height:36px;border-radius:50%;background:transparent}
+.track input::-moz-range-thumb{width:36px;height:36px;border:0;border-radius:50%;background:transparent}
+.track:focus-within{outline:2px solid var(--ring);outline-offset:4px}
+.stops{display:flex;justify-content:space-between;margin-top:8px}
+.stops button{padding:4px 2px;font-size:11px;color:var(--muted-foreground);cursor:pointer;transition:color .18s}
+.stops button[aria-pressed=true]{color:#438ef7;font-weight:600}
+.stops button:focus-visible,.heading>button:focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:5px}
+.description{min-height:18px;margin:10px 0 0;text-align:center;font-size:11px;color:var(--muted-foreground);line-height:1.5}
+@media(prefers-reduced-motion:reduce){.trigger,.dot,.stops button,.heading>button{transition:none}.panel{animation:none!important}}

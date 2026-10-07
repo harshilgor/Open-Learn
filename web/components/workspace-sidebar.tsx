@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from 'react';
-import { ArrowUpRight, CircleHelp, FolderClosed, FolderPlus, Plus, RotateCcw, SquarePen } from 'lucide-react';
+import { ArrowUpRight, FolderClosed, FolderPlus, Plus, LayoutDashboard, SquarePen } from 'lucide-react';
 import { Button } from './ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { ChatHistory } from './chat-history';
@@ -22,11 +22,11 @@ export function SidebarTabs({ tab, onChange }: { tab: WorkspaceSidebarTab; onCha
   </div>;
 }
 
-export function WorkspaceSidebar({ tab, onTabChange, collapseControl, courses, activeCourseId, onCourseSelect, onCourseOpen, onNewChat, onNewCourse, onNotesCommand, onReview, onReminders, onQuiz, activeSessionId, refreshKey, onOpenSession, notesHost }: {
+export function WorkspaceSidebar({ tab, onTabChange, collapseControl, courses, activeCourseId, onCourseSelect, onCourseOpen, onNewChat, onNewCourse, onNotesCommand, onDashboard, dashboardActive, activeSessionId, refreshKey, onOpenSession, notesHost }: {
   tab: WorkspaceSidebarTab; onTabChange: (tab: WorkspaceSidebarTab) => void; collapseControl: ReactNode;
   courses: CourseSummary[]; activeCourseId: string | null; onCourseSelect: (id: string | null) => void; onCourseOpen: (id: string) => void;
   onNewChat: () => void; onNewCourse: () => void; onNotesCommand: (action: NotesCommand['action']) => void;
-  onReminders?:()=>void; onReview: () => void; onQuiz: () => void; activeSessionId: string | null; refreshKey: number;
+  dashboardActive?: boolean; onReminders?:()=>void; onDashboard: () => void; activeSessionId: string | null; refreshKey: number;
   onOpenSession: (id: string | null) => void; notesHost: (node: HTMLDivElement | null) => void;
 }) {
   return <>
@@ -35,9 +35,7 @@ export function WorkspaceSidebar({ tab, onTabChange, collapseControl, courses, a
     <DropdownMenu><DropdownMenuTrigger asChild><Button className="sidebar-new" aria-label="Create new"><Plus size={18} />New</Button></DropdownMenuTrigger><DropdownMenuContent align="start">
       {tab === 'home' ? <><DropdownMenuItem onSelect={onNewChat}><SquarePen size={16} />New chat</DropdownMenuItem><DropdownMenuItem onSelect={onNewCourse}><FolderPlus size={16} />New course</DropdownMenuItem></> : <><DropdownMenuItem onSelect={() => onNotesCommand('new-note')}><SquarePen size={16} />New note</DropdownMenuItem><DropdownMenuItem onSelect={() => onNotesCommand('new-folder')}><FolderPlus size={16} />New folder</DropdownMenuItem></>}
     </DropdownMenuContent></DropdownMenu>
-    <button type="button" className="nav-item" onClick={onReview}><RotateCcw size={17} />Review</button>
-    {onReminders?<button type="button" className="nav-item" onClick={onReminders}>Reminders</button>:null}
-    <button type="button" className="nav-item" onClick={onQuiz}><CircleHelp size={17} />Quiz</button>
+    <button type="button" className={`nav-item${dashboardActive ? ' active' : ''}`} aria-current={dashboardActive ? 'page' : undefined} onClick={onDashboard}><LayoutDashboard size={17} />Dashboard</button>
     <div className="side-label">Courses</div>
     <div className="courses-list" aria-label="Course filters">
       <button type="button" className={`course-link ${activeCourseId === null ? 'active' : ''}`} aria-pressed={activeCourseId === null} onClick={() => onCourseSelect(null)}><FolderClosed size={16} /><span>All courses</span></button>

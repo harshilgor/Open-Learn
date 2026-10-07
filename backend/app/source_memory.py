@@ -52,7 +52,7 @@ class SourceMemory:
         # A quiz may use notes, assigned material, and lecture sources to
         # establish scope. Conversation transcripts can contain prior answers
         # or worked solutions, so they are not admitted to assessment context.
-        if purpose not in {'teaching','assessment','readiness','planning'}:
+        if purpose not in {'teaching','assessment','readiness','planning','execution','coordination'}:
             fail('invalid_context_purpose','Unknown context purpose.',422)
         sql='SELECT s.*,r.payload FROM memory_sources s JOIN memory_revisions r ON r.owner_id=s.owner_id AND r.source_id=s.id AND r.revision=s.revision WHERE s.owner_id=:owner AND s.deleted=false'
         params={'owner':owner}
@@ -65,6 +65,8 @@ class SourceMemory:
             # transcript tables, which can enforce current access and deletion.
             if row['kind'].startswith('legacy_'):
                 continue
+            if purpose in {'execution','coordination'} and row['kind'] == 'conversation' and row['id'] not in required_ids:
+                continue
             if purpose == 'assessment' and row['kind'] not in {'note','document','transcript'}:
                 continue
             for block in json.loads(row['payload'])['blocks']:
@@ -73,7 +75,7 @@ class SourceMemory:
                     candidates.append({**block,'sourceId':row['id'],'revision':row['revision'],'kind':row['kind'],'score':score,'required':row['id'] in required_ids})
         return sorted(candidates,key=lambda b:(not b['required'],-b['score'],b['sourceId'],b['start']))
 
-    def derive(self,owner,kind,value,basis,scope=None,explicit=False):
+    def derive(self,owner,kind,value,basis,scope=None,explicit=False,identifier=None):
         if not basis: fail('memory_basis_required','Remembered facts require exact source references.',422)
         if kind=='preference' and not explicit: value={'tentative':True,'value':value}
         with self.store.transaction() as conn:
@@ -81,7 +83,13 @@ class SourceMemory:
             for ref in basis:
                 current=conn.execute(text('SELECT revision FROM memory_sources WHERE owner_id=:owner AND id=:id AND deleted=false'),{'owner':owner,'id':ref['sourceId']}).scalar_one_or_none()
                 if current!=ref['revision']: fail('source_changed','Derived memory requires current sources.',409)
-            identifier='derived_'+uuid4().hex
+            payload=json.dumps({'value':value,'basis':basis,'scope':scope,'explicit':explicit})
+            if identifier:
+                existing=conn.execute(text('SELECT payload,valid FROM memory_derived WHERE owner_id=:owner AND id=:id'),{'owner':owner,'id':identifier}).first()
+                if existing:
+                    if existing[0]!=payload or not existing[1]:fail('memory_identity_conflict','This saved memory changed or was forgotten; a retry cannot replace it.',409)
+                    return {'id':identifier}
+            identifier=identifier or 'derived_'+uuid4().hex
             conn.execute(text('INSERT INTO memory_derived(owner_id,id,kind,payload,valid) VALUES(:owner,:id,:kind,:payload,true)'),{'owner':owner,'id':identifier,'kind':kind,'payload':json.dumps({'value':value,'basis':basis,'scope':scope,'explicit':explicit})})
         return {'id':identifier}
 

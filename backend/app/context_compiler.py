@@ -12,7 +12,7 @@ from .shared_contracts import Contract, Identifier
 
 class ContextCompileRequest(Contract):
     """Validated purpose, scope, and budget passed to the shared compiler."""
-    purpose: Literal['teaching','assessment','readiness','planning']
+    purpose: Literal['teaching','assessment','readiness','planning','execution','coordination']
     request: str = Field(min_length=1,max_length=100_000)
     session_id: Identifier | None = None
     course_id: Identifier | None = None
@@ -42,7 +42,7 @@ class ContextPacket(Contract):
     """Versioned manifest returned to a workflow before generation."""
     id: Identifier
     ownerId: Identifier
-    purpose: Literal['teaching','assessment','readiness','planning']
+    purpose: Literal['teaching','assessment','readiness','planning','execution','coordination']
     status: Literal['ready','insufficient_context']
     text: str
     manifest: tuple[dict,...]

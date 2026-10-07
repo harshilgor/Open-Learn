@@ -47,7 +47,8 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
       for(let at=sessionStorage.length-1;at>=0;at--){const key=sessionStorage.key(at);if(key?.startsWith(prefix))sessionStorage.removeItem(key);}
     };
     window.addEventListener(ACCOUNT_CHANGED,clear);
-    return()=>{stopped=true;invalidate();window.clearTimeout(timer);window.clearInterval(interval);window.removeEventListener(ACCOUNT_CHANGED,clear);};
+    window.addEventListener('openlearn-agent-activity-changed',update);
+    return()=>{stopped=true;invalidate();window.clearTimeout(timer);window.clearInterval(interval);window.removeEventListener(ACCOUNT_CHANGED,clear);window.removeEventListener('openlearn-agent-activity-changed',update);};
   },[refresh]);
 
   async function submit(body:Record<string,unknown>,taskId?:string){

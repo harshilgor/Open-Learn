@@ -48,6 +48,8 @@ class Policy:
             if os.getenv('OPENLEARN_SANDBOX_ENABLED')=='true':
                 raise RuntimeError('Daytona cannot be enabled until allocation limits and delayed resource billing are metered.')
             enabled=[]
+            if os.getenv('OPENLEARN_DICTATION_ENABLED')=='true':
+                enabled.append('OPENLEARN_DICTATION_USD_PER_MINUTE')
             if os.getenv('OPENLEARN_VOICE_ENABLED')=='true':
                 enabled.extend(('OPENLEARN_DEEPGRAM_USD_PER_MINUTE','OPENLEARN_ELEVENLABS_USD_PER_1000_CHARACTERS','OPENLEARN_LIVEKIT_AGENT_USD_PER_MINUTE'))
             if os.getenv('OPENLEARN_CLOUD_BROWSER_ENABLED')=='true':

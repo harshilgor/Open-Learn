@@ -34,7 +34,7 @@ it('pauses with current revision and clears account-specific tasks on logout',as
 });
 it('shows and sends the explicit agent-task maximum',async()=>{
   await mount();
-  const maximum=container.querySelector('select[aria-label="Maximum task usage"]') as HTMLSelectElement;
+  const maximum=container.querySelector('select[aria-label="Maximum task usage"]') as unknown as HTMLSelectElement;
   await act(async()=>{maximum.value='50';maximum.dispatchEvent(new Event('change',{bubbles:true}));});
   const form=container.querySelector('input[aria-label="Agent request"]')!.closest('form')!;
   await act(async()=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
