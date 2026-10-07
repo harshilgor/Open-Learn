@@ -90,8 +90,8 @@ OUTPUT_CONTRACTS: dict[TeachingOutput, str] = {
         "Render mathematics as LaTeX inside Markdown: use $...$ inline and $$...$$ on their own lines for display equations, "
         "matrices, aligned steps, and cases. Do not use \\( \\), \\[ \\], raw HTML, or pre-rendered KaTeX. "
         "Use fenced Markdown for code. Write a complete learner-facing response in Markdown. "
-        "When sections help, use concise Markdown headings such as Explanation, Example, Equation, Check, or Summary; "
-        "headings describe content and are not application commands."
+        "When sections help, use concise Markdown headings such as Example, Equation, Check, or Summary. "
+        "Begin with the answer itself; do not add a generic Explanation heading. Headings describe content and are not application commands."
     ),
 }
 

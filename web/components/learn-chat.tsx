@@ -1055,7 +1055,11 @@ export function LearnChat({
     {!turns.length && activity ? <AnimatePresence mode="wait">{activity && <WebResearchActivity activity={activity} />}</AnimatePresence> : null}
     {turns.map((turn, turnIndex) => {
       const filed = turn.lesson?.id ? filedRef.current[turn.lesson.id] : undefined;
-      return <motion.div key={turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`} className={styles.turn} initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
+      const previousTurn = turns[turnIndex - 1];
+      const nextTurn = turns[turnIndex + 1];
+      const groupedWithPrevious = Boolean(previousTurn && previousTurn.sessionId === turn.sessionId);
+      const groupedWithNext = Boolean(nextTurn && nextTurn.sessionId === turn.sessionId);
+      return <motion.div key={turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`} className={`${styles.turn} ${groupedWithPrevious ? styles.groupedWithPrevious : ''} ${groupedWithNext ? styles.groupedWithNext : ''}`} initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
       {!SYNTHETIC_QUESTIONS.has(turn.question) ? <div className={styles.userPrompt}><span>You</span><div><p>{turn.question}</p>{turn.files?.map(name => <div className={styles.sentFile} key={name}><FileText size={15} />{name}</div>)}</div></div> : null}
       <article id={`message-${turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}`} aria-label="Assistant response" className={styles.lessonArticle}>
         {!turn.lesson && !turn.stream && !turn.answer && turn.status ? <p className={styles.turnStatus} role="status">{turn.status === 'pending' ? 'Preparing a response…' : turn.status === 'cancelled' ? 'Response stopped.' : turn.status === 'interrupted' ? 'Response interrupted. You can ask again.' : 'Response failed. You can ask again.'}</p> : null}

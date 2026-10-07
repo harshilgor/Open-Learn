@@ -360,7 +360,10 @@ does not read as a solid white empty slab. */
 }
 /* Quiet, compact message bubbles. Rich study content stays inside the bubble. */
 .turn{gap:16px;margin-bottom:20px}
-.lessonArticle{width:fit-content;max-width:min(86%,720px);padding:12px 16px;border-radius:20px 20px 20px 5px;background:var(--muted);line-height:1.6}
+.turn.groupedWithPrevious{margin-top:-14px}
+.turn.groupedWithPrevious .lessonArticle{border-top-left-radius:6px}
+.turn.groupedWithNext .lessonArticle{border-bottom-left-radius:6px}
+.lessonArticle{width:fit-content;max-width:min(86%,720px);padding:12px 16px;border-radius:20px;background:var(--muted);line-height:1.6}
 :global(.dark) .lessonArticle{background:#262626}
 .userPrompt{max-width:85%;padding:9px 15px;border-radius:22px;background:var(--secondary);color:var(--foreground)}
 :global(.dark) .userPrompt{background:#424242;color:var(--foreground)}
@@ -372,7 +375,7 @@ does not read as a solid white empty slab. */
 .lessonArticle section[data-reading-block] ul,.lessonArticle section[data-reading-block] ol{margin-block:8px;padding-left:1.4em}
 .lessonArticle section[data-reading-block] li{margin-block:4px}
 .lessonArticle section[data-reading-block] li p{margin-block:0!important}
-@media(max-width:620px){.turn{gap:12px;margin-bottom:18px}.lessonArticle{max-width:94%;padding:10px 13px;border-radius:18px 18px 18px 5px}.userPrompt{max-width:90%;padding:8px 13px}}
+@media(max-width:620px){.turn{gap:12px;margin-bottom:18px}.turn.groupedWithPrevious{margin-top:-10px}.turn.groupedWithPrevious .lessonArticle{border-top-left-radius:5px}.turn.groupedWithNext .lessonArticle{border-bottom-left-radius:5px}.lessonArticle{max-width:94%;padding:10px 13px;border-radius:18px}.userPrompt{max-width:90%;padding:8px 13px}}
 /* Main composer: writing surface above, preferences below. */
 .mainComposer{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:4px;padding:8px 10px;border-radius:24px;min-height:60px;box-shadow:0 4px 18px #0000000a}
 .mainComposer textarea{grid-column:2;grid-row:10;align-self:center;min-height:28px;padding:8px 3px;line-height:24px;font-size:16px}
