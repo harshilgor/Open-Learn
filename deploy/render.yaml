@@ -26,7 +26,7 @@ services:
       - key: OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD
         value: '10'
       - key: OPENLEARN_PROVIDER_RATE_VERSION
-        value: haiku55-2026-10-07-v1
+        value: haiku55-browserbase-2026-10-08-v1
       - key: OPENLEARN_HAIKU55_INPUT_USD_PER_MILLION
         value: '0.10'
       - key: OPENLEARN_HAIKU55_OUTPUT_USD_PER_MILLION
@@ -36,6 +36,16 @@ services:
       - key: OPENLEARN_SANDBOX_ENABLED
         value: 'false'
       - key: OPENLEARN_BROWSER_ASSISTANT_ENABLED
+        value: 'true'
+      - key: OPENLEARN_CLOUD_BROWSER_ENABLED
+        value: 'true'
+      - key: OPENLEARN_BROWSERBASE_USD_PER_MINUTE
+        value: '0.002'
+      - key: OPENLEARN_BROWSER_EGRESS_VERIFIED
+        value: 'true'
+      - key: OPENLEARN_BROWSER_LIFECYCLE_VERIFIED
+        value: 'true'
+      - key: OPENLEARN_BROWSER_PRIVATE_VERIFIED
         value: 'false'
       - key: OPENLEARN_AGENT_ADMISSION_ENABLED
         value: 'false'

@@ -5,7 +5,7 @@ import json
 import os
 import time
 from fastapi import APIRouter, Header, Request, Query
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from .contracts import TaskCreate, TaskCommand, ConnectionCreate, ConnectionPatch, BrowserResult, ReminderPolicyInput, RefreshInput, PushInput, CloudLoginInput
@@ -162,11 +162,13 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
 
     @router.post('/site-connections/{identifier}/cloud-login')
     def cloud_login(identifier: str, body: CloudLoginInput):
-        return Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision)
+        result = Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision)
+        return JSONResponse(result, headers={'Cache-Control':'no-store','Pragma':'no-cache'})
 
     @router.post('/site-connections/{identifier}/cloud-login/finish')
     def cloud_login_finish(identifier: str, body: CloudLoginInput):
-        return Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision, finish=True)
+        result = Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision, finish=True)
+        return JSONResponse(result, headers={'Cache-Control':'no-store','Pragma':'no-cache'})
 
     @router.post('/site-connections/{identifier}/refresh', status_code=202)
     def refresh(identifier: str, body: TaskCreate | None = None):

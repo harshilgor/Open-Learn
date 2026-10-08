@@ -28,6 +28,7 @@ class ConnectionPatch(Contract):
     label: str | None = Field(default=None, min_length=1, max_length=120)
     aliases: list[str] | None = Field(default=None, max_length=12)
     preferred: bool | None = None
+    cloud_login: bool | None = None
     approved_origins: list[str] | None = Field(default=None, max_length=12)
     timezone: str | None = None
 

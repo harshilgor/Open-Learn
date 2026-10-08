@@ -190,9 +190,9 @@ def test_cloud_browser_requires_verified_bounded_lifecycle(monkeypatch):
     monkeypatch.setenv('OPENLEARN_PLATFORM_DAILY_BUDGET_USD','10')
     monkeypatch.setenv('OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD','100')
     monkeypatch.setenv('OPENLEARN_CLOUD_BROWSER_ENABLED','true')
-    monkeypatch.setenv('OPENLEARN_BROWSERBASE_USD_PER_MINUTE','0.12')
+    monkeypatch.setenv('OPENLEARN_BROWSERBASE_USD_PER_MINUTE','0.002')
     monkeypatch.setenv('BROWSERBASE_API_KEY','test-key')
-    monkeypatch.setenv('BROWSERBASE_PROJECT_ID','test-project')
+    monkeypatch.delenv('BROWSERBASE_PROJECT_ID',raising=False)
     monkeypatch.setenv('OPENLEARN_BROWSER_EGRESS_VERIFIED','true')
     monkeypatch.setenv('OPENLEARN_BROWSER_LIFECYCLE_VERIFIED','false')
     monkeypatch.setenv('OPENLEARN_SANDBOX_ENABLED','false')
@@ -201,10 +201,135 @@ def test_cloud_browser_requires_verified_bounded_lifecycle(monkeypatch):
     monkeypatch.setenv('AI_TUTOR_EMBEDDING_MODEL','')
     from backend.app.browser_assistant.executors.cloud import readiness, require_cloud_ready
     from fastapi import HTTPException
+    assert readiness()['credentialsConfigured'] is True
     assert readiness()['lifecycleVerified'] is False
     with pytest.raises(HTTPException) as error:
         require_cloud_ready()
     assert error.value.detail['code']=='capability_unavailable'
+
+
+def test_cloud_executor_never_reuses_saved_profiles_before_private_acceptance(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    from backend.app.browser_assistant.contracts import ConnectionCreate,TaskCreate
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    run=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    with store.engine.begin() as conn:
+        row=conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one()
+        payload=json.loads(row);payload.update(cloudLogin=True,providerContextId='private-profile',browserContextExpiresAt=time.time()+3600)
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id'),{'payload':json.dumps(payload),'id':site['id']})
+    monkeypatch.setattr(cloud,'require_cloud_ready',lambda:{})
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':False})
+    class Provider:
+        def create(self,*_args,**_kwargs):raise AssertionError('private context must not start')
+    with pytest.raises(HTTPException) as error:
+        cloud.CloudExecutor(store,Provider()).session({**site,'cloudLogin':True,'providerContextId':'private-profile','browserContextExpiresAt':time.time()+3600},{**run,'owner_id':'alice'})
+    assert error.value.detail['code']=='capability_unavailable'
+
+
+def test_saved_cloud_profile_expiry_waits_for_session_shutdown(environment,monkeypatch):
+    store,_=environment
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    expired=time.time()-1
+    context_id='provider-context-test'
+    with store.engine.begin() as conn:
+        payload=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+        payload.update(cloudLogin=True,providerContextId=context_id,browserContextExpiresAt=expired)
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id'),{'payload':json.dumps(payload),'id':site['id']})
+        conn.execute(text("INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload) VALUES('active-lease','alice',:run,:connection,'active-provider-session','active',:expires,'{}')"),
+                     {'run':task['id'],'connection':site['id'],'expires':time.time()+600})
+    deleted=[]
+    monkeypatch.setattr('backend.app.browser_assistant.executors.cloud.BrowserbaseProvider.delete_context',lambda _provider,identifier:deleted.append(identifier))
+    worker=AssistantWorker(store)
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        pending=conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()
+        persisted=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    assert pending==0 and context_id not in deleted
+    assert persisted['providerContextId']==context_id
+
+    with store.engine.begin() as conn:
+        conn.execute(text("UPDATE browser_session_leases SET status='closed' WHERE id='active-lease'"))
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        persisted=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+        pending=conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()
+    assert 'providerContextId' not in persisted and pending==1
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()==0
+    assert deleted==[context_id]
+
+
+def test_remembered_cloud_signin_is_opt_in_and_keeps_owner_profile(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    monkeypatch.setattr(cloud,'require_cloud_ready',lambda:{})
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':True})
+    with pytest.raises(HTTPException) as error:
+        Connections(store).cloud_login('alice',site['id'],site['revision'])
+    assert error.value.detail['code']=='privacy_consent_required'
+
+    consented=Connections(store).patch('alice',site['id'],ConnectionPatch(expectedRevision=site['revision'],cloudLogin=True))
+    calls=[]
+    class Provider:
+        def create_context(self,name):
+            calls.append(('context',name))
+            return {'id':'private-context'}
+        def create(self,connection,usage_ticket=None,*,persist_context=False):
+            calls.append(('session',connection.get('providerContextId'),persist_context))
+            return {'id':'login-session','connectUrl':'wss://browser.example/session'}
+        def live_view(self,identifier):
+            return 'https://debug.browserbase.com/session?session='+identifier
+    monkeypatch.setattr(cloud,'BrowserbaseProvider',Provider)
+    monkeypatch.setattr('backend.app.usage.operations.configured_rate',lambda _key:100_000_000)
+    monkeypatch.setattr('backend.app.usage.operations.rate_liability',lambda *_args,**_kwargs:1)
+    monkeypatch.setattr('backend.app.usage.operations.begin_external',lambda *_args,**_kwargs:(None,None,{'id':'reservation','component':'browser','liability_nano':1}))
+    started=Connections(store).cloud_login('alice',consented['id'],consented['revision'])
+    assert started['liveViewUrl'].startswith('https://debug.browserbase.com/')
+    assert len(calls)==2 and calls[0][0]=='context' and calls[1]==('session','private-context',True)
+    assert calls[0][1].startswith('openlearn-') and len(calls[0][1])==34
+    assert 'liveViewUrl' not in json.dumps(AssistantStore(store).read('site_connections','alice',site['id']))
+
+    def close_and_settle(_store,_provider,lease):
+        with _store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE id=:id"),{'id':lease['id']})
+        return True
+    monkeypatch.setattr(cloud,'stop_and_settle',close_and_settle)
+    monkeypatch.setattr('backend.app.browser_assistant.connections.time.sleep',lambda _seconds:None)
+    finished=Connections(store).cloud_login('alice',site['id'],started['connection']['revision'],finish=True)
+    saved=AssistantStore(store).read('site_connections','alice',site['id'])
+    assert finished['status']=='connected' and saved['providerContextId']=='private-context'
+    assert saved['cloudLogin'] is True and saved['browserContextExpiresAt']>time.time()+29*24*60*60
+
+
+def test_finishing_login_after_private_gate_closes_and_discards_profile(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    with store.engine.connect() as conn:
+        payload=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    payload.update(cloudLogin=True,browserProfileConsentAt=time.time(),providerContextId='private-profile',loginSessionId='login-session')
+    with store.engine.begin() as conn:
+        conn.execute(text('UPDATE site_connections SET payload=:payload,status=:status WHERE id=:id'),
+                     {'payload':json.dumps(payload),'status':'logging_in','id':site['id']})
+    deleted=[]
+    class Provider:
+        def stop(self,_identifier):pass
+        def request(self,*_args,**_kwargs):return {'status':'RELEASED'}
+        def delete_context(self,identifier):deleted.append(identifier)
+    monkeypatch.setattr(cloud,'BrowserbaseProvider',Provider)
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':False})
+    finished=Connections(store).cloud_login('alice',site['id'],site['revision'],finish=True)
+    assert finished['cloudLogin'] is False
+    assert deleted==['private-profile']
+    with store.engine.connect() as conn:
+        saved=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    assert 'providerContextId' not in saved and 'loginSessionId' not in saved
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar()==0
 
 
 def test_export_and_erasure_remove_credentials_and_queue_provider_cleanup(environment):

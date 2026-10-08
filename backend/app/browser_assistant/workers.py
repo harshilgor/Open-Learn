@@ -433,17 +433,75 @@ class AssistantWorker:
                 conn.execute(text('UPDATE connection_refresh_schedules SET next_due=:due WHERE id=:id'), {'due': time.time()+payload['intervalHours']*3600, 'id': r['id']})
 
     def cleanup(self):
-        from .executors.cloud import BrowserbaseProvider
+        from .executors.cloud import BrowserbaseProvider, queue_context_cleanup
+        now = time.time()
         with self.store.engine.connect() as conn:
-            sessions = conn.execute(text("SELECT b.id,b.owner_id,b.run_id FROM browser_session_leases b LEFT JOIN assistant_runs r ON r.id=b.run_id WHERE (b.status='login' AND b.expires_at<:now) OR (b.status='active' AND (b.expires_at<:now OR r.id IS NULL OR r.status IN ('completed','completed_partial','cancelled','failed','paused','waiting_for_user','waiting_for_device','waiting_for_login'))) LIMIT 10"), {'now': time.time()}).mappings().all()
+            sessions = conn.execute(text("SELECT b.id,b.owner_id,b.run_id FROM browser_session_leases b LEFT JOIN assistant_runs r ON r.id=b.run_id WHERE (b.status='login' AND b.expires_at<:now) OR (b.status='active' AND (b.expires_at<:now OR r.id IS NULL OR r.status IN ('completed','completed_partial','cancelled','failed','paused','waiting_for_user','waiting_for_device','waiting_for_login'))) LIMIT 10"), {'now': now}).mappings().all()
             cleanup = conn.execute(text('SELECT * FROM browser_provider_cleanup LIMIT 10')).mappings().all()
             objects = conn.execute(text('SELECT * FROM assistant_objects WHERE expires_at<:now LIMIT 20'), {'now': time.time()}).mappings().all()
+            connections = conn.execute(text("SELECT id,owner_id,payload,revision,status FROM site_connections WHERE status<>'revoked' ORDER BY updated_at LIMIT 200")).mappings().all()
         for s in sessions: self.close(s['owner_id'], s['run_id'])
+        # Browserbase contexts have no provider-side expiry. Enforce the
+        # application's 30-day inactivity limit and durably queue deletion.
+        for row in connections:
+            saved = json.loads(row['payload'])
+            context_id = saved.get('providerContextId')
+            expiry = saved.get('browserContextExpiresAt')
+            if not context_id or isinstance(expiry, (int, float)) and expiry > now:
+                continue
+            # Never delete a profile out from under an active provider session.
+            # Session cleanup runs first in this tick; if Browserbase has not
+            # confirmed termination, leave both the profile and its cleanup
+            # request for a later retry.
+            with self.store.engine.connect() as conn:
+                active = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND connection_id=:connection AND status IN ('active','login') LIMIT 1"),
+                                      {'owner':row['owner_id'],'connection':row['id']}).first()
+            if active:
+                continue
+            connection = {**saved, 'providerContextId':context_id}
+            try:
+                queue_context_cleanup(self.store, row['owner_id'], connection)
+                with self.store.engine.begin() as conn:
+                    fresh = conn.execute(text('SELECT payload,revision FROM site_connections WHERE id=:id AND owner_id=:owner'),
+                                         {'id':row['id'],'owner':row['owner_id']}).mappings().first()
+                    if not fresh: continue
+                    current = json.loads(fresh['payload'])
+                    if current.get('providerContextId') != context_id or current.get('browserContextExpiresAt', 0) > now:
+                        continue
+                    for key in ('providerContextId','browserContextExpiresAt','browserContextLastUsedAt','loginSessionId','loginExpiresAt'):
+                        current.pop(key, None)
+                    conn.execute(text('UPDATE site_connections SET payload=:payload,status=:status,revision=revision+1,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                 {'payload':encoded(current),'status':'connected' if current.get('executor')=='cloud' else row['status'],
+                                  'now':now,'id':row['id'],'owner':row['owner_id']})
+            except Exception:
+                pass  # Keep profile metadata so the next cleanup tick retries it.
         for item in cleanup:
             try:
                 provider = BrowserbaseProvider()
-                if item['context_id']: provider.delete_context(item['context_id'])
-                if item['session_id']: provider.stop(item['session_id'])
+                if item['session_id']:
+                    with self.store.engine.connect() as conn:
+                        lease = conn.execute(text('SELECT * FROM browser_session_leases WHERE owner_id=:owner AND provider_session=:session AND status IN (\'active\',\'login\')'),
+                                             {'owner':item['owner_id'],'session':item['session_id']}).mappings().first()
+                    if lease:
+                        if not stop_and_settle(self.store, provider, lease):
+                            continue
+                    else:
+                        provider.stop(item['session_id'])
+                        state = provider.request('GET', 'sessions/' + item['session_id']).get('status', '')
+                        if str(state).upper() not in TERMINAL_SESSION_STATES:
+                            continue
+                if item['context_id']:
+                    # Account erasure leaves separate session cleanup records.
+                    # Defer profile deletion until all sessions for that owner
+                    # have been confirmed closed, even if rows arrive unordered.
+                    with self.store.engine.connect() as conn:
+                        active_leases = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND status IN ('active','login') LIMIT 1"),
+                                                     {'owner':item['owner_id']}).first()
+                        pending_sessions = conn.execute(text('SELECT 1 FROM browser_provider_cleanup WHERE owner_id=:owner AND session_id IS NOT NULL LIMIT 1'),
+                                                        {'owner':item['owner_id']}).first()
+                    if active_leases or pending_sessions:
+                        continue
+                    provider.delete_context(item['context_id'])
                 with self.store.engine.begin() as conn: conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'), {'id': item['id']})
             except Exception: pass  # Durable cleanup retries without exposing credentials.
         for item in objects:

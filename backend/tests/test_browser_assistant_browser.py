@@ -46,7 +46,7 @@ def browser_fixture(monkeypatch):
             else:route.fulfill(status=200,content_type='text/html',body=syllabus if '/syllabus' in url else home)
         page.route('https://*.fixture.example/**',fixture)
         for key in ['OPENLEARN_CLOUD_BROWSER_ENABLED','OPENLEARN_BROWSER_EGRESS_VERIFIED','OPENLEARN_BROWSER_PRIVATE_VERIFIED']:monkeypatch.setenv(key,'true')
-        monkeypatch.setenv('BROWSERBASE_API_KEY','fixture-only');monkeypatch.setenv('BROWSERBASE_PROJECT_ID','fixture-only')
+        monkeypatch.setenv('BROWSERBASE_API_KEY','fixture-only')
         monkeypatch.setattr('backend.app.url_ingestion.validate_public_url',lambda url:url)
         yield endpoint,page
         browser.close()
@@ -69,6 +69,71 @@ class FixtureProvider:
     def __init__(self,endpoint):self.endpoint=endpoint;self.stopped=[]
     def create(self,connection):return {'id':'fixture-session','connectUrl':self.endpoint}
     def stop(self,identifier):self.stopped.append(identifier)
+
+
+def test_browserbase_provider_uses_api_key_without_project_id(monkeypatch):
+    from backend.app.browser_assistant.executors import cloud
+    calls=[]
+    monkeypatch.setenv('BROWSERBASE_API_KEY','fixture-only')
+    monkeypatch.delenv('BROWSERBASE_PROJECT_ID',raising=False)
+    monkeypatch.setenv('OPENLEARN_BROWSER_PRIVATE_VERIFIED','true')
+    monkeypatch.setattr(cloud,'require_cloud_ready',lambda:{})
+    provider=cloud.BrowserbaseProvider()
+    def request(method,path,data=None):
+        calls.append((method,path,data))
+        if path=='contexts':return {'id':'context-1'}
+        return {'id':'session-1','connectUrl':'wss://browser.fixture/session'}
+    monkeypatch.setattr(provider,'request',request)
+    context=provider.create_context('opaque-profile-name')
+    session=provider.create({'origin':'https://study.example','approvedOrigins':['https://files.example']},
+                            usage_ticket=(None,None,{'component':'browser','liability_nano':1}))
+    provider.create({'origin':'https://study.example','approvedOrigins':[],'cloudLogin':True,'providerContextId':context['id']},
+                    usage_ticket=(None,None,{'component':'browser','liability_nano':1}))
+    provider.create({'origin':'https://study.example','approvedOrigins':[],'cloudLogin':True,'providerContextId':context['id']},
+                    usage_ticket=(None,None,{'component':'browser','liability_nano':1}),persist_context=True)
+    provider.stop(session['id'])
+    assert session['id']=='session-1'
+    assert calls[0]==('POST','contexts',{'name':'opaque-profile-name'})
+    assert all('projectId' not in body for _,_,body in calls if isinstance(body,dict))
+    assert calls[1][0:2]==('POST','sessions')
+    assert calls[1][2]['keepAlive'] is False
+    assert calls[1][2]['browserSettings']['allowedDomains']==['study.example','files.example']
+    assert calls[2][2]['browserSettings']['context']=={'id':'context-1','persist':False}
+    assert calls[3][2]['browserSettings']['context']=={'id':'context-1','persist':True}
+    assert calls[3][2]['keepAlive'] is True
+    assert calls[4]==('POST','sessions/session-1',{'status':'REQUEST_RELEASE'})
+
+
+def test_cloud_request_guard_allows_public_navigation_but_blocks_private_and_mutating_requests(monkeypatch):
+    from backend.app.browser_assistant.executors.cloud import guard_browser_request
+    from backend.app import url_ingestion
+
+    class Request:
+        def __init__(self, url, method='GET', navigation=False):
+            self.url=url;self.method=method;self.navigation=navigation
+        def is_navigation_request(self):return self.navigation
+
+    class Route:
+        def __init__(self, request):self.request=request;self.action=None
+        def continue_(self):self.action='continued'
+        def abort(self):self.action='aborted'
+
+    validate_public_url=url_ingestion.validate_public_url
+    monkeypatch.setattr(url_ingestion,'validate_public_url',
+                        lambda url: url if url=='https://example.com/article' else validate_public_url(url))
+    connection={'origin':'https://example.com','approvedOrigins':[]}
+    allowed=Route(Request('https://example.com/article',navigation=True))
+    assert guard_browser_request(allowed,connection) is True
+    assert allowed.action=='continued'
+
+    private=Route(Request('http://127.0.0.1/admin'))
+    blocked=[]
+    assert guard_browser_request(private,connection,blocked) is False
+    assert private.action=='aborted' and blocked==[]
+
+    mutation=Route(Request('https://example.com/submit',method='POST'))
+    assert guard_browser_request(mutation,connection) is False
+    assert mutation.action=='aborted'
 
 
 def test_real_cloud_adapter_navigation_scroll_screenshot_and_stale_refs(environment,browser_fixture):

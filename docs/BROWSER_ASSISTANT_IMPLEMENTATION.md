@@ -63,13 +63,15 @@ python -m pip install -r backend/requirements.txt -r backend/requirements-browse
 
 A remote CDP executor does not need a local downloaded browser binary. Browser integration tests use an installed Chromium browser; on hosts without the fixture browser they skip explicitly.
 
-Configure server-side `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`. Cloud execution remains unavailable until all applicable gates are set:
+Configure the server-side `BROWSERBASE_API_KEY`; Browserbase infers the project from the API key, so no project ID is required. Temporary read-only cloud execution remains unavailable until all of its gates pass:
 
 - `OPENLEARN_CLOUD_BROWSER_ENABLED=true`
+- Enforced usage policy, an approved `OPENLEARN_BROWSERBASE_USD_PER_MINUTE` tariff, and paid provider routes
 - `OPENLEARN_BROWSER_EGRESS_VERIFIED=true`, after validating provider/network isolation and private-network blocking
-- `OPENLEARN_BROWSER_PRIVATE_VERIFIED=true`, after validating private sign-in, context isolation, persistence, live-view access, and deletion
+- `OPENLEARN_BROWSER_LIFECYCLE_VERIFIED=true`, after validating session bounds, terminal-state reconciliation, and retryable cleanup
+- A positive `OPENLEARN_BROWSERBASE_USD_PER_MINUTE` tariff, pinned in `OPENLEARN_PROVIDER_RATE_VERSION`, with enforced account and platform limits. The current Render template uses `$0.002` per billable minute (the published Developer overage rate of `$0.12` per browser hour converted to minutes); review it against the Browserbase account plan before changing it.
 
-These flags attest to completed deployment checks; changing a flag is not the check itself. Browserbase sessions disable recording, logging, and CAPTCHA solving and have a ten-minute expiry. Private cloud connections expose an owner-scoped sign-in handoff in Settings. Finish sign-in stops that session and persists its context; each later task acquires a temporary session. Revocation and account erasure queue context/session deletion for retry during provider downtime. Live-view access is short lived and must be assessed before public launch.
+These flags attest to completed deployment checks; changing a flag is not the check itself. Browserbase sessions disable recording, logging, and CAPTCHA solving and have a ten-minute expiry. The published `allowedDomains` setting restricts top-level navigations only; Open Learn also intercepts browser requests and blocks non-public addresses, while the egress-verification gate remains closed until that full boundary has been accepted in the deployed runtime. The current cloud launch path is temporary and read-only: non-GET/HEAD/OPTIONS requests are blocked, and saved sign-in is not available. `OPENLEARN_BROWSER_PRIVATE_VERIFIED=true` is a separate, additional gate for persistent profiles and must follow two-account isolation, live-view expiry, shutdown, and deletion acceptance. “Remember sign-in” is explicit and off by default; opting in creates an owner-scoped context, and Open Learn deletes it after 30 days without use. Revocation and account erasure queue context/session deletion for retry during provider downtime.
 
 For hosted image evidence, set `OPENLEARN_ASSISTANT_S3_BUCKET`; runtime IAM needs immutable put/get/delete and prefix-scoped list permissions. The assistant uses the `assistant/` prefix. Local evidence otherwise lives beside the database under `assistant-objects`, or at `OPENLEARN_ASSISTANT_OBJECTS_DIR`.
 

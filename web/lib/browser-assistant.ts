@@ -4,7 +4,7 @@ import {request} from './api';
 import {ACCOUNT_CHANGED} from './account-session';
 import {admitConversation} from './conversation-admission';
 
-export type SiteConnection = {id:string;revision:number;label:string;origin:string;status:string;platform:'canvas'|'generic';executor:'local'|'cloud'|'public_fetch';preferred:boolean;timezone:string;aliases:string[];approvedOrigins?:string[];lastSuccessfulSync?:number|null};
+export type SiteConnection = {id:string;revision:number;label:string;origin:string;status:string;platform:'canvas'|'generic';executor:'local'|'cloud'|'public_fetch';preferred:boolean;cloudLogin?:boolean;timezone:string;aliases:string[];approvedOrigins?:string[];lastSuccessfulSync?:number|null};
 export type AcademicFact = {entityId?:string;courseId?:string;title:string;kind:string;date?:{kind:string;value?:string|null}|null;conflict?:boolean;saved?:boolean;source?:{locator:string;quote?:string;revision?:string;extractionMethod?:string;confirmation?:string}};
 export type BrowserTask = {id:string;revision:number;sessionId?:string|null;message:string;status:string;connectionId?:string|null;summary?:string|null;question?:string|null;error?:string|null;facts:AcademicFact[];studyTasks?:{id:string;courseId:string;reason:string}[];coverage:{key:string;complete:boolean;status:string;url:string}[];actionsUsed:number;createdAt:number;browserControl?:{owner:'agent'|'requesting'|'human'|'returning';generation:string;executor:'local'|'cloud'}|null};
 export const finishedTask = (status:string) => ['completed','completed_partial','cancelled','failed'].includes(status);
