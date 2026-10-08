@@ -24,8 +24,10 @@ class Planner:
                   'Do not call quiz_answer unless the final transcript explicitly supplies an answer. '
                   'Resolve relative times against current time and the supplied timezone. Context: ' + encode(context))
         payload = {
-                'model': 'openrouter/free', 'messages': [{'role': 'system', 'content': system}, *history, {'role': 'user', 'content': transcript}],
+                'model': os.getenv('OPENROUTER_MODEL', 'openrouter/free'), 'messages': [{'role': 'system', 'content': system}, *history, {'role': 'user', 'content': transcript}],
                 'tools': schemas(), 'max_tokens': 1200, 'temperature': 0.2}
+        if payload['model'] != 'openrouter/free' and not payload['model'].endswith(':free'):
+            payload['usage'] = {'include': True}
         from ..usage.transport import begin_model, finish_model
         ticket=begin_model(payload)
         body=None

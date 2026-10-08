@@ -47,6 +47,17 @@ class Policy:
             # Do not let presence of manually typed rates imply a safe bound.
             if os.getenv('OPENLEARN_SANDBOX_ENABLED')=='true':
                 raise RuntimeError('Daytona cannot be enabled until allocation limits and delayed resource billing are metered.')
+            model=os.getenv('OPENROUTER_MODEL','openrouter/free').strip()
+            if model not in {'openrouter/free'} and not model.endswith(':free'):
+                if model!='anthropic/claude-haiku-5.5':
+                    raise RuntimeError('Paid model routing is limited to the reviewed Haiku 5.5 tariff.')
+                for name in ('OPENLEARN_HAIKU55_INPUT_USD_PER_MILLION',
+                             'OPENLEARN_HAIKU55_OUTPUT_USD_PER_MILLION',
+                             'OPENLEARN_HAIKU55_CACHE_READ_USD_PER_MILLION'):
+                    try:
+                        if Decimal(os.getenv(name,''))<=0: raise ValueError()
+                    except Exception:
+                        raise RuntimeError(f'Paid model routing requires a positive pinned tariff: {name}.') from None
             enabled=[]
             if os.getenv('OPENLEARN_DICTATION_ENABLED')=='true':
                 enabled.append('OPENLEARN_DICTATION_USD_PER_MINUTE')

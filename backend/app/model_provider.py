@@ -305,6 +305,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             payload.pop("response_format")
             payload["reasoning"] = {"enabled": False}
         from .usage.transport import begin_model, finish_model
+        if not getattr(self, 'is_openai', False) and self.model != 'openrouter/free' and not self.model.endswith(':free'):
+            payload['usage'] = {'include': True}
         usage_ticket = begin_model(payload)
         response_data = None
         try:
@@ -409,6 +411,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         stream_usage: ProviderUsage | None = None
         self.last_usage = None
         from .usage.transport import begin_model, finish_model
+        if not is_openai and self.model != 'openrouter/free' and not self.model.endswith(':free'):
+            payload['usage'] = {'include': True}
         usage_ticket = begin_model(payload)
         raw_usage = None
         try:

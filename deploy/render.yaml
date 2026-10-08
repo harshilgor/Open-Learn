@@ -18,7 +18,21 @@ services:
       - key: AI_TUTOR_PROVIDER
         value: openrouter
       - key: OPENROUTER_MODEL
-        value: openrouter/free
+        value: anthropic/claude-haiku-5.5
+      - key: OPENLEARN_USAGE_PAID_ROUTES_ENABLED
+        value: 'true'
+      - key: OPENLEARN_PLATFORM_DAILY_BUDGET_USD
+        value: '1'
+      - key: OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD
+        value: '10'
+      - key: OPENLEARN_PROVIDER_RATE_VERSION
+        value: haiku55-2026-10-07-v1
+      - key: OPENLEARN_HAIKU55_INPUT_USD_PER_MILLION
+        value: '0.10'
+      - key: OPENLEARN_HAIKU55_OUTPUT_USD_PER_MILLION
+        value: '0.50'
+      - key: OPENLEARN_HAIKU55_CACHE_READ_USD_PER_MILLION
+        value: '0.01'
       - key: OPENLEARN_SANDBOX_ENABLED
         value: 'false'
       - key: OPENLEARN_BROWSER_ASSISTANT_ENABLED

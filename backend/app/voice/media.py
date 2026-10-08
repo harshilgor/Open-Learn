@@ -8,7 +8,9 @@ from ..identity import fail
 
 
 def configured():
-    return os.getenv('OPENROUTER_MODEL', 'openrouter/free') == 'openrouter/free' and all(os.getenv(k) for k in ('LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'OPENROUTER_API_KEY'))
+    model=os.getenv('OPENROUTER_MODEL', 'openrouter/free')
+    model_ready=model=='openrouter/free' or model.endswith(':free') or (model=='anthropic/claude-haiku-5.5' and os.getenv('OPENLEARN_USAGE_PAID_ROUTES_ENABLED')=='true')
+    return model_ready and all(os.getenv(k) for k in ('LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET', 'DEEPGRAM_API_KEY', 'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID', 'OPENROUTER_API_KEY'))
 
 
 def control_configured():
