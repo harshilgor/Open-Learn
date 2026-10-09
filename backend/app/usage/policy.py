@@ -42,6 +42,12 @@ class Policy:
         if paid:
             if not value.provider_rate_version or len(value.provider_rate_version)>80:
                 raise RuntimeError('Paid routing requires a pinned OPENLEARN_PROVIDER_RATE_VERSION.')
+            from ..assessment_profiles import profile_snapshot, approved_tariff
+            for profile in profile_snapshot().values():
+                try:
+                    approved_tariff(profile['model'], profile)
+                except (ValueError, KeyError, TypeError):
+                    raise RuntimeError('Assessment model profiles require pinned verified tariffs.') from None
             # Daytona's API currently gives this application a TTL but not a
             # provider-enforced CPU/RAM/disk ceiling or terminal cost receipt.
             # Do not let presence of manually typed rates imply a safe bound.

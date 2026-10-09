@@ -35,7 +35,7 @@ def _liability_nano(input_tokens, output_tokens, input_rate, output_rate):
     return int(raw.to_integral_value(rounding=ROUND_CEILING))
 
 
-def begin_model(payload, store=None):
+def begin_model(payload, store=None, *, assessment_profile=None):
     from .context import current_store, current_root
     policy=Policy.load()
     if policy.mode=='off':return None
@@ -47,7 +47,14 @@ def begin_model(payload, store=None):
     model=str(payload.get('model',''))
     free_model = model=='openrouter/free' or model.endswith(':free')
     configured_model=os.getenv('OPENROUTER_MODEL','openrouter/free').strip()
-    if not free_model and (not policy.paid or model!=configured_model or model!='anthropic/claude-haiku-5.5'):
+    assessment_rates = None
+    if assessment_profile:
+        try:
+            from ..assessment_profiles import approved_tariff
+            assessment_rates = approved_tariff(model, assessment_profile)
+        except (ValueError, KeyError, TypeError):
+            raise UsageError('usage_provider_unavailable','Assessment model has no approved pinned tariff.',503) from None
+    if not free_model and (not policy.paid or (assessment_rates is None and (model!=configured_model or model!='anthropic/claude-haiku-5.5'))):
         raise UsageError('usage_provider_unavailable','This model has no approved usage tariff.',503)
     maximum=payload.get('max_output_tokens',payload.get('max_tokens',2000))
     if not isinstance(maximum,int) or maximum<1 or maximum>16000:raise UsageError('usage_input_limit','The response limit is unsupported.',422)
@@ -65,18 +72,24 @@ def begin_model(payload, store=None):
     liability=0
     rates=None
     if not free_model:
-        configured=haiku55_rates()
-        input_rate=configured['usd_per_million_input']
+        configured=assessment_rates or haiku55_rates()
+        input_rate=max(configured['usd_per_million_input'], configured.get('usd_per_million_cache_write',configured['usd_per_million_input']))
         output_rate=configured['usd_per_million_output']
         # Reserve at four times the serialized byte count to cover tokenizer
         # expansion, plus the full configured output limit. The supported
         # request bound and disabled multimodal inputs keep this finite.
-        input_bound=tokens*4
+        # Reviewed GPT byte-level tokenizer: text token count cannot exceed
+        # serialized UTF-8 bytes, plus a fixed allowance for framing tokens.
+        # Keep the existing bound for all other model routes.
+        sol_assessment = bool(assessment_profile and model in {'openai/gpt-6.1-sol','gpt-6.1-sol'})
+        input_bound=tokens + 1024 if sol_assessment else tokens*4
         liability=_liability_nano(input_bound,maximum,input_rate,output_rate)
-        rates={**{key:str(value) for key,value in configured.items()},'input_token_bound_multiplier':4,
-               'serialized_byte_limit':48000,'provider':'openrouter','model':model}
+        rates={**{key:str(value) for key,value in configured.items()},'input_token_bound_multiplier':1 if sol_assessment else 4,
+               'serialized_byte_limit':48000,'provider':(assessment_profile or {}).get('provider','openrouter'),'model':model}
+        if sol_assessment:
+            rates['input_framing_reserve']=1024
     row=ledger.reserve(principal.owner_id,uuid.uuid4().hex,'model',{'input_tokens':tokens,'output_tokens':maximum},
-                       liability=liability,root=root,provider='openrouter',model=model,provider_rates=rates)
+                       liability=liability,root=root,provider=(assessment_profile or {}).get('provider','openrouter'),model=model,provider_rates=rates)
     ledger.dispatch(principal.owner_id,row['id'])
     return ledger,principal.owner_id,row
 
@@ -103,7 +116,7 @@ def finish_model(ticket,raw=None):
             else:
                 liability=0
             ledger.settle(owner,row['id'],{'input_tokens':prompt,'output_tokens':output,'cached_tokens':cached if isinstance(cached,int) else 0},cost=liability,
-                          provider='openrouter',model=raw.get('model') if isinstance(raw.get('model'),str) else row['model'],receipt_id=raw.get('id') if isinstance(raw.get('id'),str) else None)
+                          provider=row.get('provider','openrouter'),model=raw.get('model') if isinstance(raw.get('model'),str) else row['model'],receipt_id=raw.get('id') if isinstance(raw.get('id'),str) else None)
             return
     # Missing terminal receipt / cancelled stream retains conservative metering.
     ledger.settle(owner,row['id'],cost=row.get('liability_nano',0),source='estimated')

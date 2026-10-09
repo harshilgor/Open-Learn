@@ -12,7 +12,7 @@ from .execution import Outbox
 from .workflow_store import WorkflowStore
 
 log = logging.getLogger(__name__)
-LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag", "voice_teach"}
+LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag", "voice_teach", "quiz_finish", "quiz_prefetch"}
 USAGE_RECONCILE_INTERVAL_SECONDS = 15
 _last_usage_reconcile = 0.0
 _last_usage_monitor = 0.0

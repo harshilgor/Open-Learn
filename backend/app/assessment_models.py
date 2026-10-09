@@ -4,6 +4,10 @@ from pydantic import Field, model_validator
 from .session_models import ApiModel, NoteContextInput, TeachingGear
 
 
+class QuizUsefulnessFeedback(ApiModel):
+    useful: bool
+
+
 class QuizCreate(ApiModel):
     session_id: str
     task_id: str | None = Field(default=None, max_length=160)
@@ -18,6 +22,8 @@ class QuizCreate(ApiModel):
     mode: Literal["topic_drill", "timed_short_quiz"] = "topic_drill"
     mode_config: dict[str, int] = Field(default_factory=dict)
     selected_span_ids: list[str] = Field(default_factory=list, max_length=6)
+    challenge_preference: Literal["build_confidence", "balanced", "challenge_me"] | None = None
+    feedback_policy: Literal["practice_immediate", "exam_deferred"] = "practice_immediate"
 
     @model_validator(mode="after")
     def validate_mode(self):
@@ -62,6 +68,11 @@ class Criterion(ApiModel):
     weight: float = Field(gt=0, le=1)
 
 
+class DistractorRationale(ApiModel):
+    option_id: str = Field(min_length=1, max_length=40)
+    reason: str = Field(min_length=5, max_length=1000)
+
+
 class Candidate(ApiModel):
     concept_id: str
     kind: Literal["single", "multiple", "short"]
@@ -74,6 +85,9 @@ class Candidate(ApiModel):
     criteria: list[Criterion] = Field(min_length=1, max_length=5)
     hints: list[str] = Field(min_length=1, max_length=3)
     source_ids: list[str] = Field(min_length=1, max_length=6)
+    assumptions: list[str] = Field(default_factory=list, max_length=6)
+    distractor_rationale: list[DistractorRationale] = Field(default_factory=list, max_length=6)
+    numeric_check: "NumericCheck | None" = None
 
     @model_validator(mode="after")
     def coherent(self):
@@ -92,6 +106,18 @@ class Candidate(ApiModel):
         elif self.kind == "single" and len(self.correct_ids) != 1:
             raise ValueError("Single choice needs exactly one correct option")
         return self
+
+
+class NumericCheck(ApiModel):
+    """An auditable arithmetic claim, never executable generated code."""
+    expression: str = Field(min_length=1, max_length=160)
+    expected: float
+    tolerance: float = Field(default=0.000001, ge=0, le=0.01)
+    unit: str = Field(default="", max_length=40)
+    answer_option_id: str | None = None
+
+
+Candidate.model_rebuild()
 
 
 class JourneyCommand(ApiModel):

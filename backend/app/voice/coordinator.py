@@ -205,7 +205,8 @@ class Coordinator:
                     result['uiIntent'] = {'action': 'refresh_quiz'}
                     if kind == 'answer':
                         attempt = WorkflowStore(self.store).read(owner, data['attemptId'], 'attempt')
-                        result['userMessage'] = 'Your answer is checked. ' + str(attempt.get('feedback', 'See your feedback on screen.'))[:1400]
+                        result['userMessage'] = ('Your answer is saved. Feedback is available when the exam ends.' if attempt.get('examPending')
+                            else 'Your answer is checked. ' + str(attempt.get('feedback', 'See your feedback on screen.'))[:1400])
                     elif kind == 'hint':
                         presentation = WorkflowStore(self.store).read(owner, action['data']['focus']['presentation_id'], 'presentation')
                         result['userMessage'] = str((presentation.get('hints') or ['Your hint is ready on screen.'])[-1])[:1600]

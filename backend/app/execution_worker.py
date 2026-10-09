@@ -11,7 +11,7 @@ import threading
 from .execution_outbox import ExecutionOutbox
 from .workflow_store import WorkflowStore
 
-INTERACTIVE_KINDS = frozenset({"create", "journey", "note_synthesis", "note_draft", "next", "answer", "hint", "retry", "resume", "pause", "challenge", "flag"})
+INTERACTIVE_KINDS = frozenset({"create", "journey", "note_synthesis", "note_draft", "next", "answer", "hint", "retry", "resume", "pause", "challenge", "flag", "quiz_finish", "quiz_prefetch"})
 REVIEW_KINDS = frozenset({"review_create", "review_answer", "concept_sync", "review_backfill"})
 LECTURE_KINDS = frozenset({"lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention"})
 
