@@ -10,7 +10,7 @@ import { getJourney, type Journey } from '@/lib/learning-workflows';
 import { materialCommand, materialRequest, prepareAttachment } from '@/lib/chat-materials';
 import styles from './compact-tutor-chat.module.css';
 import {useBrowserAssistant} from '@/lib/browser-assistant';
-import {BrowserTaskCard} from './browser-task-card';
+import {BrowserTaskDock} from './browser-task-dock';
 import {ExecutionPanel} from './assistant/execution-panel';
 
 /** A shared context boundary for note discussions and future concept explanations. */
@@ -117,10 +117,8 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
       {turns.map((turn, index) => <div className={styles.turn} key={`${turn.generationId || index}`}><p className={styles.question}>{turn.question}</p>{turn.lesson?.blocks.map(block => <div key={block.id}>{block.heading ? <h3>{block.heading}</h3> : null}<RichContent body={block.body} /></div>)}</div>)}
       {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? pending.blocks.map(block => <div key={block.id}>{block.heading ? <h3>{block.heading}</h3> : null}<RichContent body={block.body} /></div>) : <p role="status">Thinking…</p>}</div> : null}
       <ExecutionPanel sessionId={sessionId} courseId={context.courseId} onSession={id => { setSessionId(id); try { localStorage.setItem(storageKey, id); } catch { /* Durable server state remains available. */ } }} />
-      {browserAssistant.tasks.map(task=><BrowserTaskCard key={task.id} task={task} onCommand={browserAssistant.command}/>)}
-      {browserAssistant.notice?<p role="status">{browserAssistant.notice}</p>:null}{browserAssistant.error?<p className={styles.error} role="alert">{browserAssistant.error}</p>:null}
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </div>
-    <div className={styles.composer}><ChatComposer variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>
+    <div className={styles.composer}><BrowserTaskDock tasks={browserAssistant.tasks} onCommand={browserAssistant.command} notice={browserAssistant.notice} error={browserAssistant.error} replyTarget={browserAssistant.replyTarget} replyTargets={browserAssistant.replyTargets} onReplyTargetChange={browserAssistant.setReplyTarget}/><ChatComposer variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>
   </aside>;
 }

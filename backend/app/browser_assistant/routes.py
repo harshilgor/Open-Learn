@@ -12,7 +12,7 @@ from .contracts import TaskCreate, TaskCommand, ConnectionCreate, ConnectionPatc
 from .connections import Connections
 from .service import AssistantService
 from .store import AssistantStore, public_run, public_connection
-from .intent import compile_intent, candidate, followup
+from .intent import compile_intent
 from .policy import TERMINAL, timezone, checksum
 from ..identity import current_principal, fail, assert_owner_active
 from ..workflow_store import uid, encoded
@@ -55,14 +55,19 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
     def intent(body: TaskCreate):
         learner = owner()
         if os.getenv('OPENLEARN_BROWSER_ASSISTANT_ENABLED', 'true') != 'true': return {'handled': False}
+        connections = AssistantStore(store_getter()).list('site_connections', learner)
         previous = None
         repo = AssistantStore(store_getter())
         if body.previous_task_id:
             previous = repo.read('assistant_runs',learner,body.previous_task_id)
             if not body.session_id or previous.get('sessionId') != body.session_id: fail('not_found','Website task unavailable in this conversation.',404)
             previous = public_run(previous)
-        if not candidate(body.message) and not (previous and followup(body.message)): return {'handled': False}
-        result = compile_intent(body.message, provider_getter(), repo.list('site_connections', learner), previous)
+        # The browser-task contract owns the semantic decision here. Running
+        # the general route contract first would add a second JEV round trip to
+        # this same intent request.
+        result = compile_intent(body.message, provider_getter(), connections, previous)
+        if not result.handled:
+            return {'handled': False}
         return result.model_dump(by_alias=True)
 
     @router.post('/assistant/tasks', status_code=202)

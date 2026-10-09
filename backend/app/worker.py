@@ -12,7 +12,7 @@ from .execution import Outbox
 from .workflow_store import WorkflowStore
 
 log = logging.getLogger(__name__)
-LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag", "voice_teach"}
+LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag", "voice_teach", "quiz_finish", "quiz_prefetch"}
 USAGE_RECONCILE_INTERVAL_SECONDS = 15
 _last_usage_reconcile = 0.0
 _last_usage_monitor = 0.0
@@ -42,7 +42,10 @@ def monitor_usage_if_due(store, now=None):
     _last_usage_monitor = now
     from .usage.ledger import Ledger
     try:
-        return Ledger(store).monitor()
+        result = Ledger(store).monitor()
+        from .usage.admin_ops import UsageAdmin
+        UsageAdmin(store).emit_operations_alerts()
+        return result
     except Exception as exc:
         log.warning("Usage health monitor iteration failed (%s)", type(exc).__name__)
         return None

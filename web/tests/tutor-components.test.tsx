@@ -5,10 +5,11 @@ import { ExerciseCard } from '@/components/exercise-card';
 import { RichContent } from '@/components/rich-content';
 import { ChatComposer } from '@/components/chat-composer';
 import { MessageActionBar, VerificationBadge } from '@/components/message-action-bar';
+import { NextActionCards } from '@/components/next-action-cards';
 
-const { createWorkspaceNote, deleteWorkspaceNote } = vi.hoisted(() => ({ createWorkspaceNote: vi.fn(async () => ({ id: 'note-1', revision: 1 })), deleteWorkspaceNote: vi.fn(async () => undefined) }));
+const { createWorkspaceNote, deleteWorkspaceNote, getRecommendations, recordRecommendationInteraction } = vi.hoisted(() => ({ createWorkspaceNote: vi.fn(async () => ({ id: 'note-1', revision: 1 })), deleteWorkspaceNote: vi.fn(async () => undefined), getRecommendations: vi.fn(), recordRecommendationInteraction: vi.fn(async () => undefined) }));
 const allowanceState = vi.hoisted(() => ({ snapshot: null as null | { windowId: string | null; windowState: 'ready' | 'active'; serverTime: number; resetsAt: number | null; grantedMicrocredits: number; usedMicrocredits: number; heldMicrocredits: number; availableMicrocredits: number; revision: number; availability: string; reasonCode: string | null }, error: '' }));
-vi.mock('@/lib/api', () => ({ learningApi: { searchWorkspaceNotes: vi.fn(async () => ({ notes: [] })), createWorkspaceNote, deleteWorkspaceNote } }));
+vi.mock('@/lib/api', () => ({ learningApi: { searchWorkspaceNotes: vi.fn(async () => ({ notes: [] })), createWorkspaceNote, deleteWorkspaceNote, getRecommendations, recordRecommendationInteraction } }));
 vi.mock('@/lib/usage-allowance', () => ({ refreshAllowance: vi.fn(), useAllowance: () => allowanceState, usagePercent: (snapshot: NonNullable<typeof allowanceState.snapshot>) => ({ used: snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100, held: snapshot.heldMicrocredits / snapshot.grantedMicrocredits * 100, available: snapshot.availableMicrocredits / snapshot.grantedMicrocredits * 100, label: `${Math.round(snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100)}%` }) }));
 vi.mock('@/lib/use-app-reduced-motion', () => ({ useAppReducedMotion: () => true }));
 
@@ -42,6 +43,28 @@ describe('composer preferences', () => {
     click(find('Reset explanation depth to Quick'));
     expect(button('Explanation depth: Quick')).toBeTruthy();
     expect(container.querySelector('textarea')?.value).toBe('Draft stays here');
+  });
+});
+
+describe('suggested next step', () => {
+  it('shows only the current primary action and runs its learning action', async () => {
+    getRecommendations.mockResolvedValue({
+      id: 'set-1', sessionId: 'session-1', policyVersion: 'immediate-adaptation-v1', status: 'current',
+      createdAt: '2026-10-07T00:00:00Z', recommendations: [
+        { id: 'rec-primary', actionKind: 'quiz', title: 'Quiz Chain rule', rationale: 'A fresh check will show what to do next.', conceptId: 'chain-rule', conceptTitle: 'Chain rule', effortMinutes: 6, context: { sessionId: 'session-1', conceptId: 'chain-rule' }, score: 100, pedagogicalAction: 'check', whyCode: 'taught_without_check', evidenceIds: [], isPrimary: true },
+        { id: 'rec-alternate', actionKind: 'review', title: 'Review Chain rule', rationale: 'An alternate action.', conceptId: 'chain-rule', conceptTitle: 'Chain rule', effortMinutes: 6, context: { sessionId: 'session-1', conceptId: 'chain-rule' }, score: 70, evidenceIds: [], isPrimary: false },
+      ],
+    });
+    const onCheck = vi.fn();
+    render(<NextActionCards sessionId="session-1" enabled onLearn={vi.fn()} onAsk={vi.fn()} onQuiz={vi.fn()} onReview={vi.fn()} onCheck={onCheck}/>);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.textContent).toContain('Check Chain rule');
+    expect(container.textContent).not.toContain('Review Chain rule');
+    expect(container.querySelectorAll('[aria-label="Suggested next step"] button')).toHaveLength(2);
+    click(button('Check Chain rule'));
+    expect(onCheck).toHaveBeenCalledOnce();
+    expect(recordRecommendationInteraction).toHaveBeenCalledWith('rec-primary', 'selection');
   });
 });
 

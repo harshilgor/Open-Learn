@@ -118,6 +118,9 @@ def build_agent_router(store_getter, provider_getter=lambda: None):
             cursor=after
             while not await request.is_disconnected():
                 snapshot=svc.snapshot(learner,session_id,cursor)
+                if snapshot.get('resnapshotRequired'):
+                    yield f'event: resync_required\ndata: {json.dumps({"cursor":snapshot["cursor"],"prunedThrough":snapshot["prunedThrough"]})}\n\n'
+                    return
                 for item in snapshot['items']:
                     cursor=item['sequence'];yield f'id: {cursor}\nevent: activity\ndata: {json.dumps(item)}\n\n'
                 yield ': keepalive\n\n';await asyncio.sleep(1)

@@ -14,10 +14,19 @@
   transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 
-.activityContainer:hover {
-  border-color: #cbdbbf;
-  background: #f8faf5;
+/* This activity card is rendered inside the assistant message bubble. */
+.activityContainer {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  margin: 0;
 }
+
+.activityContainer:hover { background: transparent; }
 
 .visualWrapper {
   position: relative;
@@ -82,8 +91,7 @@
 .errorText {
   color: #983b30;
 }
-:global(.dark) .activityContainer,:global(.dark) .sourceBadge{border-color:var(--border);background:var(--card);color:var(--foreground)}
-:global(.dark) .activityContainer:hover{background:var(--secondary)}
+:global(.dark) .sourceBadge{border-color:var(--border);background:var(--card);color:var(--foreground)}
 :global(.dark) .titleRow,:global(.dark) .subtitle{color:var(--foreground)}
 
 /* Reduced motion overrides */

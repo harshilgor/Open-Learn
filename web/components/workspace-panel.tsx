@@ -36,6 +36,7 @@ import {FlashcardWorkspace} from './flashcard-workspace';
 import {MakeFlashcards} from './flashcard-create';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import {InClassWorkspace} from './in-class-workspace';
+import { ReminderSidebar } from './reminder-sidebar';
 import { Visualization } from './visualization';
 import { parseVisualization } from '@/lib/visualization-spec';
 import { WORKSPACE_CAPTURE_EVENT, WORKSPACE_NOTE_IMPROVE_EVENT, askWorkspacePassage, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
@@ -50,11 +51,11 @@ import type { NotesCommand } from './workspace-sidebar';
 import { noteDisplayTitle } from '@/lib/note-list';
 import { CompactTutorChat, type TutorChatContext } from './compact-tutor-chat';
 
-export type WorkspaceTab = 'practice' | 'canvas' | 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards';
+export type WorkspaceTab = 'practice' | 'canvas' | 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards' | 'reminders';
 export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTab[]; activeTab: WorkspaceTab };
 type NoteDraft = (Pick<WorkspaceNote, 'id' | 'title' | 'body' | 'revision' | 'frontmatter'>) | { id: null; title: string; body: string; revision: null; frontmatter: Record<string, unknown> };
 
-const tabNames: Record<WorkspaceTab, string> = { practice: 'Practice', canvas: 'Canvas', notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards' };
+const tabNames: Record<WorkspaceTab, string> = { practice: 'Practice', canvas: 'Canvas', notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards',reminders:'Reminders' };
 const noteTools = [
   { format: 'heading', label: 'Heading', icon: Heading2 },
   { format: 'bold', label: 'Bold (Ctrl+B)', icon: Bold },
@@ -729,7 +730,7 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
         </div>
       </div>
       <div className={styles.headerActions}>
-        {layout.tabs.length > 1 && !['notes', 'sources', 'practice'].includes(active) ? (
+        {layout.tabs.length > 1 && !['notes', 'sources', 'practice', 'reminders'].includes(active) ? (
           <Button type="button" size="icon-xs" variant="ghost" onClick={closeActiveTab} aria-label={`Close ${tabNames[active]} tab`} title={`Close ${tabNames[active]} tab`}>
             <X size={15} />
           </Button>
@@ -752,6 +753,7 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
       {active === 'practice' ? <PracticePanel sessionId={quizSessionId} conceptId={quizConceptId}/> : null}
       {active === 'canvas' ? <div className="study-practice"><h2>Canvas</h2>{parseVisualization(canvasValue) ? <Visualization value={canvasValue} lessonId={parseVisualization(canvasValue)?.sourceLessonId}/> : <p>Open a diagram or interactive visual from an explanation to keep it beside your conversation.</p>}</div> : null}
       {active === 'sources'  ? <SourcesPanel sourceToOpen={sourceToOpen} /> : null}
+      {active === 'reminders' ? <ReminderSidebar /> : null}
       {layout.tabs.includes('flashcards') ? <div hidden={active!=='flashcards'} className={styles.preservedTab}><FlashcardWorkspace launch={flashcardLaunch}/></div> : null}
       {layout.tabs.includes('class') ? <div hidden={active!=='class'} className={styles.preservedTab}><InClassWorkspace classId={classId||null}/></div> : null}
     </div>

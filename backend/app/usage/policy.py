@@ -42,6 +42,12 @@ class Policy:
         if paid:
             if not value.provider_rate_version or len(value.provider_rate_version)>80:
                 raise RuntimeError('Paid routing requires a pinned OPENLEARN_PROVIDER_RATE_VERSION.')
+            from ..assessment_profiles import profile_snapshot, approved_tariff
+            for profile in profile_snapshot().values():
+                try:
+                    approved_tariff(profile['model'], profile)
+                except (ValueError, KeyError, TypeError):
+                    raise RuntimeError('Assessment model profiles require pinned verified tariffs.') from None
             # Daytona's API currently gives this application a TTL but not a
             # provider-enforced CPU/RAM/disk ceiling or terminal cost receipt.
             # Do not let presence of manually typed rates imply a safe bound.
@@ -73,7 +79,8 @@ class Policy:
                 except Exception:
                     raise RuntimeError(f'Paid usage route requires an explicit positive tariff: {name}.') from None
             optional_rates=[]
-            if os.getenv('AI_TUTOR_MODE_CLASSIFICATION','rules').lower()=='jev':
+            from ..classification.config import jev_requested
+            if jev_requested() and os.getenv('OPENROUTER_API_KEY'):
                 optional_rates.append('OPENLEARN_JEV_USD_PER_REQUEST')
             if os.getenv('AI_TUTOR_WEB_EVIDENCE','false').strip().lower() in {'1','true','yes','on'}:
                 optional_rates.extend(('OPENLEARN_EXA_USD_PER_SEARCH','OPENLEARN_EXA_USD_PER_CONTENT_PAGE'))

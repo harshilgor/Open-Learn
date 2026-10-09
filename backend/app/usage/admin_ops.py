@@ -97,6 +97,128 @@ class UsageAdmin:
                                 {'limit': limit}).mappings().all()
         return [dict(row) for row in rows]
 
+    def operations_snapshot(self, *, stale_queue_seconds=300, stale_dispatch_seconds=90):
+        """Return a privacy-safe aggregate view of durable work and cleanup.
+
+        This deliberately exposes counts and ages only: no owner identifiers,
+        task text, provider URLs, or operation payloads.  It is read-only and
+        uses the existing job, outbox, usage, and cleanup ledgers.
+        """
+        for value, label in ((stale_queue_seconds, 'Queue age'), (stale_dispatch_seconds, 'Dispatch age')):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 86400:
+                raise ValueError(f'{label} threshold must be between 1 and 86400 seconds.')
+
+        with self.store.engine.connect() as conn:
+            now = self.ledger.now(conn)
+            jobs = conn.execute(text('''SELECT queue,status,COUNT(*) AS count FROM learning_jobs
+                GROUP BY queue,status ORDER BY queue,status''')).mappings().all()
+            job_counts = {(row['queue'], row['status']): int(row['count']) for row in jobs}
+            stale_queue = conn.execute(text('''SELECT COUNT(*),MIN(created_at) FROM learning_jobs
+                WHERE status IN ('queued','retry_wait') AND next_retry_at<=:now
+                  AND created_at<=:cutoff'''), {'now': now, 'cutoff': now-stale_queue_seconds}).one()
+            expired_leases = conn.execute(text('''SELECT COUNT(*),MIN(expires) FROM learning_jobs
+                WHERE status='running' AND expires IS NOT NULL AND expires<=:now'''), {'now': now}).one()
+            exhausted = conn.execute(text('''SELECT COUNT(*),MIN(created_at) FROM learning_jobs
+                WHERE status='failed' AND attempt_count>=max_attempts''')).one()
+
+            def count_age(table, where='1=1', timestamp='created_at', params=None):
+                from sqlalchemy import inspect
+                if not inspect(conn).has_table(table):
+                    return (0, None)
+                aggregate = f'MIN({timestamp})' if timestamp else 'NULL'
+                return conn.execute(text(f'SELECT COUNT(*),{aggregate} FROM {table} WHERE {where}'), params or {}).one()
+
+            stale_outbox = count_age('execution_outbox',
+                'delivered_at IS NULL AND failed_at IS NULL AND created_at<=:cutoff',
+                params={'cutoff': now-stale_queue_seconds})
+            outbox_failed = count_age('execution_outbox', 'failed_at IS NOT NULL', timestamp='failed_at')
+            unknown_writes = count_age('agent_action_operations', "status='outcome_unknown'")
+            stale_dispatch = count_age('agent_action_operations',
+                "status='dispatching' AND updated_at<=:cutoff", timestamp='updated_at',
+                params={'cutoff': now-stale_dispatch_seconds})
+            sandbox_cleanup = count_age('agent_sandbox_cleanup')
+            assistant_object_cleanup = count_age('identity_object_cleanup', "kind='assistant'", timestamp=None)
+            browser_cleanup = count_age('browser_provider_cleanup')
+            artifact_cleanup = count_age('agent_artifacts', "status='cleanup_pending'")
+            failed_reminders = count_age('reminders', "status='failed'", timestamp='due_at')
+            failed_notification_delivery = count_age('notification_deliveries', "status='failed'")
+            unresolved_usage = count_age('usage_reservations',
+                "state='dispatched' AND deadline<:now", timestamp='deadline', params={'now': now})
+            expired_sandbox_leases = count_age('agent_sandbox_leases',
+                "status NOT IN ('released','deleted') AND expires_at<=:now", timestamp='created_at', params={'now': now})
+            active_sandbox_leases = count_age('agent_sandbox_leases',
+                "status IN ('creating','active','executing','collected')", timestamp='created_at')
+
+        def metric(row):
+            count = int(row[0] or 0)
+            oldest = float(row[1]) if len(row) > 1 and row[1] is not None else None
+            return {'count': count, 'oldestAgeSeconds': max(0, int(now-oldest)) if oldest is not None else None}
+
+        metrics = {
+            'jobsByQueueAndStatus': [dict(row) for row in jobs],
+            'staleQueuedJobs': metric(stale_queue),
+            'expiredJobLeases': metric(expired_leases),
+            'exhaustedJobs': metric(exhausted),
+            'staleOutboxDeliveries': metric(stale_outbox),
+            'failedOutboxDeliveries': metric(outbox_failed),
+            'unknownExternalWrites': metric(unknown_writes),
+            'staleExternalDispatches': metric(stale_dispatch),
+            'sandboxCleanupObligations': metric(sandbox_cleanup),
+            'assistantObjectCleanupObligations': metric(assistant_object_cleanup),
+            'browserCleanupObligations': metric(browser_cleanup),
+            'artifactCleanupPending': metric(artifact_cleanup),
+            'failedReminderDeliveries': metric(failed_reminders),
+            'failedNotificationDeliveries': metric(failed_notification_delivery),
+            'expiredUsageReservations': metric(unresolved_usage),
+            'expiredSandboxLeases': metric(expired_sandbox_leases),
+            'activeSandboxLeases': metric(active_sandbox_leases),
+        }
+        alert_map = {
+            'stale_jobs': 'staleQueuedJobs',
+            'expired_leases': 'expiredJobLeases',
+            'exhausted_jobs': 'exhaustedJobs',
+            'outbox_stale': 'staleOutboxDeliveries',
+            'outbox_failed': 'failedOutboxDeliveries',
+            'write_unknown': 'unknownExternalWrites',
+            'write_dispatch_stale': 'staleExternalDispatches',
+            'sandbox_cleanup': 'sandboxCleanupObligations',
+            'object_cleanup': 'assistantObjectCleanupObligations',
+            'browser_cleanup': 'browserCleanupObligations',
+            'artifact_cleanup': 'artifactCleanupPending',
+            'reminder_failed': 'failedReminderDeliveries',
+            'notification_failed': 'failedNotificationDeliveries',
+            'usage_reconciliation': 'expiredUsageReservations',
+            'sandbox_lease_expiry': 'expiredSandboxLeases',
+        }
+        alerts = [{'kind': kind, **metrics[key]} for kind, key in alert_map.items() if metrics[key]['count']]
+        return {'sampledAt': now, 'thresholds': {'staleQueueSeconds': stale_queue_seconds,
+                'staleDispatchSeconds': stale_dispatch_seconds}, 'metrics': metrics, 'alerts': alerts}
+
+    def emit_operations_alerts(self, *, stale_queue_seconds=300, stale_dispatch_seconds=90, snapshot=None):
+        """Persist redacted platform-health alerts for the authenticated worker loop.
+
+        Alert identities coalesce one metric per UTC hour. Payloads contain only
+        aggregate counts and age, and use the existing durable/acknowledgeable
+        usage alert store. This is intentionally not an HTTP control surface.
+        """
+        snapshot = snapshot or self.operations_snapshot(stale_queue_seconds=stale_queue_seconds,
+                                                        stale_dispatch_seconds=stale_dispatch_seconds)
+        hour = int(float(snapshot['sampledAt']) // 3600)
+        inserted = 0
+        with self.ledger.transaction() as conn:
+            for alert in snapshot['alerts']:
+                kind = str(alert['kind'])
+                identifier = f'agent-ops:{kind}:{hour}'
+                result = conn.execute(text('''INSERT INTO usage_alerts(id,owner_id,reservation_id,kind,created_at,payload)
+                    VALUES(:id,NULL,NULL,:kind,:now,:payload) ON CONFLICT(id) DO NOTHING'''), {
+                    'id': identifier, 'kind': 'agent_' + kind, 'now': snapshot['sampledAt'],
+                    'payload': json.dumps({'metric': kind, 'count': int(alert['count']),
+                        'oldestAgeSeconds': alert.get('oldestAgeSeconds')}, separators=(',', ':')),
+                })
+                inserted += max(0, result.rowcount)
+        return {'observed': len(snapshot['alerts']), 'created': inserted}
+
+
     def unblock(self, owner, *, actor, reason, idempotency_key):
         owner = _owner(owner)
         actor, reason, key = _actor(actor), _reason(reason), _idempotency(idempotency_key)

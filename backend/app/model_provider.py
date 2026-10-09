@@ -244,7 +244,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         return self._parse_blocks(parsed)
 
     def complete_json(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, allow_text: bool = False,
-                      request_timeout: float | None = None, images: list[ImageInput] | None = None) -> dict:
+                      request_timeout: float | None = None, images: list[ImageInput] | None = None,
+                      response_schema: dict | None = None, reasoning_effort: str | None = None) -> dict:
         """Shared provider transport; assessment callers require strict JSON."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -304,10 +305,23 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             # This endpoint accepts text output but not response_format.
             payload.pop("response_format")
             payload["reasoning"] = {"enabled": False}
+        if reasoning_effort is not None:
+            payload.pop("temperature", None)
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if response_schema is not None:
+            from .assessment_profiles import schema_for_transport
+            format_value = {"type": "json_schema", "json_schema": {
+                "name": "assessment", "strict": True, "schema": schema_for_transport(response_schema)}}
+            if getattr(self, "is_openai", False):
+                payload["text"] = {"format": {"type": "json_schema", **format_value["json_schema"]}}
+            else:
+                payload["response_format"] = format_value
+                payload["provider"] = {"require_parameters": True, "allow_fallbacks": False}
         from .usage.transport import begin_model, finish_model
         if not getattr(self, 'is_openai', False) and self.model != 'openrouter/free' and not self.model.endswith(':free'):
             payload['usage'] = {'include': True}
-        usage_ticket = begin_model(payload)
+        usage_ticket = (begin_model(payload, assessment_profile=self.assessment_profile)
+                        if getattr(self, "assessment_profile", None) else begin_model(payload))
         response_data = None
         try:
             response = httpx.post(self.base_url, headers=headers, json=payload,
@@ -372,6 +386,10 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                     raise
         except httpx.HTTPStatusError as exc:
             service = "OpenAI" if getattr(self, "is_openai", False) else "OpenRouter"
+            if getattr(self, 'assessment_profile', None) and exc.response.status_code in {400, 401, 402, 403, 429}:
+                # An explicit admission refusal performed no generation. Other
+                # failures retain the conservative missing-receipt policy.
+                response_data = {'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'cost': 0}}
             if exc.response.status_code in {400, 401, 403}:
                 raise ModelProviderError(f"{service} rejected the request ({exc.response.status_code}). Check that the API key is active and that this model is enabled for the account.") from exc
             if exc.response.status_code == 402:
@@ -387,7 +405,10 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             suffix = f": {detail[:160]}" if detail else ""
             raise ModelProviderError(f"{service} returned a response the app could not use ({type(exc).__name__}{suffix}). Try again or choose another model.") from exc
         finally:
-            finish_model(usage_ticket, response_data.get('usage') if isinstance(response_data, dict) else None)
+            receipt = response_data.get('usage') if isinstance(response_data, dict) else None
+            if getattr(self, 'assessment_profile', None) and isinstance(receipt, dict):
+                receipt = {**receipt, 'model': response_data.get('model'), 'id': response_data.get('id')}
+            finish_model(usage_ticket, receipt)
         if not isinstance(parsed, dict):
             raise ModelProviderError("The model must return a JSON object.")
         return parsed

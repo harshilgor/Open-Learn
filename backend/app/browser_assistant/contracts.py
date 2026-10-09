@@ -67,6 +67,8 @@ class TaskCommand(Contract):
     connection_id: str | None = None
     course_id: str | None = None
     answer: str | None = Field(default=None, max_length=4000)
+    reply_to_request_id: str | None = Field(default=None, max_length=160)
+    expected_request_revision: int | None = Field(default=None, ge=1)
 
 
 class TaskIntent(Contract):

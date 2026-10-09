@@ -45,6 +45,12 @@ class NoteDraftService:
                 content.append({"kind": "lesson_block", "id": f"{lesson.id}:{block.id}", "text": text})
         elif origin == "quiz_feedback":
             attempt = self.records.read(owner, request.quiz_attempt_id or "", "attempt")
+            if attempt.get("examPending"):
+                problem("exam_feedback_deferred", "Finish the exam before saving its feedback to notes.", 409)
+            if attempt.get("quizId"):
+                quiz = self.records.read(owner, attempt["quizId"], "quiz")
+                if quiz.get("sessionId") != session_id:
+                    problem("unapproved_source_anchor", "Choose feedback from this study session.", 422)
             content.append({"kind": "quiz_feedback", "id": attempt["id"], "text": attempt.get("feedback", "")})
             anchors.append(NoteDraftSourceAnchor(kind="quiz_attempt", id=attempt["id"], label="Quiz feedback"))
         elif origin == "mentioned_notes":

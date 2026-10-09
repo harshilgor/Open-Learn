@@ -47,8 +47,10 @@ def _safe_relative(name: str) -> Path:
 
 
 class BackupService:
-    def __init__(self, store):
+    def __init__(self, store, *, revocation_journal=None, identity_restore_enabled=None):
         self.store = store
+        self.revocation_journal = revocation_journal
+        self.identity_restore_enabled = identity_restore_enabled
         db_path = os.getenv("FORMA_DB_PATH")
         self.data_root = Path(db_path).resolve().parent if db_path and db_path != ":memory:" else Path(__file__).resolve().parents[1] / "data"
         self.vault_root = Path(os.getenv("AI_TUTOR_NOTE_VAULT_DIR", str(self.data_root / "notes"))).resolve()
@@ -142,7 +144,7 @@ class BackupService:
         report = self.preflight(payload)
         if report["requiresReplaceConfirmation"] and not confirm_replace:
             raise BackupError("restore_conflict", "Local data already exists. Confirm replacement after making a fresh backup.", 409)
-        _, files = self._read(payload)
+        manifest, files = self._read(payload)
         exported = json.loads(files["data/export.json"].decode("utf-8"))
         # Stage filesystem content before touching live paths. Database changes
         # use one transaction; a failure leaves existing data untouched.
@@ -159,6 +161,19 @@ class BackupService:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(content)
             tables: dict[str, list[dict[str, Any]]] = exported["tables"]
+            if tables.get("identity_accounts") or tables.get("identity_devices"):
+                from .identity_revocation import configured_revocation_journal, reconcile_identity_snapshot, RevocationGateError
+                try:
+                    enabled = self.identity_restore_enabled
+                    if enabled is None:
+                        enabled = os.getenv("OPENLEARN_IDENTITY_RESTORE_ENABLED", "false").lower() in {"1", "true", "yes"}
+                    if not enabled:
+                        reconcile_identity_snapshot(tables, archive_created_at=manifest.get("createdAt", ""), journal=None, enabled=False)
+                    journal = self.revocation_journal if self.revocation_journal is not None else configured_revocation_journal()
+                    reconcile_identity_snapshot(tables, archive_created_at=manifest.get("createdAt", ""),
+                        journal=journal, enabled=enabled)
+                except RevocationGateError as exc:
+                    raise BackupError(exc.code, exc.message, 409) from exc
             with self.store.transaction() as connection:
                 connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
                 for table in reversed(list(tables)):

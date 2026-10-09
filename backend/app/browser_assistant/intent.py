@@ -1,8 +1,13 @@
 """Separate intent boundary from tutor/quiz mode transitions."""
 import json
+import logging
 import re
 from .contracts import TaskIntent, decision_adapter
 from ..model_provider import ModelProviderError
+from ..classification.config import min_score, rollout_mode, should_sample_shadow
+from ..classification.service import ClassificationService
+
+logger = logging.getLogger(__name__)
 
 SITE_WORDS = re.compile(r'\b(canvas|website|web ?site|portal|browser|university|lms|midterms?|deadlines?|remind|reminders?)\b', re.I)
 VERBS = re.compile(r'\b(open|visit|browse|go to|go through|check|read through|find|save|remember|remind|show|list|taking|coming up)\b', re.I)
@@ -47,11 +52,61 @@ def compile_intent(message, provider=None, connections=(), previous=None):
         previous = {**previous,'facts':[{k:f.get(k) for k in ('entityId','courseId','title','date','saved')} for f in previous.get('facts',[])[:40]]}
     fallback = fallback_intent(message)
     from ..agent_execution.admission import plan_message
-    if plan_message(message).kind == 'browser': return fallback
+    plan = plan_message(message)
+    classification_mode = rollout_mode('browser_task')
+    browser_classification = None
+    if classification_mode == 'active' or classification_mode == 'shadow' and should_sample_shadow('browser_task', message):
+        try:
+            browser_classification = ClassificationService().browser_task(message, context={
+                'has_connection': bool(connections), 'has_previous_task': bool(previous),
+                'task_type': 'follow_up' if previous else 'new_task',
+            })
+        except Exception as exc:
+            logger.info('classification_fallback', extra={
+                'classification_contract':'browser_task', 'classification_error':type(exc).__name__,
+            })
+            browser_classification = None
+    if classification_mode == 'active' and browser_classification:
+        task = browser_classification['task']
+        threshold = min_score('browser_task', task, default=0.82)
+        if task == 'none' and browser_classification['task_score'] >= threshold:
+            fallback.handled = False
+            fallback.operations = []
+            return fallback
+        if task != 'none' and browser_classification['task_score'] >= threshold:
+            operations_by_task = {
+                'browse_summarize': ['browse', 'summarize'],
+                'discover_courses': ['browse', 'discover_courses', 'summarize'],
+                'collect_exam_dates': ['browse', 'collect_exam_dates', 'summarize'],
+                'collect_assignments': ['browse', 'collect_assignments', 'summarize'],
+                'query_saved': ['query_saved', 'summarize'],
+                'save_academic_facts': ['browse', 'save_academic_facts', 'summarize'],
+                'create_study_tasks': ['browse', 'create_study_tasks', 'summarize'],
+            }
+            fallback.handled = True
+            fallback.operations = operations_by_task[task]
+            fallback.save = bool(browser_classification['save_requested'] and task != 'query_saved'
+                                 and browser_classification['save_score'] >= min_score('browser_task', 'save', default=0.82))
+            fallback.reminder_requested = bool(browser_classification['reminder_requested']
+                and browser_classification['reminder_score'] >= min_score('browser_task', 'reminder', default=0.84))
+            if fallback.save and 'save_academic_facts' not in fallback.operations:
+                fallback.operations.append('save_academic_facts')
+            if task == 'query_saved':
+                return fallback
+        else:
+            return fallback
+    elif classification_mode == 'active':
+        # Active JEV failure/invalid output uses the deterministic fallback and
+        # does not silently hand semantic routing to the generative compiler.
+        return fallback
+    if plan.kind == 'browser' and classification_mode != 'active':
+        return fallback
     if previous and followup(message) and not re.search(r'\b(open|go|browse|check|refresh)\b',message,re.I):
         fallback.handled = True
         if not fallback.save: fallback.operations = ['query_saved','summarize']
-    if not provider or not (candidate(message) or previous and followup(message)):
+    jev_routed_browser = (classification_mode == 'active' and browser_classification
+                          and browser_classification['task'] != 'none')
+    if not provider or not (jev_routed_browser or candidate(message) or previous and followup(message)):
         return fallback
     prompt = ('Classify this USER request into an OpenLearn browser/academic assistant intent. '
               'Do not execute anything. Negation and just summarize disable saving. Requests to explain '
@@ -62,6 +117,12 @@ def compile_intent(message, provider=None, connections=(), previous=None):
               json.dumps({'message': message, 'previousTask':previous, 'connections': [{'id': c['id'], 'label': c['label'], 'aliases': c.get('aliases', [])} for c in connections]}))
     value = provider.complete_json(prompt, 1600, request_timeout=40)
     intent = TaskIntent.model_validate(value)
+    if classification_mode == 'active' and browser_classification and browser_classification['task'] != 'none':
+        # JEV owns operation labels; the structured provider still extracts the
+        # arbitrary goal, destination, and other bounded task details.
+        intent.operations = list(fallback.operations)
+        intent.save = fallback.save
+        intent.reminder_requested = fallback.reminder_requested
     if intent.save and 'query_saved' in intent.operations and previous and any(not f.get('entityId') for f in previous.get('facts',[])):
         intent.operations = [o for o in intent.operations if o != 'query_saved'] + ['browse','save_academic_facts']
     # Preserve explicit negatives even when the model misses them.

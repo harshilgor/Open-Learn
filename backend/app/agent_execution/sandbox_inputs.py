@@ -8,7 +8,7 @@ from ..workflow_store import encoded
 from .tools import parse_csv
 
 
-def material_csv(store,owner,session_id,version_id,conn=None):
+def material_csv(store,owner,session_id,version_id,conn=None,*,allow_general=False):
     materials=MaterialService(store);session=materials.session(owner,session_id)
     version=materials.version(owner,version_id,conn)
     if version['role'] in {'answer_key','sample_paper'}:fail('source_scope_denied','Assessment sources cannot enter a sandbox.',403)
@@ -17,7 +17,11 @@ def material_csv(store,owner,session_id,version_id,conn=None):
     if version.get('course_id') and session.course_id and version['course_id']!=session.course_id:fail('source_scope_denied','Select a source from this course.',403)
     content=materials.objects.read(version['object_key'])
     if len(content)>50000 or hashlib.sha256(content).hexdigest()!=version['sha256']:fail('source_changed','The material bytes changed.',409)
-    value=content.decode('utf-8-sig');parse_csv(value)
+    value=content.decode('utf-8-sig')
+    if allow_general:
+        from .tools import parse_dataset_csv
+        parse_dataset_csv(value)
+    else:parse_csv(value)
     return value,{'versionId':version_id,'sha256':version['sha256'],'title':version['title'],'mediaType':version['media_type']}
 
 

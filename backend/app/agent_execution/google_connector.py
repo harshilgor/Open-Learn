@@ -20,6 +20,7 @@ SCOPES={
  'drive_read':'https://www.googleapis.com/auth/drive.readonly',
  'gmail_read':'https://www.googleapis.com/auth/gmail.readonly',
  'gmail_send':'https://www.googleapis.com/auth/gmail.send',
+ 'calendar_read':'https://www.googleapis.com/auth/calendar.events.readonly',
  'calendar_write':'https://www.googleapis.com/auth/calendar.events',
 }
 
@@ -93,6 +94,14 @@ class GoogleConnections:
             self.row(conn,owner,identifier)
             conn.execute(text("UPDATE agent_app_connections SET status='revoked',revision=revision+1,secret='' WHERE id=:id AND owner_id=:owner"),{'id':identifier,'owner':owner})
             conn.execute(text("UPDATE agent_action_drafts SET status='invalidated' WHERE connection_id=:id AND owner_id=:owner AND status IN ('draft','approved')"),{'id':identifier,'owner':owner})
+            # Results derived from this account are private artifacts too. Tombstone
+            # them in the same transaction as revocation so the normal worker
+            # cleanup removes their object-store copies and future downloads fail.
+            for artifact in conn.execute(text("SELECT id,payload FROM agent_artifacts WHERE owner_id=:owner AND status IN ('prepared','published')"),{'owner':owner}).mappings():
+                try:lineage=json.loads(artifact['payload']).get('lineage',{})
+                except (TypeError,ValueError):lineage={}
+                if isinstance(lineage,dict) and lineage.get('connectionId')==identifier:
+                    conn.execute(text("UPDATE agent_artifacts SET status='cleanup_pending' WHERE id=:id AND owner_id=:owner AND status IN ('prepared','published')"),{'id':artifact['id'],'owner':owner})
     def token(self,owner,identifier,capability):
         with self.store.engine.connect() as conn:row=self.row(conn,owner,identifier)
         metadata=json.loads(row['payload'])
@@ -163,12 +172,29 @@ class GoogleAdapter:
             if exc.code=='connection_scope_denied':return None
             raise
         return None
-    def read(self,owner,connection,kind,identifier=None,page=None):
+    def read(self,owner,connection,kind,identifier=None,page=None,*,calendar_id=None,time_min=None,time_max=None):
         if kind=='drive':
             result=self.request(owner,connection,'drive_read','GET','drive/v3/files',params={'pageSize':20,'fields':'files(id,name,mimeType,modifiedTime,size),nextPageToken','pageToken':page or ''}).json()
         elif kind=='gmail':
             if identifier:result=self.request(owner,connection,'gmail_read','GET','gmail/v1/users/me/messages/'+quote(identifier,safe=''),params={'format':'full'}).json()
             else:result=self.request(owner,connection,'gmail_read','GET','gmail/v1/users/me/messages',params={'maxResults':20,'pageToken':page or ''}).json()
+        elif kind=='calendar':
+            # Require a user-selected calendar and explicit time range so a
+            # source read cannot silently become an unbounded calendar export.
+            from datetime import datetime
+            if not calendar_id or len(calendar_id)>300:
+                raise ConnectorError('calendar_selection_required')
+            try:
+                start=datetime.fromisoformat((time_min or '').replace('Z','+00:00'))
+                end=datetime.fromisoformat((time_max or '').replace('Z','+00:00'))
+                if start.utcoffset() is None or end.utcoffset() is None or end<=start:
+                    raise ValueError
+            except (TypeError,ValueError):
+                raise ConnectorError('calendar_range_invalid') from None
+            result=self.request(owner,connection,'calendar_read','GET',
+                'calendar/v3/calendars/'+quote(calendar_id,safe='')+'/events',
+                params={'maxResults':20,'singleEvents':'true','orderBy':'startTime',
+                        'timeMin':time_min,'timeMax':time_max,'pageToken':page or ''}).json()
         else:raise ConnectorError('unknown_read_capability')
         return {'data':result,'classification':'untrusted_source','coverage':'bounded_page','complete':not bool(result.get('nextPageToken')),'nextPageToken':result.get('nextPageToken')}
     def download(self,owner,connection,identifier):

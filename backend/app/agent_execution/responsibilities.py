@@ -14,7 +14,7 @@ from ..browser_assistant.policy import require_course
 from .repository import Repository,TERMINAL,digest
 from .coordinator import Coordinator
 from .contracts import Command
-from .config import admission_enabled
+from .config import admission_enabled, responsibility_enabled
 
 
 class ResponsibilitySpec(BaseModel):
@@ -86,7 +86,7 @@ class Responsibilities:
         identifier='responsibility_'+digest([owner,key])[:32]
         with self.repo.transaction() as conn:
             self.repo.session(conn,owner,spec.sessionId);require_course(conn,owner,spec.courseId)
-            if not admission_enabled():fail('capability_unavailable','Responsibility admission is disabled.',503)
+            if not admission_enabled() or not responsibility_enabled(owner):fail('capability_unavailable','Responsibility admission is disabled for this account.',503)
             session=conn.execute(text('SELECT course_id FROM learning_sessions WHERE id=:id AND learner_id=:owner'),{'id':spec.sessionId,'owner':owner}).scalar_one()
             if session!=spec.courseId:fail('scope_denied','Choose a conversation in this course.',409)
             existing=conn.execute(text('SELECT payload FROM agent_responsibilities WHERE id=:id'),{'id':identifier}).scalar_one_or_none()
@@ -127,7 +127,7 @@ class Responsibilities:
             return self.public(self.row(conn,owner,identifier))
     def trigger(self,conn,row,event,now,causation=None):
         spec=ResponsibilitySpec.model_validate(row['spec'])
-        if row['status']!='active' or causation==row['id'] or now<spec.startsAt or spec.endsAt is not None and now>=spec.endsAt or not admission_enabled():return
+        if row['status']!='active' or causation==row['id'] or now<spec.startsAt or spec.endsAt is not None and now>=spec.endsAt or not admission_enabled() or not responsibility_enabled(row['owner_id']):return
         self.repo.session(conn,row['owner_id'],spec.sessionId);require_course(conn,row['owner_id'],spec.courseId)
         identifier='occurrence_'+digest([row['id'],row['revision'],event])[:32]
         if conn.execute(text('SELECT 1 FROM agent_responsibility_occurrences WHERE id=:id'),{'id':identifier}).first():return
@@ -140,21 +140,24 @@ class Responsibilities:
             from .research_contracts import ResearchSpec
             run=Coordinator(self.store).create(conn,row['owner_id'],spec.sessionId,spec.goal,identifier,None,{},kind='research',research_spec=ResearchSpec(query=spec.goal,source_policy='attached_only',max_sources=3,open_sources=0).model_dump(by_alias=True))
             run=self.repo.update(conn,run,responsibilityId=row['id'],responsibilityRevision=row['revision'])
-            notes=conn.execute(text('SELECT payload FROM agent_operational_notes WHERE owner_id=:owner AND responsibility_id=:id ORDER BY id LIMIT 10'),{'owner':row['owner_id'],'id':row['id']}).scalars().all()
-            if notes:run=self.repo.update(conn,run,operationalNotes=[json.loads(note)['text'] for note in notes])
+            notes=conn.execute(text('SELECT id,revision FROM agent_operational_notes WHERE owner_id=:owner AND responsibility_id=:id ORDER BY id LIMIT 10'),{'owner':row['owner_id'],'id':row['id']}).mappings().all()
+            if notes:run=self.repo.update(conn,run,operationalNoteRefs=[{'id':note['id'],'revision':note['revision']} for note in notes])
             self.repo.schedule(conn,run)
         conn.execute(text('INSERT INTO agent_responsibility_occurrences(id,owner_id,responsibility_id,revision,run_id,status,created_at,payload) VALUES(:id,:owner,:responsibility,:revision,:run,:status,:now,:payload)'),{'id':identifier,'owner':row['owner_id'],'responsibility':row['id'],'revision':row['revision'],'run':run['id'] if run else None,'status':status,'now':now,'payload':encoded({'event':event})})
     def tick(self,limit=20,now=None):
         now=time.time() if now is None else now
         with self.store.engine.connect() as conn:
             rows=conn.execute(text("SELECT id,owner_id FROM agent_responsibilities WHERE status='active' ORDER BY last_checked,id LIMIT :limit"),{'limit':limit}).mappings().all()
-        for item in rows:
-            try:self.check(item,now)
-            except HTTPException as exc:
-                if exc.status_code not in {403,404}:raise
-                # Revoked/deleted scope must not stop unrelated owners' work.
-                with self.store.engine.begin() as conn:
-                    conn.execute(text("UPDATE agent_responsibilities SET status='unavailable',next_due=NULL WHERE id=:id AND owner_id=:owner"),dict(item))
+        if admission_enabled():
+            for item in rows:
+                if not responsibility_enabled(item['owner_id']):
+                    continue
+                try:self.check(item,now)
+                except HTTPException as exc:
+                    if exc.status_code not in {403,404}:raise
+                    # Revoked/deleted scope must not stop unrelated owners' work.
+                    with self.store.engine.begin() as conn:
+                        conn.execute(text("UPDATE agent_responsibilities SET status='unavailable',next_due=NULL WHERE id=:id AND owner_id=:owner"),dict(item))
         self.notify(now)
     def check(self,item,now):
             with self.repo.transaction() as conn:

@@ -9,7 +9,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { learningApi, request, type ModeTransitionSuggestion } from '@/lib/api';
 import { cancelWorkflow, getQuiz, workflow, waitForJob, type Quiz } from '@/lib/learning-workflows';
-import { AssessmentCard } from './assessment-card';
+import { AssessmentCard, AnswerFeedback } from './assessment-card';
+import { RichContent } from './rich-content';
 import { HypothesisPanel } from './hypothesis-panel';
 import { openWorkspaceSource } from '@/lib/workspace-events';
 import { ModeTransitionCard } from './mode-transition-card';
@@ -33,6 +34,14 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   const startedLaunch = useRef<string | null>(null);
   const completedTask = useRef<string | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
+  const [capabilities, setCapabilities] = useState<{ version2: boolean } | null>(null);
+  const [challengePreference, setChallengePreference] = useState<'build_confidence' | 'balanced' | 'challenge_me'>('balanced');
+  const [feedbackPolicy, setFeedbackPolicy] = useState<'practice_immediate' | 'exam_deferred'>('practice_immediate');
+  useEffect(() => {
+    let active = true;
+    void request<{ version2: boolean }>('/v1/quiz-capabilities').then(value => { if (active) setCapabilities(value); }).catch(() => { if (active) setCapabilities({ version2: false }); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     if (quiz) reportVoiceFocus({ quiz_id: quiz.id, presentation_id: quiz.current?.id || null, expected_revision: quiz.revision });
   }, [quiz]);
@@ -64,7 +73,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   useEffect(() => {
     let sid = sessionId;
     try { sid ||= localStorage.getItem('forma-chat-session'); } catch { /* no session */ }
-    if (!sid || !quiz) return;
+    if (!sid || !quiz || (quiz.sessionPlan?.feedbackPolicy === 'exam_deferred' && quiz.status !== 'completed')) return;
     const currentConcept = conceptId || (quiz as unknown as { conceptIds?: string[] }).conceptIds?.[0];
     if (!currentConcept) return;
     let active = true;
@@ -175,7 +184,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     }
     setBusy(true); setError('');
     try {
-      const result = await workflow('/quizzes', { sessionId: sid, conceptIds: launch?.canonicalConceptIds?.length ? launch.canonicalConceptIds : conceptId ? [conceptId] : [], taskId: launch?.taskId, count, difficulty, origin: lessonNoteId ? 'learn' : 'ask', lessonNoteId, requestedTopic: launch?.requestedTopic, mode, modeConfig: mode === 'timed_short_quiz' ? { duration_seconds: duration } : {} }, scope);
+      const result = await workflow('/quizzes', { sessionId: sid, conceptIds: launch?.canonicalConceptIds?.length ? launch.canonicalConceptIds : conceptId ? [conceptId] : [], taskId: launch?.taskId, count, difficulty, origin: lessonNoteId ? 'learn' : 'ask', lessonNoteId, requestedTopic: launch?.requestedTopic, mode, modeConfig: mode === 'timed_short_quiz' ? { duration_seconds: duration } : {}, ...(capabilities?.version2 ? { challengePreference, feedbackPolicy } : {}) }, scope);
       if (!result?.quizId) throw new Error('The quiz was not created.');
       let current = await getQuiz(result.quizId);
       localStorage.setItem(`forma-${scope}`, current.id);
@@ -188,6 +197,14 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not prepare the quiz.'); }
     finally { setBusy(false); }
   }
+  async function shareUsefulness(useful: boolean) {
+    if (!quiz) return;
+    try {
+      await request(`/v1/quizzes/${quiz.id}/usefulness`, { method: 'POST', body: JSON.stringify({ useful }) });
+      setQuiz(current => current?.id === quiz.id ? { ...current, usefulness: useful } : current);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not save your feedback.'); }
+  }
+
   async function saveReviewChecklist() {
     let sid = sessionId;
     try { sid ||= localStorage.getItem('forma-chat-session'); } catch { /* No current session. */ }
@@ -209,6 +226,10 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     {!quiz ? <div className={styles.card}>
       <h2>{inline ? 'One short check' : compact || historyOnly ? 'Your quizzes' : 'Quiz your recent learning'}</h2><p>{(compact || historyOnly) && !launch ? 'Start a quiz from chat, or resume one below.' : 'Questions use the reference material attached to your conversation.'}</p>
       {!inline && !compact && !historyOnly && <div className={styles.setup}><label>Questions<select value={count} onChange={e => setCountOverride(Number(e.target.value))}>{[1, 3, 5, 10].map(n => <option key={n}>{n}</option>)}</select></label><label>Difficulty<select value={difficulty} onChange={e => setDifficultyOverride(e.target.value)}>{['adaptive', 'foundational', 'standard', 'stretch'].map(d => <option key={d} value={d}>{d}</option>)}</select></label><label>Practice mode<select value={mode} onChange={e => setModeOverride(e.target.value as 'topic_drill' | 'timed_short_quiz')}><option value="topic_drill">Topic drill</option><option value="timed_short_quiz">Timed short quiz</option></select></label>{mode === 'timed_short_quiz' && <label>Time<select value={duration} onChange={e => setDurationOverride(Number(e.target.value))}>{[300,600,900,1200].map(seconds => <option key={seconds} value={seconds}>{seconds / 60} minutes</option>)}</select></label>}</div>}
+      {capabilities?.version2 && !inline && !compact && !historyOnly && <div className={styles.setup}>
+        <label>How much challenge?<select value={challengePreference} onChange={e => setChallengePreference(e.target.value as typeof challengePreference)}><option value="build_confidence">Build confidence</option><option value="balanced">Balanced practice</option><option value="challenge_me">Challenge me</option></select></label>
+        <label>When to see feedback<select value={feedbackPolicy} onChange={e => setFeedbackPolicy(e.target.value as typeof feedbackPolicy)}><option value="practice_immediate">After each answer</option><option value="exam_deferred">At the end · exam practice</option></select></label>
+      </div>}
       {historyOnly ? <Button onClick={onStartQuiz}>Start new quiz</Button> : !compact ? <Button disabled={busy} onClick={() => void start()}>Prepare quiz</Button> : null}
       {!inline && saved.map(q => <button className={styles.saved} key={q.id} disabled={busy} onClick={() => { setError(''); if (onReturn) { onReturn(); openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId || undefined, origin: q.lessonNoteId ? 'learn' : 'ask' }); return; } if (q.lessonNoteId && !launch?.lessonNoteId) { openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId, origin: 'learn' }); return; } void getQuiz(q.id).then(setQuiz).catch(e => setError(e.message)); }}>{q.title}<Badge variant="secondary">{q.status.replaceAll('_', ' ')} · {q.attempted}/{q.count}</Badge></button>)}
       {!inline && historyCursor ? <Button variant="outline" disabled={historyLoading} onClick={() => void loadOlderQuizzes()}>{historyLoading ? 'Loading…' : 'Load older quizzes'}</Button> : null}
@@ -220,10 +241,10 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
         <p>{challenge.explanation || 'Your response is saved and excluded while this question is reviewed.'}</p>
         {challenge.status !== 'resolved' && <Button variant="outline" disabled={busy} onClick={() => void act(`/challenges/${challenge.id}/review`, {})}>Review question</Button>}
       </div>)}
-      {quiz.attempts.filter(attempt=>attempt.status!=='contested' && attempt.score!==null && attempt.score<1).slice(-1).map(attempt=><MakeFlashcards key={attempt.id} sessionId={quiz.sessionId} sourceRefs={[{kind:'quiz_attempt',id:attempt.id,revision:1}]} origin="quiz" label="Make cards from this mistake"/>)}
+      {quiz.attempts.filter(attempt=>attempt.status!=='contested' && attempt.status!=='submitted' && attempt.score!==null && attempt.score<1).slice(-1).map(attempt=><MakeFlashcards key={attempt.id} sessionId={quiz.sessionId} sourceRefs={[{kind:'quiz_attempt',id:attempt.id,revision:1}]} origin="quiz" label="Make cards from this mistake"/>)}
       {quiz.sourceSuperseded?<p role="status">The lecture transcript changed after this quiz was prepared. Your answers remain saved; use the In-Class workspace for updated practice.</p>:null}
       {timeExpired && <div className={styles.card} role="status"><h2>Time is up</h2><p>Your saved work is still available, but this timed quiz no longer accepts answers.</p></div>}
-      <AnimatePresence mode="wait">{quiz.current && quiz.status !== 'paused' && !timeExpired && <motion.div key={quiz.current.id} initial={reduceMotion ? false : { opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={reduceMotion ? undefined : { opacity: 0, x: -10 }} transition={{ duration: 0.2, ease: 'easeOut' }}><AssessmentCard item={quiz.current} busy={busy} attempt={quiz.attempts.find(a => a.id === quiz.current?.attemptId)}
+      <AnimatePresence mode="wait">{quiz.current && quiz.status !== 'paused' && !timeExpired && <motion.div key={quiz.current.id} initial={reduceMotion ? false : { opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={reduceMotion ? undefined : { opacity: 0, x: -10 }} transition={{ duration: 0.2, ease: 'easeOut' }}><AssessmentCard item={quiz.current} busy={busy || Boolean(quiz.checkingAnswer)} attempt={quiz.attempts.find(a => a.id === quiz.current?.attemptId)}
         onAnswer={answer => void act(`/quizzes/${quiz.id}/attempts`, { ...answer, presentationId: quiz.current!.id, expectedRevision: quiz.revision })}
         onHint={() => void act(`/presentations/${quiz.current!.id}/hints`, {})}
         onChallenge={reason => void act(`/attempts/${quiz.current!.attemptId}/challenges`, { reason })} onCreateRepairNote={onCreateRepairNote} onOpenSource={openWorkspaceSource} /></motion.div>}</AnimatePresence>
@@ -252,12 +273,15 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
       ) : null}
       {quiz.status === 'completed' ? <div className={styles.card}><h2>Session complete</h2><p>{quiz.summary.score === null ? 'No scored answers yet.' : `${quiz.summary.score}% across ${quiz.summary.evaluated} evaluated answers.`}</p><p>{quiz.summary.assisted} with help · {quiz.summary.skipped} skipped · {quiz.summary.dontKnow} marked “I don’t know”</p><p className={styles.meta}>Practice score, not mastery. Questions adapt, so scores are not rankings.</p><div className={styles.actions}>{onReturn ? <Button variant="outline" onClick={onReturn}>Return to lesson</Button> : null}<Button variant="outline" disabled={busy} onClick={() => void saveReviewChecklist()}>Save review checklist</Button>{!compact ? <Button variant="ghost" onClick={() => { setQuiz(null); localStorage.removeItem(`forma-${scope}`); }}>New quiz</Button> : null}</div></div> : <div className={styles.actions}>
         {!timeExpired && quiz.status !== 'paused' && (!quiz.current || quiz.current.attemptId) && <Button disabled={busy} onClick={() => void act(`/quizzes/${quiz.id}/next`, { expectedRevision: quiz.revision })}>{quiz.current ? 'Next question' : 'Generate first question'}</Button>}
-        {!timeExpired && <Button disabled={busy} variant="ghost" onClick={() => void act(`/quizzes/${quiz.id}/${quiz.status === 'paused' ? 'resume' : 'pause'}`, { expectedRevision: quiz.revision })}>{quiz.status === 'paused' ? 'Resume quiz' : 'Pause'}</Button>}
+        {!timeExpired && quiz.sessionPlan?.feedbackPolicy !== 'exam_deferred' && <Button disabled={busy} variant="ghost" onClick={() => void act(`/quizzes/${quiz.id}/${quiz.status === 'paused' ? 'resume' : 'pause'}`, { expectedRevision: quiz.revision })}>{quiz.status === 'paused' ? 'Resume quiz' : 'Pause'}</Button>}
+        <Button disabled={busy} variant="outline" onClick={() => void act(`/quizzes/${quiz.id}/finish`, { expectedRevision: quiz.revision })}>Finish and review</Button>
         {onReturn && <Button variant="outline" onClick={onReturn}>Return to Learn</Button>}
       </div>}
     </>}
-    {quiz?.current?.attemptId && <HypothesisPanel conceptId={quiz.current.concept_id} refreshKey={quiz.current.attemptId} />}
-    {busy && <div><p role="status">Saving and checking this activity… You can return to it later.</p><Button variant="ghost" onClick={() => void cancelWorkflow(scope).catch(cause => setError(cause.message))}>Stop</Button></div>}
+    {quiz?.status === 'completed' && <section className={styles.card} aria-label="Quiz usefulness"><p>Did this quiz help you check your understanding?</p><div className={styles.actions}><Button variant="outline" aria-pressed={quiz.usefulness === true} onClick={() => void shareUsefulness(true)}>Yes</Button><Button variant="outline" aria-pressed={quiz.usefulness === false} onClick={() => void shareUsefulness(false)}>Not yet</Button>{quiz.usefulness != null && <span role="status">Feedback saved</span>}</div></section>}
+    {quiz?.status === 'completed' && quiz.attempts.filter(attempt => attempt.id !== quiz.current?.attemptId).map((attempt, index) => <article className={styles.card} key={attempt.id}><h2>Question {index + 1}</h2>{attempt.question && <RichContent body={attempt.question}/>}<p className={styles.meta}>Your answer</p><RichContent body={attempt.response || (attempt.outcome === 'skip' ? 'Skipped' : attempt.outcome === 'dont_know' ? 'I don’t know' : attempt.selectedIds.join(', '))}/><AnswerFeedback attempt={attempt}/></article>)}
+    {quiz?.current?.attemptId && (quiz.sessionPlan?.feedbackPolicy !== 'exam_deferred' || quiz.status === 'completed') && <HypothesisPanel conceptId={quiz.current.concept_id} refreshKey={quiz.current.attemptId} />}
+    {busy && <div className={styles.preparationStatus}><p role="status">{quiz?.current && !quiz.current.attemptId ? 'Saving and checking your answer…' : 'Preparing and checking your next question…'} Your work is saved as the activity progresses.</p><Button variant="ghost" onClick={() => void cancelWorkflow(scope).catch(cause => setError(cause.message))}>Stop</Button></div>}
     {notice && <p role="status">{notice}</p>}
     {error && <p role="alert" className={styles.error}>{error}</p>}
   </section>;

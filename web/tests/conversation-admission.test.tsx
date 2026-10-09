@@ -35,6 +35,15 @@ it('passes owned attachment references and previous-task causation', async () =>
   await admitConversation('research this document','session','course','previous',[{versionId:'version',name:'notes.pdf'}]);
   expect(mocks.send.mock.calls[0][0]).toMatchObject({courseId:'course',previousBrowserTaskId:'previous',attachments:[{versionId:'version',name:'notes.pdf'}]});
 });
+it('targets an exact browser clarification and keeps that target stable across an uncertain retry', async () => {
+  const target={targetTaskId:'browser-task',replyToRequestId:'browser-request',expectedRevision:8,expectedRequestRevision:2};
+  mocks.send.mockRejectedValueOnce(new Error('connection lost'));
+  await expect(admitConversation('https://school.example','session',undefined,undefined,[],'conversation',target)).rejects.toThrow('connection lost');
+  await expect(admitConversation('https://school.example','session',undefined,undefined,[],'conversation',{...target,expectedRevision:9})).rejects.toThrow('awaiting acknowledgement');
+  await admitConversation('https://school.example','session',undefined,undefined,[],'conversation',target);
+  expect(mocks.send.mock.calls[0][0]).toMatchObject(target);
+  expect(mocks.send.mock.calls[0]).toEqual(mocks.send.mock.calls[1]);
+});
 it('returns ordinary tutoring to its existing workflow', async () => {
   mocks.send.mockResolvedValue({messageId:'one',handled:false,status:'direct',references:[]});
   expect((await admitConversation('explain gravity','session')).handled).toBe(false);
