@@ -10,7 +10,7 @@ import { ACCOUNT_CHANGED } from '@/lib/account-session';
 import { uploadMaterialParts } from '@/lib/material-upload';
 import {ClassPdfReader} from './class-pdf-reader';
 import {ClassYoutubeSearch} from './class-youtube-search';
-import {LearningApiError} from '@/lib/api';
+import {LearningApiError,learningApi,request} from '@/lib/api';
 
 const mergeSnapshot=(current:ClassSnapshot|null,next:ClassSnapshot)=>typeof mergeClassSnapshot==='function'?mergeClassSnapshot(current,next):next;
 const ACTIVE_INTAKE_STATUSES=new Set(['queued','fetching','uploading','processing']);
@@ -44,6 +44,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   const [liveCaptions,setLiveCaptions]=useState<LiveTranscriptionDetail|null>(null);
   const [classMetrics,setClassMetrics]=useState<ClassMetrics|null>(null);const [classMetricsBusy,setClassMetricsBusy]=useState(false);const [classMetricsError,setClassMetricsError]=useState('');
   const [view,setView]=useState('notes');const [error,setError]=useState('');
+  const [transcriptionRetrying,setTranscriptionRetrying]=useState(false);
   const [followStatus,setFollowStatus]=useState('');
   const [cueStatus,setCueStatus]=useState('');const [pendingCueNavigation,setPendingCueNavigation]=useState<string|null>(null);const cueNavigationPending=useRef(false);
   const [policyUpdating,setPolicyUpdating]=useState(false);
@@ -100,6 +101,18 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   const transcriptScrollKey=snapshot?`${snapshot.transcriptGeneration??0}:${snapshot.transcript.length}:${snapshot.transcript[snapshot.transcript.length-1]?.id??''}:${snapshot.transcript[snapshot.transcript.length-1]?.endMs??0}`:'';
   const transcriptById=useMemo(()=>new Map([...(snapshot?.transcript||[]),...Object.values(citationSegments)].map(segment=>[segment.id,segment] as const)),[snapshot?.transcript,citationSegments]);
   const openNeedIds=snapshot?.session.needInfo?.filter(need=>need.status==='open').map(need=>need.id).join('|')||'';
+  async function retryFailedTranscription(){
+    const current=snapshot;
+    if(!current||transcriptionRetrying)return;
+    setTranscriptionRetrying(true);
+    try{
+      const account=await request<{ownerId:string}>('/v1/account');
+      await learningApi.retryLectureFailures(current.session.recordingId,account.ownerId);
+      setError('Transcription retry queued. This class will update as speech is processed.');
+    }catch(cause){
+      setError(cause instanceof Error?cause.message:'Failed audio could not be retried.');
+    }finally{setTranscriptionRetrying(false);}
+  }
   const courseId=snapshot?.session.courseId??null;
   const resourceScope=classId?`${classId}|${courseId??''}|${identityRevision}`:'';
   const currentResourcePreference=resourcePreferenceState?.scope===resourceScope?resourcePreferenceState.snapshot:null;
@@ -559,7 +572,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
         </details>:null}
         {policy.showInterimTranscript&&((liveCaptions&&liveCaptions.recordingId===snapshot.session.recordingId&&liveCaptions.status!=='stopped')||(snapshot.liveTranscript?.length??0)>0)?<section className={styles.liveCaptions} aria-label="Provisional live transcript"><strong>Live transcript · provisional</strong><small>Committed captions create provisional drafts. Recorded audio remains authoritative and replaces those drafts when transcription catches up. Interim text expires after ten minutes.</small>{liveCaptions?.error?<p role="status">{liveCaptions.error}</p>:null}{liveCaptions?.persistenceError?<p role="alert">{liveCaptions.persistenceError}</p>:null}<div aria-live="polite" aria-relevant="additions" aria-atomic="false">{(snapshot.liveTranscript??[]).slice(-30).map(segment=><p key={segment.id}>{segment.text}</p>)}{liveCaptions?.turns.filter(turn=>!(snapshot.liveTranscript??[]).some(segment=>segment.providerItemId===turn.id)).slice(-8).map(turn=><p key={turn.id}>{turn.text}<small> · {liveCaptions.persistedTurnIds.includes(turn.id)?'Saved; syncing replay':'Saving to class replay'}</small></p>)}</div>{liveCaptions?.interim?<p aria-live="off">{liveCaptions.interim}</p>:snapshot.interimTranscript?.map(segment=>segment.expiresAt>Date.now()/1000?<p key={segment.id} aria-live="off">{segment.text}</p>:null)}</section>:null}
         {snapshot.recording.captureInterrupted?<p>Capture was interrupted. Saved audio can be recovered; the final moments may be missing.</p>:null}
-        {snapshot.recording.error||snapshot.recording.chunks.failed?<p role="alert">{snapshot.recording.error||'Some audio slices could not be transcribed.'}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open recording recovery</Button></p>:null}
+        {snapshot.recording.error||snapshot.recording.chunks.failed?<div role="alert">{snapshot.recording.error||'Some audio slices could not be transcribed.'}{snapshot.recording.chunks.failed>0?<Button size="sm" variant="outline" disabled={transcriptionRetrying} onClick={()=>void retryFailedTranscription()}>{transcriptionRetrying?'Retrying transcription…':'Retry failed audio'}</Button>:null}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open recording recovery</Button></div>:null}
         {snapshot.session.noSpeech?<p>No transcribed speech is available for a revision package. Review the saved recording and its transcription status.</p>:null}
         {snapshot.session.sourceCorrected?<p>Transcript wording was corrected. Updated study material appears here; saved note edits and existing quiz answers are preserved.</p>:null}
         {snapshot.recording.captureComplete&&snapshot.recording.chunks.missing.length?<p>Missing audio slices: {snapshot.recording.chunks.missing.join(', ')}. Full completion waits for recovery.<Button size="sm" variant="outline" onClick={()=>void command('partial_package')}>Prepare available coverage</Button></p>:null}
