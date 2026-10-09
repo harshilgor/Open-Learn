@@ -21,3 +21,55 @@
 .browserDialog {width:100vw;max-width:100vw;height:100dvh;max-height:100dvh;margin:0;padding:12px;background:var(--background,#fff);color:inherit;border:0;}
 .browserDialog .browserFrame {height:calc(100dvh - 75px);margin-top:12px;}
 .browserDialog::backdrop {background:rgba(0,0,0,.6);}
+.dock {position:relative;margin:0 0 8px;z-index:12;}
+.dockTrigger {display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:10px;width:100%;min-height:58px;padding:9px 12px;border:1px solid var(--border,#3a3a3a);border-radius:15px;background:var(--card,#191919);color:var(--foreground,#f5f5f5);text-align:left;cursor:pointer;box-shadow:0 5px 18px #0002;}
+.dockTrigger:hover {border-color:color-mix(in srgb,var(--primary,#dcebd8) 48%,var(--border,#3a3a3a));background:color-mix(in srgb,var(--card,#191919) 92%,var(--foreground,#fff));}
+.dockTrigger:focus-visible {outline:2px solid var(--ring,#dcebd8);outline-offset:2px;}
+.dockIcon {display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:color-mix(in srgb,var(--primary,#dcebd8) 16%,transparent);color:var(--primary,#dcebd8);}
+.dockCopy {display:grid;gap:2px;min-width:0;}
+.dockLabel {font-size:11px;line-height:1.2;color:var(--muted-foreground,#aaa);}
+.dockTitle {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:550;line-height:1.35;}
+.dockMeta {display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:1.35;color:var(--muted-foreground,#aaa);}
+.statusDot {width:7px;height:7px;flex:none;border-radius:50%;background:#a0a0a0;}
+.statusDot.attention {background:#e7b45b;box-shadow:0 0 0 3px #e7b45b22;}
+.statusDot.working {background:#96b5ee;box-shadow:0 0 0 3px #96b5ee22;}
+.statusDot.done {background:#86c79b;}
+.statusDot.failed {background:#ee8f83;}
+.dockAction {display:flex;align-items:center;gap:5px;color:var(--primary,#dcebd8);font-size:12px;font-weight:600;white-space:nowrap;}
+.chevronOpen {transform:rotate(180deg);}
+.dockTray {position:absolute;left:0;right:0;bottom:calc(100% + 8px);display:flex;flex-direction:column;gap:10px;max-height:min(52dvh,560px);padding:12px;border:1px solid var(--border,#3a3a3a);border-radius:16px;background:var(--popover,var(--background,#171717));color:var(--foreground,#f5f5f5);box-shadow:0 16px 44px #0008;overflow:hidden;}
+.dockTrayHeader {display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.dockTrayHeader > div {display:grid;gap:3px;min-width:0;}
+.dockTrayHeader strong {font-size:13px;}
+.dockTrayHeader span {font-size:11px;color:var(--muted-foreground,#aaa);}
+.dockTrayHeader button {display:grid;place-items:center;width:30px;height:30px;flex:none;border:1px solid var(--border,#3a3a3a);border-radius:9px;background:transparent;color:inherit;cursor:pointer;}
+.dockTrayHeader button:hover {background:var(--muted,#292929);}
+.dockTaskList {flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;display:grid;align-content:start;gap:9px;padding-right:2px;}
+.dockTaskList > .panel {max-width:none;margin:0;padding:14px;border-radius:12px;background:var(--card,#202020);}
+.dockTaskList .question {margin:8px 0;font-size:13px;line-height:1.45;}
+.dockTaskList .header h3,.dockTaskList .panel h3 {font-size:14px;}
+.dockTaskList .form {margin:10px 0;gap:9px;}
+.dockTaskList .control {margin-top:10px;padding-top:8px;}
+.dockTaskList .actions {margin:8px 0;}
+.dockError,.dockNotice {margin:0;padding:9px 11px;border-radius:10px;background:color-mix(in srgb,var(--destructive,#d44) 12%,transparent);color:var(--destructive,#f49a8e);font-size:12px;line-height:1.45;}
+.dockNotice {background:color-mix(in srgb,var(--primary,#dcebd8) 10%,transparent);color:var(--foreground,#f5f5f5);}
+.replyTarget {display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px;padding:8px 10px;border:1px solid color-mix(in srgb,var(--primary,#dcebd8) 32%,transparent);border-radius:11px;background:color-mix(in srgb,var(--primary,#dcebd8) 7%,transparent);font-size:12px;}
+.replyTargetLabel {color:var(--primary,#dcebd8);font-weight:650;white-space:nowrap;}
+.replyTargetQuestion {flex:1 1 180px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--foreground,#f5f5f5);}
+.replyTarget > button {border:0;background:transparent;color:var(--muted-foreground,#b7b7b7);text-decoration:underline;cursor:pointer;font:inherit;padding:4px;}
+.replyOptions {flex-basis:100%;display:grid;gap:5px;max-height:180px;overflow-y:auto;}
+.replyOptions button {display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;padding:8px 9px;border:1px solid var(--border,#373737);border-radius:9px;background:var(--card,#202020);color:inherit;cursor:pointer;font:inherit;}
+.replyOptions button:hover {background:var(--muted,#292929);}
+.replyOptions button span {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.replyOptions small {flex:none;color:var(--muted-foreground,#aaa);font-size:10px;}
+.taskProgress {display:grid;gap:5px;margin:10px 0 0;padding:0;list-style:none;}
+.taskProgress li {display:flex;gap:7px;align-items:flex-start;color:var(--muted-foreground,#aaa);font-size:12px;line-height:1.4;}
+.taskProgress li::before {content:"";width:5px;height:5px;margin-top:5px;border-radius:50%;background:var(--primary,#dcebd8);flex:none;}
+@media(max-width:520px){
+  .dockTrigger {grid-template-columns:32px minmax(0,1fr) auto;gap:8px;padding:8px 9px;}
+  .dockIcon {width:30px;height:30px;}
+  .dockTitle {font-size:12px;}
+  .dockMeta {font-size:10px;}
+  .dockAction {font-size:11px;}
+  .dockTray {max-height:min(58dvh,560px);padding:9px;}
+}

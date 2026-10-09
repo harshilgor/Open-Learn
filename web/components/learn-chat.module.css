@@ -55,12 +55,7 @@
 .heading span { margin-left: 10px; font-size: 14px; color: #92968a; }
 .heading:hover { text-decoration: underline; text-underline-offset: 5px; }
 .heading:focus-visible { outline: 2px solid var(--focus-outline); outline-offset: 3px; border-radius: 3px; }
-.loading { text-align: center; padding: 44px 0; }
-.loading h2 { margin: 12px 0 8px; font-size: 19px; }
-.loading p { margin-bottom: 12px; overflow-wrap: anywhere; }
-.loading span { font-size: 13px; color: #77796f; }
-.spinner { margin: 0 auto; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.lessonArticle.workingBubble { padding: 10px 13px; }
 .error { color: #983b30; font-size: 14px; line-height: 1.6; margin: 12px 0; }
 .selection { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 15px; border: 1px solid #ddd; background: white; box-shadow: 0 6px 30px #0002; z-index: 20; white-space: nowrap; }
 .selection { max-width: calc(100vw - 32px); flex-wrap: wrap; justify-content: center; }
@@ -288,9 +283,6 @@ does not read as a solid white empty slab. */
 .contextRow{display:flex;gap:6px;margin-bottom:8px}
 .contextRow>span{display:inline-flex;align-items:center;gap:5px;max-width:100%;border:1px solid var(--border);border-radius:7px;padding:3px 6px;background:var(--accent);color:var(--accent-foreground);font-size:12px}
 .contextRow button{display:grid;place-items:center;border-radius:4px}
-.quickActions{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:8px}
-.quickActions button{border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--surface-2,#f4f5f2);color:var(--foreground);font-size:12px}
-.quickActions button:hover{background:var(--accent)}
 @media(max-width:390px){.composerTools{gap:2px}.modeTrigger{gap:4px;padding:0 5px}.gearSelect{padding:0 4px}.gearSelect>span:first-child{display:none}}
 
 /* Shared conversation surface: content-sized bubbles remain rich-content safe. */
@@ -342,12 +334,12 @@ does not read as a solid white empty slab. */
 .connectionStrip:empty{display:none}
 @media(max-width:1023px){
  .chatComposer{display:grid;grid-template-columns:40px minmax(0,1fr) 40px;align-items:end;column-gap:4px;padding:6px;border-radius:28px;box-shadow:none;min-height:56px}
- .chatComposer textarea{grid-column:2;grid-row:10;min-height:28px;max-height:112px;padding:6px 0;line-height:22px;font-size:16px;align-self:center}
+ .chatComposer textarea{grid-column:2;grid-row:1;min-height:28px;max-height:112px;padding:6px 0;line-height:22px;font-size:16px;align-self:center}
  .chatComposer textarea::placeholder{font-size:16px}
- .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:10;width:40px;height:44px;border-radius:50%;color:var(--foreground)}
+ .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:1;width:40px;height:44px;border-radius:50%;color:var(--foreground)}
  .chatComposer .composerBottom{display:contents}
  .chatComposer .composerTools{display:none}
- .chatComposer .composerBottom>button{grid-column:3;grid-row:10;width:40px;height:44px;min-height:44px;border-radius:50%}
+ .chatComposer .composerBottom>button{grid-column:3;grid-row:1;width:40px;height:44px;min-height:44px;border-radius:50%}
  .chatComposer .attachments,.chatComposer .contextRow,.chatComposer .noteReceipt,.chatComposer .notePicker,.chatComposer .composerNote,.chatComposer .error{grid-column:1/-1;margin:6px 8px}
  .mobileModeBadge{display:block;grid-column:1/-1;justify-self:start;margin:2px 8px 4px;padding:4px 8px;border-radius:12px;background:var(--accent);font-size:12px}
  .connectionNotice{margin:0 4px 6px;flex-wrap:nowrap;justify-content:space-between;font-size:12px;gap:12px}
@@ -378,12 +370,12 @@ does not read as a solid white empty slab. */
 @media(max-width:620px){.turn{gap:12px;margin-bottom:18px}.turn.groupedWithPrevious{margin-top:-10px}.turn.groupedWithPrevious .lessonArticle{border-top-left-radius:5px}.turn.groupedWithNext .lessonArticle{border-bottom-left-radius:5px}.lessonArticle{max-width:94%;padding:10px 13px;border-radius:18px}.userPrompt{max-width:90%;padding:8px 13px}}
 /* Main composer: writing surface above, preferences below. */
 .mainComposer{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:4px;padding:8px 10px;border-radius:24px;min-height:60px;box-shadow:0 4px 18px #0000000a}
-.mainComposer textarea{grid-column:2;grid-row:10;align-self:center;min-height:28px;padding:8px 3px;line-height:24px;font-size:16px}
-.mainComposer .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:10;width:36px;height:40px;border-radius:50%;color:var(--muted-foreground);transition:background .18s,color .18s}
+.mainComposer textarea{grid-column:2;grid-row:1;align-self:center;min-height:28px;padding:8px 3px;line-height:24px;font-size:16px}
+.mainComposer .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:1;width:36px;height:40px;border-radius:50%;color:var(--muted-foreground);transition:background .18s,color .18s}
 .mainComposer .mobileOptionsButton:hover{background:var(--accent);color:var(--foreground)}
 .mainComposer .composerBottom{display:contents}
 .mainComposer .composerTools{display:none}
-.mainComposer .composerBottom>div:last-child{grid-column:3;grid-row:10;align-self:center;gap:5px;padding-bottom:0}
+.mainComposer .composerBottom>div:last-child{grid-column:3;grid-row:1;align-self:center;gap:5px;padding-bottom:0}
 .mainComposer .composerBottom>div:last-child button{width:36px;height:36px;border-radius:50%;transition:background .18s,transform .18s}
 .mainComposer .composerBottom>div:last-child button[aria-label="Send message"]{background:var(--foreground);color:var(--background)}
 .mainComposer .composerBottom>div:last-child button[aria-label="Send message"]:disabled{background:var(--muted);color:var(--muted-foreground);opacity:.5}

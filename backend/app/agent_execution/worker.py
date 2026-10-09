@@ -10,9 +10,18 @@ from ..workflow_store import uid, encoded
 from ..execution import LeaseHeartbeat
 from .repository import Repository, TERMINAL
 from .artifacts import Artifacts
-from .tools import analyze
+from .tools import analyze, analyze_general
+from .kernel import AgentKernel, CallToolDecision, CompletionEvaluator, DecisionLimits, DecisionState, KernelError, ToolRegistry, ToolResult, ToolSpec
+from pydantic import BaseModel, ConfigDict, Field
 
 log=logging.getLogger(__name__)
+
+
+class TaskToolInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    task_id: str = Field(alias='taskId', min_length=1, max_length=160)
+    input_revision: int = Field(alias='inputRevision', ge=1)
+    operation_id: str = Field(alias='operationId', min_length=1, max_length=160)
 
 
 class AgentWorker:
@@ -21,6 +30,11 @@ class AgentWorker:
         self.provider_getter=provider_getter;self.executor=executor;self.after_storage=after_storage
         self.research_factory=research_factory
         self.sandbox_factory=sandbox_factory
+        self.decision_limits=DecisionLimits(
+            max_decisions=int(__import__('os').getenv('OPENLEARN_AGENT_MAX_DECISIONS','16')),
+            max_tool_calls=int(__import__('os').getenv('OPENLEARN_AGENT_MAX_TOOL_CALLS','8')),
+            max_repeated_no_progress=int(__import__('os').getenv('OPENLEARN_AGENT_MAX_NO_PROGRESS','2')),
+        )
 
     def enqueue(self, conn, owner, obligation, payload):
         run=self.repo.run(conn,owner,payload['runId'])
@@ -97,6 +111,31 @@ class AgentWorker:
         if dispatch['kind']=='flashcards':
             from ..flashcards.execution import execute_task
             return execute_task(self,job)
+        if dispatch['kind']=='calendar_read':
+            from .calendar_tasks import resolve_calendar_task_inputs
+            from .google_connector import GoogleConnections
+            connections=GoogleConnections(self.store).list(job['owner_id'])
+            with self.repo.transaction() as conn:
+                current=self.repo.run(conn,job['owner_id'],job['target_id'])
+                self.repo.jobs.validate_lease(conn,job)
+                from .delegation import Delegation
+                Delegation(self.store).guard(conn,job['owner_id'],current)
+                if current['status'] in TERMINAL|{'paused','waiting'} or current['desired_input_revision']!=job['input_revision']:
+                    self.repo.jobs.finish(conn,job,{'ignored':True});return
+                spec,question=resolve_calendar_task_inputs(self.store,current,connections)
+                if question:
+                    if spec is not None and spec!=current.get('calendarRead'):
+                        from .repository import digest
+                        current=self.repo.update(conn,current,calendarRead=spec,
+                            inputHash=digest({'message':current['message'],'calendarRead':spec}))
+                        current=self.repo.checkpoint(conn,current)
+                    self.repo.request_input(conn,current,question,phase='clarify')
+                    self.repo.jobs.finish(conn,job,{'status':'waiting'});return
+                from .repository import digest
+                current=self.repo.update(conn,current,calendarRead=spec,
+                    inputHash=digest({'message':current['message'],'calendarRead':spec}))
+                current=self.repo.checkpoint(conn,current)
+                dispatch=current
         with self.repo.transaction() as conn:
             run=self.repo.run(conn,job['owner_id'],job['target_id'])
             self.repo.jobs.validate_lease(conn,job)
@@ -104,40 +143,83 @@ class AgentWorker:
             Delegation(self.store).guard(conn,job['owner_id'],run)
             if run['status'] in TERMINAL|{'paused','waiting'} or run['desired_input_revision']!=job['input_revision']:
                 self.repo.jobs.finish(conn,job,{'ignored':True});return
-            if run['kind'] in {'lab_analysis','sandbox_lab'} and not run['constraints'].get('distanceUnit'):
-                pending=[r for r in run['pendingRequests']]
-                if not pending:
-                    identifier=uid('input')
-                    request={'requestId':identifier,'taskId':run['id'],'revision':1,'question':'The distance column has no units. Were these measurements in centimeters or meters? You can also tell me which trial to exclude.','required':True,'options':['Centimeters; ignore trial 3','Meters; ignore trial 3'],'inputKind':'text','state':'open'}
-                    conn.execute(text("INSERT INTO agent_input_requests(id,owner_id,run_id,session_id,revision,status,payload,created_at) VALUES(:id,:owner,:run,:session,1,'open',:payload,:now)"),{'id':identifier,'owner':run['owner_id'],'run':run['id'],'session':run['sessionId'],'payload':encoded(request),'now':time.time()})
-                    pending=[request]
-                    self.repo.activity(conn,run,'question:'+identifier,'input.requested',request=request,text=request['question'])
-                run=self.repo.update(conn,run,status='waiting',phase='clarify',waitReason='user_input',pendingRequests=pending)
-                run=self.repo.checkpoint(conn,run);self.repo.event(conn,run,'input.requested',requests=pending)
+            if run['kind'] in {'lab_analysis','sandbox_lab'} and run.get('analysisMode')!='general' and not run['constraints'].get('distanceUnit'):
+                decision={'kind':'ask_user','question':'The distance column has no units. Were these measurements in centimeters or meters? You can also tell me which trial to exclude.','required':True,'options':['Centimeters; ignore trial 3','Meters; ignore trial 3']}
+                self.repo.request_input(conn,run,decision,phase='clarify')
                 self.repo.jobs.finish(conn,job,{'status':'waiting'});return
-            run=self.repo.update(conn,run,status='running',phase='analyze' if run['kind']=='lab_analysis' else 'research',waitReason=None)
+            phase={'lab_analysis':'analyze','research':'research','calendar_read':'read_calendar'}.get(run['kind'],'research')
+            run=self.repo.update(conn,run,status='running',phase=phase,waitReason=None)
             operation=conn.execute(text('SELECT * FROM agent_operations WHERE run_id=:run AND input_revision=:revision AND step_key=:step'),{'run':run['id'],'revision':run['desired_input_revision'],'step':run['kind']}).mappings().first()
             if not operation:
                 operation={'id':uid('operation'),'input_revision':run['desired_input_revision']}
-                conn.execute(text("INSERT INTO agent_operations(id,owner_id,run_id,input_revision,step_key,status,payload,created_at) VALUES(:id,:owner,:run,:revision,:step,'prepared',:payload,:now)"),{'id':operation['id'],'owner':run['owner_id'],'run':run['id'],'revision':run['desired_input_revision'],'step':run['kind'],'payload':encoded({'toolVersion':'lab-analysis-v1' if run['kind']=='lab_analysis' else 'research-v1','inputHash':run['inputHash']}),'now':time.time()})
+                tool_version={'lab_analysis':'lab-analysis-general-v1' if run.get('analysisMode')=='general' else 'lab-analysis-v1',
+                              'sandbox_lab':'daytona-lab-v1','research':'research-v1',
+                              'calendar_read':'google-calendar-read-v1'}.get(run['kind'],'agent-tool-v1')
+                conn.execute(text("INSERT INTO agent_operations(id,owner_id,run_id,input_revision,step_key,status,payload,created_at) VALUES(:id,:owner,:run,:revision,:step,'prepared',:payload,:now)"),{'id':operation['id'],'owner':run['owner_id'],'run':run['id'],'revision':run['desired_input_revision'],'step':run['kind'],'payload':encoded({'toolVersion':tool_version,'inputHash':run['inputHash']}),'now':time.time()})
             run=self.repo.update(conn,run,operationId=operation['id']);run=self.repo.checkpoint(conn,run)
             self.repo.event(conn,run,'task.phase_changed',phase=run['phase'])
             expected=run['revision']
+        execution_context = None
+        if run['kind'] == 'research':
+            from .execution_context import ExecutionContextService
+            context_service = ExecutionContextService(self.store)
+            execution_context = context_service.compile_or_load(run)
+            if run.get('executionContext') != execution_context['descriptor']:
+                with self.repo.transaction() as conn:
+                    fresh = self.repo.run(conn, run['owner_id'], run['id'])
+                    self.repo.jobs.validate_lease(conn, job)
+                    if fresh['revision'] != expected or fresh['desired_input_revision'] != job['input_revision']:
+                        raise HTTPException(409, {'code':'revision_conflict','message':'Inputs changed while compiling context.'})
+                    fresh = self.repo.update(conn, fresh, executionContext=execution_context['descriptor'])
+                    fresh = self.repo.checkpoint(conn, fresh)
+                    self.repo.event(conn, fresh, 'task.context_compacted', manifestId=execution_context['descriptor']['manifestId'],
+                                    inputRevision=fresh['desired_input_revision'], omissionCount=len(execution_context['descriptor']['omissions']))
+                    run = fresh
+                    expected = fresh['revision']
+            # The research adapter consumes only this bounded packet. Exact
+            # task anchors and the manifest pointer are persisted separately.
+            run = {**run, 'operationalNotes':[execution_context['text']]}
         def still_current():
             with self.store.engine.connect() as conn:
                 current=self.repo.run(conn,job['owner_id'],job['target_id'])
                 self.repo.jobs.validate_lease(conn,job)
                 if current['revision']!=expected or current['desired_input_revision']!=job['input_revision']: raise HTTPException(409,{'code':'revision_conflict','message':'Inputs changed.'})
-        if self.executor: result=self.executor(run,still_current)
-        elif run['kind']=='sandbox_lab':
-            from .sandbox import SandboxService
-            service=self.sandbox_factory(self.store) if self.sandbox_factory else SandboxService(self.store)
-            result=service.prepare(run,still_current)
-        elif run['kind']=='research':
-            from .research import ResearchService
-            service=self.research_factory(self.store) if self.research_factory else ResearchService(self.store,model_provider=self.provider_getter())
-            result=service.prepare(run['owner_id'],run,run['researchSpec'],still_current)
-        else: result=analyze(run)
+        kernel_state=DecisionState.model_validate(run.get('kernelState') or {})
+        if self.executor:
+            result=self.executor(run,still_current)
+        else:
+            registry=ToolRegistry()
+            def execute_scoped(args):
+                if args.task_id!=run['id'] or args.input_revision!=run['desired_input_revision'] or args.operation_id!=operation['id']:
+                    raise KernelError('tool_scope_mismatch')
+                still_current()
+                if run['kind']=='sandbox_lab':
+                    from .sandbox import SandboxService
+                    service=self.sandbox_factory(self.store) if self.sandbox_factory else SandboxService(self.store)
+                    value=service.prepare(run,still_current)
+                elif run['kind']=='research':
+                    from .research import ResearchService
+                    service=self.research_factory(self.store) if self.research_factory else ResearchService(self.store,model_provider=self.provider_getter())
+                    value=service.prepare(run['owner_id'],run,run['researchSpec'],still_current)
+                elif run['kind']=='calendar_read':
+                    from .calendar_tasks import execute_calendar_read
+                    value=execute_calendar_read(self.store,run['owner_id'],run,still_current)
+                elif run['kind']=='lab_analysis':
+                    value=analyze_general(run) if run.get('analysisMode')=='general' else analyze(run)
+                else:
+                    raise KernelError('tool_capability_denied')
+                return ToolResult(status='partial' if value.get('completion',{}).get('partial') or value.get('completion',{}).get('status')=='partial' else 'completed',
+                                  value=value,progressKey=operation['id'])
+            tool_name={'lab_analysis':'lab_analysis.execute','sandbox_lab':'sandbox_lab.execute','research':'research.execute','calendar_read':'google_calendar.read'}.get(run['kind'])
+            if not tool_name:raise KernelError('tool_unavailable')
+            registry.register(ToolSpec(tool_name,TaskToolInput,{run['kind']},execute_scoped))
+            kernel=AgentKernel(registry,self.decision_limits)
+            decision,tool_result,kernel_state=kernel.step(
+                {'kind':'call_tool','tool':tool_name,'arguments':{'taskId':run['id'],'inputRevision':run['desired_input_revision'],'operationId':operation['id']}},
+                state=kernel_state,capabilities={run['kind']})
+            if not isinstance(decision,CallToolDecision) or not tool_result or tool_result.status not in {'completed','partial'}:
+                raise KernelError('tool_result_unavailable')
+            result=tool_result.value
         still_current()
         with self.repo.transaction() as conn:
             fresh=self.repo.run(conn,run['owner_id'],run['id']);self.repo.jobs.validate_lease(conn,job)
@@ -148,11 +230,15 @@ class AgentWorker:
         with self.repo.transaction() as conn:
             fresh=self.repo.run(conn,run['owner_id'],run['id']);self.repo.jobs.validate_lease(conn,job)
             if fresh['revision']!=expected: raise HTTPException(409,{'code':'revision_conflict','message':'Inputs changed.'})
+            if fresh['kind']=='research' and fresh.get('executionContext'):
+                from .execution_context import ExecutionContextService
+                ExecutionContextService(self.store).validate_commit(conn, fresh['owner_id'], fresh, fresh['executionContext'])
             artifacts=self.artifacts.publish(conn,fresh,operation,manifests)
-            completion=result['completion'];checks=completion.get('checks',[])
-            if any(check.get('status')=='fail' for check in checks): raise ValueError('Completion validation failed.')
-            status='completed_partial' if completion.get('partial') or completion.get('status')=='partial' else 'completed'
-            fresh=self.repo.update(conn,fresh,status=status,phase='complete',summary=result['summary'],artifacts=artifacts,sources=result.get('sources',[]),completion=completion,pendingRequests=[])
+            requirements=fresh.get('requirements') or {'requestedOutputs':[]}
+            completion=CompletionEvaluator.evaluate(requirements,result['outputs'],result.get('sources',[]),result.get('completion',{}))
+            if completion.get('status')=='failed': raise ValueError('Required output or completion check failed.')
+            status='completed_partial' if completion.get('status')=='partial' else 'completed'
+            fresh=self.repo.update(conn,fresh,status=status,phase='complete',summary=result['summary'],artifacts=artifacts,sources=result.get('sources',[]),completion=completion,pendingRequests=[],kernelState=kernel_state.model_dump(by_alias=True))
             fresh=self.repo.checkpoint(conn,fresh)
             conn.execute(text("UPDATE agent_operations SET status='succeeded',payload=:payload WHERE id=:id"),{'id':operation['id'],'payload':encoded({'completion':completion,'artifacts':[a['id'] for a in artifacts]})})
             self.repo.event(conn,fresh,'task.completed',artifacts=artifacts,completion=completion)
@@ -172,6 +258,15 @@ class AgentWorker:
                 self.artifacts.objects.delete(row['owner_id'],row['object_key'])
                 with self.repo.transaction() as conn:conn.execute(text("UPDATE agent_artifacts SET status='deleted' WHERE id=:id AND status='cleanup_pending'"),{'id':row['id']})
             except OSError:log.warning('Artifact cleanup needs retry.')
+        if time.monotonic()-getattr(self,'_retention_checked_at',0)>=60:
+            self._retention_checked_at=time.monotonic()
+            try:
+                from .retention import AgentRetention
+                policy=AgentRetention(self.store).policy
+                if any((policy.terminal_activity_seconds,policy.terminal_checkpoint_seconds,policy.terminal_artifact_seconds)):
+                    AgentRetention(self.store,policy).prune(limit=500)
+            except Exception as exc:
+                log.warning('Agent retention iteration failed (%s)',type(exc).__name__)
 
     def retire_stale_outputs(self, job):
         # A cancelled writer may finish an object upload after cleanup. Put its

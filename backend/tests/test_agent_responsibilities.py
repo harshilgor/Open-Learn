@@ -11,7 +11,8 @@ from backend.app.agent_execution.responsibilities import Responsibilities,Respon
 from backend.app.agent_execution.worker import AgentWorker
 
 @pytest.fixture
-def context(env):
+def context(env,monkeypatch):
+    monkeypatch.setenv('OPENLEARN_RESPONSIBILITY_ENABLED','true')
     store,_,_=env
     course=CourseService(store).create_course('alice',CourseCreate(name='Physics'))
     with store.transaction() as conn:conn.execute(text('UPDATE learning_sessions SET course_id=:course WHERE id=\'session\''),{'course':course.id})
@@ -40,6 +41,26 @@ def test_idempotent_due_and_real_outbox_dispatch(context):
         assert len(rows)==1 and rows[0]['run_id']
     AgentWorker(store).tick()
     assert svc.repo.read('alice',rows[0]['run_id'])['status']!='queued'
+
+def test_responsibility_rollout_is_separate_and_owner_scoped(context,monkeypatch):
+    store,svc,spec=context
+    from backend.app.agent_execution.config import capabilities, responsibility_enabled
+    monkeypatch.delenv('OPENLEARN_RESPONSIBILITY_ENABLED',raising=False)
+    assert responsibility_enabled('alice') is False
+    monkeypatch.setenv('OPENLEARN_RESPONSIBILITY_ENABLED','false')
+    with pytest.raises(HTTPException) as disabled:
+        svc.create('alice',spec,'disabled')
+    assert disabled.value.status_code==503
+    monkeypatch.setenv('OPENLEARN_RESPONSIBILITY_ENABLED','true')
+    monkeypatch.setenv('OPENLEARN_RESPONSIBILITY_OWNER_ALLOWLIST','other-owner')
+    assert responsibility_enabled('alice') is False and responsibility_enabled('other-owner') is True
+    assert capabilities()['responsibilityEnabled'] is True
+    assert capabilities()['responsibilityRolloutScope']=='owner_allowlist'
+    with pytest.raises(HTTPException) as outside:
+        svc.create('alice',spec,'outside')
+    assert outside.value.status_code==503
+    monkeypatch.setenv('OPENLEARN_RESPONSIBILITY_OWNER_ALLOWLIST','alice')
+    assert svc.create('alice',spec,'allowed')['status']=='active'
 
 def test_overlap_budget_and_self_causation(context):
     store,svc,spec=context

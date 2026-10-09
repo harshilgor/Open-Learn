@@ -14,7 +14,7 @@ import type {FlashcardView} from '@/lib/flashcards-client';
 import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
-const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes', 'sources', 'practice'], activeTab: 'notes' };
+const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes', 'sources', 'practice', 'reminders'], activeTab: 'notes' };
 
 export type WorkspaceSplitContextValue = {
   collapsed: boolean;
@@ -36,8 +36,8 @@ function validLayout(value: unknown): value is WorkspacePanelLayout {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<WorkspacePanelLayout>;
   return typeof candidate.width === 'number' && typeof candidate.collapsed === 'boolean'
-    && Array.isArray(candidate.tabs) && candidate.tabs.every(tab => tab === 'notes' || tab === 'quiz' || tab === 'sources' || tab==='class' || tab==='flashcards' || tab==='practice' || tab==='canvas')
-    && (candidate.activeTab === 'notes' || candidate.activeTab === 'quiz' || candidate.activeTab === 'sources' || candidate.activeTab==='class' || candidate.activeTab==='flashcards' || candidate.activeTab==='practice' || candidate.activeTab==='canvas');
+    && Array.isArray(candidate.tabs) && candidate.tabs.every(tab => tab === 'notes' || tab === 'quiz' || tab === 'sources' || tab==='class' || tab==='flashcards' || tab==='practice' || tab==='canvas' || tab==='reminders')
+    && (candidate.activeTab === 'notes' || candidate.activeTab === 'quiz' || candidate.activeTab === 'sources' || candidate.activeTab==='class' || candidate.activeTab==='flashcards' || candidate.activeTab==='practice' || candidate.activeTab==='canvas' || candidate.activeTab==='reminders');
 }
 
 export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePanel = false }: { children: ReactNode; quizSessionId?: string | null; quizConceptId?: string; hidePanel?: boolean }) {
@@ -139,7 +139,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
         const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
         if (validLayout(stored)) {
           const hasSavedQuiz = Boolean(localStorage.getItem(`forma-quiz:${quizSessionId || 'panel'}`) || localStorage.getItem('forma-quiz'));
-          const tabs = [...new Set<import('./workspace-panel').WorkspaceTab>(['notes', 'sources', 'practice', ...stored.tabs])].filter(tab => tab !== 'class' && (tab !== 'quiz' || hasSavedQuiz));
+          const tabs = [...new Set<import('./workspace-panel').WorkspaceTab>(['notes', 'sources', 'practice', 'reminders', ...stored.tabs])].filter(tab => tab !== 'class' && (tab !== 'quiz' || hasSavedQuiz));
           setLayout(current=>current.tabs.includes('class')||current.tabs.includes('flashcards')?current:{ ...stored, width: Math.min(70, Math.max(30, stored.width)), tabs: tabs.length ? tabs : ['notes'], activeTab: tabs.includes(stored.activeTab) ? stored.activeTab : 'notes' });
         }
       } catch { /* A session remains usable without browser storage. */ }

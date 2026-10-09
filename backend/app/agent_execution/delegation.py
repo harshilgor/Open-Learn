@@ -34,13 +34,24 @@ class Delegation:
             if run['revision']!=body.expectedRevision:fail('revision_conflict','Refresh the parent task.',409)
             if run['status'] in {'cancelled','failed','paused','waiting'}:fail('parent_inactive','Parent cannot start child work.',409)
             if conn.execute(text('SELECT 1 FROM agent_delegated_children WHERE child_id=:id AND owner_id=:owner'),{'id':parent,'owner':owner}).first():fail('delegation_depth_denied','Children cannot delegate.',403)
-            if (body.kind=='research' and run['kind']!='research') or (body.kind=='lab_analysis' and run['kind'] not in {'lab_analysis','sandbox_lab'}):fail('child_capability_denied','Child cannot expand the parent capability.',403)
+            analysis_mode=run.get('analysisMode','lab')
+            if body.kind=='research' and run['kind']!='research':fail('child_capability_denied','Research children require a research parent.',403)
+            if body.kind=='lab_analysis' and run['kind'] not in {'lab_analysis','sandbox_lab'}:
+                # Cross-capability analysis is allowed only when a research
+                # request explicitly included a bounded, owner-validated CSV.
+                if run['kind']!='research' or not run.get('csvText') or run.get('inputSourceDeleted'):
+                    fail('child_capability_denied','Analysis children require a lab task or a research task with an available CSV input.',403)
+                from .tools import choose_analysis_mode
+                analysis_mode,_=choose_analysis_mode(run['csvText'],body.assignment)
+                if run.get('inputMaterial'):
+                    from .sandbox_inputs import validate_material
+                    validate_material(self.store,owner,{'inputMaterial':run['inputMaterial']},conn)
             budget_id='budget_'+digest([owner,parent,run['desired_input_revision']])[:32]
             conn.execute(text('INSERT INTO agent_delegation_budgets(id,owner_id,created_at,run_id,input_revision,children_remaining,calls_remaining,tokens_remaining) VALUES(:id,:owner,:now,:run,:revision,2,24,50000) ON CONFLICT(id) DO NOTHING'),{'id':budget_id,'owner':owner,'now':time.time(),'run':parent,'revision':run['desired_input_revision']})
             reserved=conn.execute(text('UPDATE agent_delegation_budgets SET children_remaining=children_remaining-1 WHERE id=:id AND children_remaining>0'),{'id':budget_id})
             if reserved.rowcount!=1:fail('delegation_budget_exhausted','This parent has reached its child limit.',429)
             spec={**run['researchSpec'],'query':body.assignment} if body.kind=='research' else None
-            child=self.coordinator.create(conn,owner,run['sessionId'],body.assignment,'delegation:'+identifier,run.get('csvText'),dict(run['constraints']),parent=parent,kind=body.kind,research_spec=spec,input_material=run.get('inputMaterial'),usage_root_id=run.get('usageRootId') or run['id'])
+            child=self.coordinator.create(conn,owner,run['sessionId'],body.assignment,'delegation:'+identifier,run.get('csvText'),dict(run['constraints']),parent=parent,parent_revision=run['desired_input_revision'],kind=body.kind,research_spec=spec,input_material=run.get('inputMaterial'),usage_root_id=run.get('usageRootId') or run['id'],analysis_mode=analysis_mode)
             payload={'assignment':body.assignment,'budgetId':budget_id,'callsRemaining':12,'tokensRemaining':25000,'sourcePolicy':spec.get('sourcePolicy') if spec else 'inherited_input','externalWrites':False,'verification':None}
             conn.execute(text("INSERT INTO agent_delegated_children(id,owner_id,created_at,parent_id,child_id,input_revision,status,request_hash,payload) VALUES(:id,:owner,:now,:parent,:child,:revision,'running',:hash,:payload)"),{'id':identifier,'owner':owner,'now':time.time(),'parent':parent,'child':child['id'],'revision':run['desired_input_revision'],'hash':request_hash,'payload':encoded(payload)})
             self.repo.activity(conn,run,'child:'+identifier,'child.created',childTaskId=child['id'],text='Started a bounded child task without connector-write grants.')

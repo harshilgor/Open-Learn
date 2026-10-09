@@ -75,6 +75,11 @@ class BrowserControl:
         with self.store.transaction() as conn:
             run = self.repo.run(conn, owner, identifier)
             if run.get('browserInputInFlight') != pending: return
+            recovery = run.get('cloudRecovery') or {}
+            if recovery.get('leaseUntil', 0) > time.time():
+                # A recovery worker has already claimed the handoff. It must
+                # confirm provider termination before exposing a live view.
+                return
             changes = {'browserInputInFlight':None}
             control = run.get('browserControl',{})
             if control.get('owner') == 'requesting' and run['status'] not in TERMINAL:
@@ -92,6 +97,11 @@ class BrowserControl:
                 fail('device_scope_denied','Use the paired browser device.',403)
             if connection['status']=='revoked' or run['status'] in TERMINAL or control.get('generation') != generation or control.get('owner') not in {'requesting','human'}:
                 fail('stale_command','This handoff is no longer active.',409)
+            if connection['executor'] == 'cloud' and run.get('browserInputInFlight'):
+                fail('control_busy','The cloud browser action is still being reconciled. Try again when the task updates.',409)
+            recovery = run.get('cloudRecovery') or {}
+            if connection['executor'] == 'cloud' and recovery.get('leaseUntil', 0) > time.time():
+                fail('control_busy','The cloud browser is being safely stopped before handoff.',409)
             if control['owner']=='human': return {'status':'accepted','duplicate':True}
             run=self.repo.update_run(conn,run,browserControl={**control,'owner':'human'},question='Automation stopped. Use the connected desktop browser, then return control.')
             self.repo.event(conn,run,'browser.takeover_ready',run['question'],generation=generation)

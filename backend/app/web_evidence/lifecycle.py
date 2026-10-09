@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 from enum import StrEnum
+import logging
+
+from ..classification.config import min_score, rollout_mode, should_sample_shadow
+from ..classification.service import ClassificationService
+
+logger = logging.getLogger(__name__)
 
 
 class ToolCallState(StrEnum):
@@ -90,13 +96,23 @@ def classify_evidence_outcome(excerpts: list[str], *, max_age_days_hint: int | N
         return EvidenceOutcome.no_reliable_evidence
     if len(excerpts) == 1:
         return EvidenceOutcome.limited_evidence
+    if max_age_days_hint is not None and max_age_days_hint > 365 * 5:
+        return EvidenceOutcome.outdated_evidence
+    mode = rollout_mode("evidence_outcome")
+    if mode == "active" or mode == "shadow" and should_sample_shadow("evidence_outcome", "\n".join(excerpts)):
+        try:
+            decision = ClassificationService().evidence_outcome(excerpts)
+            if mode == "active" and decision.score >= min_score("evidence_outcome", decision.value, default=0.86):
+                return EvidenceOutcome(decision.value)
+        except Exception as exc:
+            logger.info("evidence_classification_jev_fallback", extra={
+                "classification_contract": "evidence_outcome", "classification_error": type(exc).__name__,
+            })
     # Lightweight conflict heuristic: opposing polarity tokens across excerpts.
     positive = sum(1 for e in excerpts if any(t in e.lower() for t in ("supports", "confirmed", "true")))
     negative = sum(1 for e in excerpts if any(t in e.lower() for t in ("refutes", "false", "debunked")))
     if positive and negative:
         return EvidenceOutcome.conflicting_evidence
-    if max_age_days_hint is not None and max_age_days_hint > 365 * 5:
-        return EvidenceOutcome.outdated_evidence
     if len(excerpts) < 2:
         return EvidenceOutcome.limited_evidence
     return EvidenceOutcome.sufficient_evidence

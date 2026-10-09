@@ -79,7 +79,8 @@ class Policy:
                 except Exception:
                     raise RuntimeError(f'Paid usage route requires an explicit positive tariff: {name}.') from None
             optional_rates=[]
-            if os.getenv('AI_TUTOR_MODE_CLASSIFICATION','rules').lower()=='jev':
+            from ..classification.config import jev_requested
+            if jev_requested() and os.getenv('OPENROUTER_API_KEY'):
                 optional_rates.append('OPENLEARN_JEV_USD_PER_REQUEST')
             if os.getenv('AI_TUTOR_WEB_EVIDENCE','false').strip().lower() in {'1','true','yes','on'}:
                 optional_rates.extend(('OPENLEARN_EXA_USD_PER_SEARCH','OPENLEARN_EXA_USD_PER_CONTENT_PAGE'))

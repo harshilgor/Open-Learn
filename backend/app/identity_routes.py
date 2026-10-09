@@ -134,6 +134,14 @@ def build_identity_router(store_provider):
     @router.delete('/devices/{device_id}')
     def revoke(device_id: str):
         p = web_account()
+        from .identity_revocation import configured_revocation_journal, device_revocation_record
+        journal = configured_revocation_journal()
+        if journal is not None:
+            with store_provider().engine.connect() as conn:
+                exists = conn.execute(text('SELECT 1 FROM identity_devices WHERE id=:id AND owner_id=:owner AND revoked_at IS NULL'), {'id': device_id, 'owner': p.owner_id}).first()
+            if not exists:
+                fail('device_not_found', 'Device not found.', 404)
+            journal.append(device_revocation_record(p.owner_id, device_id))
         with store_provider().transaction() as conn:
             result = conn.execute(text('UPDATE identity_devices SET revoked_at=:now WHERE id=:id AND owner_id=:owner'), {'now': time.time(), 'id': device_id, 'owner': p.owner_id})
             if not result.rowcount:

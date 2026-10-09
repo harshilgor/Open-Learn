@@ -10,11 +10,13 @@ import {LearningContinuationPanel} from './learning-continuation';
 import {ConnectedTaskPanel} from './connected-task-panel';
 import {useAllowance} from '@/lib/usage-allowance';
 import styles from './execution-panel.module.css';
+import { AgentWorkingIndicator } from '../agent-working-indicator';
+import { executionTaskCopy } from '@/lib/generation-activity';
 
 type Pending={key:string;body:Record<string,unknown>;taskId?:string};
 const prefix='openlearn-agent-pending:';
 
-export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|null;onSession:(id:string)=>void;courseId?:string|null}){
+export function ExecutionPanel({sessionId,onSession,courseId,showTools=true}:{sessionId:string|null;onSession:(id:string)=>void;courseId?:string|null;showTools?:boolean}){
   const [tasks,setTasks]=useState<AgentTask[]>([]),[items,setItems]=useState<Activity[]>([]);
   const [enabled,setEnabled]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false);
   const [kind,setKind]=useState('lab_analysis'),[query,setQuery]=useState(''),[csv,setCsv]=useState('trial,distance,time\n1,10,2\n2,20,4\n3,999,1\n');
@@ -28,11 +30,19 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
   const refresh=useCallback(async()=>{
     if(!sessionId)return;
     const epoch=generation.current;let page=await snapshot(sessionId,cursor.current);
-    const collected=[...page.items];
-    while(page.hasMore){page=await snapshot(sessionId,page.cursor);collected.push(...page.items);}
+    let resetForRetention=false;const collected:Activity[]=[];
+    for(;;){
+      if(page.resnapshotRequired){
+        if(resetForRetention)throw new Error('Activity changed while refreshing. Try again.');
+        resetForRetention=true;collected.length=0;page=await snapshot(sessionId);continue;
+      }
+      collected.push(...page.items);
+      if(!page.hasMore)break;
+      page=await snapshot(sessionId,page.cursor);
+    }
     if(epoch!==generation.current)return;
     cursor.current=page.cursor;setTasks(page.tasks);
-    setItems(previous=>{const map=new Map(previous.map(item=>[item.id,item]));for(const item of collected)map.set(item.id,item);return [...map.values()].sort((a,b)=>a.sequence-b.sequence);});
+    setItems(previous=>{const map=new Map((resetForRetention?[]:previous).map(item=>[item.id,item]));for(const item of collected)map.set(item.id,item);return [...map.values()].sort((a,b)=>a.sequence-b.sequence);});
   },[sessionId]);
   useEffect(()=>{
     generation.current++;cursor.current=undefined;
@@ -40,7 +50,7 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
     const invalidate=()=>{generation.current++;};
     const update=()=>{if(inflight)return;inflight=true;void refresh().catch(cause=>{if(!stopped)setError(cause.message);}).finally(()=>{inflight=false;});};
     const timer=window.setTimeout(()=>{setTasks([]);setItems([]);setError('');update();},0);
-    void request<{admissionEnabled:boolean;capabilities?:{name:string;state:string;runtime?:string}[]}>('/v1/assistant/execution-capabilities').then(value=>{if(!stopped){setEnabled(value.admissionEnabled);const sandbox=value.capabilities?.find(capability=>capability.name==='sandbox_lab');setSandboxState(sandbox?.state||'setup_required');setSandboxFixture(sandbox?.runtime==='offline_sandbox_fixture');}}).catch(()=>undefined);
+    if(showTools)void request<{admissionEnabled:boolean;capabilities?:{name:string;state:string;runtime?:string}[]}>('/v1/assistant/execution-capabilities').then(value=>{if(!stopped){setEnabled(value.admissionEnabled);const sandbox=value.capabilities?.find(capability=>capability.name==='sandbox_lab');setSandboxState(sandbox?.state||'setup_required');setSandboxFixture(sandbox?.runtime==='offline_sandbox_fixture');}}).catch(()=>undefined);
     const interval=window.setInterval(update,2000);
     const clear=()=>{
       generation.current++;cursor.current=undefined;pending.current=null;setHasPending(false);setTasks([]);setItems([]);setAnswers({});setQuery('');setEnabled(false);
@@ -49,7 +59,7 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
     window.addEventListener(ACCOUNT_CHANGED,clear);
     window.addEventListener('openlearn-agent-activity-changed',update);
     return()=>{stopped=true;invalidate();window.clearTimeout(timer);window.clearInterval(interval);window.removeEventListener(ACCOUNT_CHANGED,clear);window.removeEventListener('openlearn-agent-activity-changed',update);};
-  },[refresh]);
+  },[refresh,showTools]);
 
   async function submit(body:Record<string,unknown>,taskId?:string){
     if(busy)return;
@@ -76,9 +86,9 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
     finally{setBusy(false);}
   }
 
-  if(!enabled&&!tasks.length)return null;
+  if(!showTools&&!tasks.length&&!items.length&&!error&&!hasPending)return null;
   return <section aria-label="Agent execution" className={styles.panel}>
-    <MakeFlashcards sessionId={sessionId} courseId={courseId}/><ResponsibilitiesPanel sessionId={sessionId} courseId={courseId}/>
+    {showTools ? <><MakeFlashcards sessionId={sessionId} courseId={courseId}/><ResponsibilitiesPanel sessionId={sessionId} courseId={courseId}/>
     <details><summary>Agent workspace</summary><p>Lab analysis runs offline with a fixed CSV adapter. Daytona runs the same verified analysis remotely when configured. Research uses configured evidence sources. Tasks keep running when this conversation closes.</p>
       {sandboxFixture?<p>Offline sandbox fixture: no live Daytona calls.</p>:null}
       {enabled?<form onSubmit={event=>{event.preventDefault();if(!usageAllowance||usageAllowance.grantedMicrocredits<=0)return;void submit({capability:kind,text:query.trim()||'Analyze this lab CSV',acceptedUsageCapMicro:Math.max(1,Math.floor(usageAllowance.grantedMicrocredits*usageCapPercent/100)),...(kind!=='research'?{csvText:csv}:{researchSpec:{query:query,sourcePolicy:'attached_preferred'}})});}}>
@@ -89,10 +99,10 @@ export function ExecutionPanel({sessionId,onSession,courseId}:{sessionId:string|
         <p>This is the most this task and its delegated work can use. It will not continue automatically after your allowance refreshes, and it stops with saved work when it reaches this maximum.</p>
         <button disabled={busy||!usageAllowance||usageAllowance.grantedMicrocredits<=0||(kind==='research'&&!query.trim())||(kind==='sandbox_lab'&&sandboxState!=='available')}>Start task · maximum {usageCapPercent}%</button>
       </form>:<p>New agent tasks are disabled. Existing tasks remain available.</p>}
-    </details>
+    </details></> : null}
     {items.filter(item=>['user.message','command.applied'].includes(item.type)).map(item=><p key={item.id}>{item.type==='user.message'?'You: ':''}{item.text}</p>)}
     {tasks.map(task=>task.kind==='flashcards'?<FlashcardTaskCard key={task.id} task={task} onChanged={()=>void refresh()}/>:<article key={task.id} aria-label={`Task: ${task.message}`} style={{marginTop:12}}>
-      <strong>{task.message}</strong><p role="status">{task.status.replaceAll('_',' ')} · {task.phase}</p>
+      <strong>{task.message}</strong>{['queued','running'].includes(task.status)?<AgentWorkingIndicator label={executionTaskCopy(task)}/>:<p role="status">{executionTaskCopy(task)}</p>}
       {task.summary?<p>{task.summary}</p>:null}
       <ResearchSourceList sources={task.sources||[]}/>
       {task.pendingRequests.map(question=><div key={question.requestId}><p>{question.question}</p>{question.options.map(option=><button type="button" key={option} disabled={busy} onClick={()=>setAnswers(previous=>({...previous,[task.id]:option}))}>{option}</button>)}</div>)}

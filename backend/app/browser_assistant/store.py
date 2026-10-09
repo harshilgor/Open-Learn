@@ -42,6 +42,26 @@ class AssistantStore:
         from ..execution import active_job
         if active_job.get() is not None and run.get('browserControl',{}).get('owner','agent') != 'agent' and 'status' in changes:
             fail('control_not_ready','Browser control is held by the learner.',409)
+        next_status = changes.get('status', run['status'])
+        next_question = changes.get('question', run.get('question'))
+        waiting_for_answer = next_status in {'waiting_for_user', 'waiting_for_login', 'waiting_for_device'}
+        if waiting_for_answer and next_question:
+            previous_question = run.get('question')
+            previous_state = run.get('inputRequestState')
+            if run['status'] not in {'waiting_for_user', 'waiting_for_login', 'waiting_for_device'} or previous_question != next_question or previous_state != 'open':
+                request_revision = int(run.get('inputRequestRevision') or 0) + 1
+                request_id = uid('browser_input')
+                error = changes.get('error', run.get('error'))
+                answerable_errors = {'clarification_required', 'ambiguous_event', 'course_required', 'ambiguous_course',
+                                     'connection_required', 'save_required', 'origin_not_approved', 'action_blocked',
+                                     # A cloud action with an unknown outcome can only resume after the learner
+                                     # explicitly chooses to continue; the worker will observe before acting again.
+                                     'outcome_unknown'}
+                input_kind = 'text' if next_status == 'waiting_for_user' and error in answerable_errors else 'action'
+                changes.update(inputRequestId=request_id, inputRequestRevision=request_revision,
+                               inputRequestState='open', inputRequestKind=input_kind)
+        elif next_status not in {'waiting_for_user', 'waiting_for_login', 'waiting_for_device'} and run.get('inputRequestState') == 'open':
+            changes.setdefault('inputRequestState', 'closed')
         # Scalar columns win over payload duplicates; expected revision fences concurrent writers.
         updated = {**run, **changes, 'revision': run['revision'] + 1, 'updatedAt': time.time()}
         value = {k: v for k, v in updated.items() if k not in {'payload', 'owner_id', 'created_at', 'updated_at', 'request_hash', 'command_key', 'session_id', 'connection_id'}}
@@ -56,6 +76,8 @@ class AssistantStore:
     def event(self, conn, run, kind, message, **data):
         sequence = conn.execute(text('UPDATE assistant_runs SET event_sequence=event_sequence+1 WHERE id=:run RETURNING event_sequence'), {'run': run['id']}).scalar_one()
         payload = {'type': kind, 'message': message, 'status': run['status'], **data}
+        if kind in {'task.attention', 'task.needs_input'} and run.get('inputRequestState') == 'open':
+            payload['request'] = pending_request(run)
         conn.execute(text('INSERT INTO assistant_events(id,owner_id,run_id,sequence,payload,created_at) VALUES(:id,:owner,:run,:seq,:payload,:now)'),
                      {'id': uid('ae'), 'owner': run['owner_id'], 'run': run['id'], 'seq': sequence, 'payload': encoded(payload), 'now': time.time()})
 
@@ -73,8 +95,16 @@ class AssistantStore:
 
 
 def public_run(run):
-    return {k: run.get(k) for k in ('id', 'revision', 'sessionId', 'message', 'status', 'connectionId', 'courseId',
-        'intent', 'summary', 'facts', 'studyTasks', 'coverage', 'question', 'error', 'actionsUsed', 'createdAt', 'updatedAt', 'usage', 'browserControl')}
+    return {**{k: run.get(k) for k in ('id', 'revision', 'sessionId', 'message', 'status', 'connectionId', 'courseId',
+        'intent', 'summary', 'facts', 'studyTasks', 'coverage', 'question', 'error', 'actionsUsed', 'createdAt', 'updatedAt', 'usage', 'browserControl')},
+        'pendingRequests': [request] if (request := pending_request(run)) else []}
+
+
+def pending_request(run):
+    if run.get('inputRequestState') != 'open' or not run.get('inputRequestId') or not run.get('question'):
+        return None
+    return {'requestId': run['inputRequestId'], 'taskId': run['id'], 'revision': int(run.get('inputRequestRevision') or 1),
+            'question': run['question'], 'required': True, 'inputKind': run.get('inputRequestKind') or 'action', 'state': 'open'}
 
 
 def public_connection(connection):

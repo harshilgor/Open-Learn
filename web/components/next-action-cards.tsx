@@ -1,16 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Sparkles, X } from 'lucide-react';
 import { learningApi, type NextActionRecommendation, type RecommendationSet } from '@/lib/api';
 import styles from './next-action-cards.module.css';
-
-type LocalAction = {
-  id: string;
-  label: string;
-  kind: 'learn' | 'ask' | 'quiz' | 'review' | 'check';
-  item?: NextActionRecommendation;
-};
 
 function suggestionLabel(item: NextActionRecommendation): string {
   const concept = item.conceptTitle?.trim();
@@ -23,6 +16,18 @@ function suggestionLabel(item: NextActionRecommendation): string {
   return item.title || 'Continue';
 }
 
+function recommendationFingerprint(sessionId: string, item: NextActionRecommendation): string {
+  return [
+    sessionId,
+    item.conceptId || '',
+    item.actionKind,
+    item.pedagogicalAction || '',
+    item.whyCode || '',
+    item.context.journeyAction || '',
+    [...item.evidenceIds].sort().join(','),
+  ].join('|');
+}
+
 export function NextActionCards({ sessionId, enabled, refreshKey, onLearn, onAsk, onQuiz, onReview, onCheck }: {
   sessionId: string; enabled: boolean; refreshKey?: string | number;
   onLearn: (item?: NextActionRecommendation) => void | Promise<void>;
@@ -31,73 +36,91 @@ export function NextActionCards({ sessionId, enabled, refreshKey, onLearn, onAsk
   onReview: (item?: NextActionRecommendation) => void | Promise<void>;
   onCheck: () => void;
 }) {
-  const [set, setSet] = useState<RecommendationSet | null>(null);
+  const [result, setResult] = useState<{ requestKey: string; set: RecommendationSet | null; repeated: boolean } | null>(null);
+  const [dismissedFingerprint, setDismissedFingerprint] = useState<string | null>(null);
   const loaded = useRef<string | null>(null);
+  const lastPresented = useRef<{ fingerprint: string; refreshKey: string } | null>(null);
+  const requestKey = `${sessionId}:${refreshKey ?? ''}`;
+  const refreshKeyValue = String(refreshKey ?? '');
+  const currentSet = result?.requestKey === requestKey ? result.set : null;
+  const primary = currentSet?.recommendations.find(item => item.isPrimary) ?? null;
+  const fingerprint = primary ? recommendationFingerprint(sessionId, primary) : null;
+  const recommendationSetId = currentSet?.id ?? null;
+  const primaryId = primary?.id ?? null;
+  const repeated = result?.requestKey === requestKey && result.repeated;
+  const canSuggest = Boolean(enabled && currentSet && primary && primary.whyCode !== 'new_concept' && fingerprint !== dismissedFingerprint && !repeated);
 
   useEffect(() => {
-    const requestKey = `${sessionId}:${refreshKey ?? ''}`;
     if (!enabled || loaded.current === requestKey) return;
     let active = true;
     void learningApi.getRecommendations(sessionId).then(next => {
-      if (active) { setSet(next); loaded.current = requestKey; }
-    }).catch(() => undefined);
+      if (active) {
+        const current = next.status === 'current' ? next : null;
+        const nextPrimary = current?.recommendations.find(item => item.isPrimary) ?? null;
+        const nextFingerprint = nextPrimary ? recommendationFingerprint(sessionId, nextPrimary) : null;
+        const previous = lastPresented.current;
+        const isRepeated = Boolean(nextFingerprint && previous?.fingerprint === nextFingerprint && previous.refreshKey !== refreshKeyValue);
+        setResult({ requestKey, set: current, repeated: isRepeated });
+        loaded.current = requestKey;
+      }
+    }).catch(() => {
+      if (active) {
+        setResult({ requestKey, set: null, repeated: false });
+        loaded.current = requestKey;
+      }
+    });
     return () => { active = false; };
-  }, [enabled, refreshKey, sessionId]);
+  }, [enabled, refreshKeyValue, requestKey, sessionId]);
 
   useEffect(() => {
-    if (!set?.recommendations.length) return;
-    for (const item of set.recommendations.slice(0, 3)) {
-      void learningApi.recordRecommendationInteraction(item.id, 'impression', 'local', `${set.id}:${item.id}:impression`).catch(() => undefined);
-    }
-  }, [set]);
+    if (!canSuggest || !fingerprint || !recommendationSetId || !primaryId) return;
+    lastPresented.current = { fingerprint, refreshKey: refreshKeyValue };
+    void learningApi.recordRecommendationInteraction(
+      primaryId,
+      'impression',
+      'local',
+      `${recommendationSetId}:${primaryId}:impression`,
+    ).catch(() => undefined);
+  }, [canSuggest, fingerprint, primaryId, recommendationSetId, refreshKeyValue]);
 
-  const actions: LocalAction[] = [];
-  const primary = set?.recommendations[0];
-  if (primary) {
-    const kind = primary.pedagogicalAction === 'check' ? 'check' : primary.actionKind;
-    actions.push({ id: primary.id, label: suggestionLabel(primary), kind, item: primary });
-  } else {
-    actions.push({ id: 'continue', label: 'Continue learning', kind: 'learn' });
+  if (!canSuggest || !currentSet || !primary || !fingerprint) return null;
+  const recommendation = primary;
+  const recommendationKey = fingerprint;
+
+  async function select() {
+    setDismissedFingerprint(recommendationKey);
+    void learningApi.recordRecommendationInteraction(recommendation.id, 'selection').catch(() => undefined);
+    const kind = recommendation.pedagogicalAction === 'check' ? 'check' : recommendation.actionKind;
+    try {
+      if (kind === 'check') { onCheck(); return; }
+      if (kind === 'learn') { await onLearn(recommendation); return; }
+      if (kind === 'ask') { await onAsk(recommendation); return; }
+      if (kind === 'quiz') { await onQuiz(recommendation); return; }
+      if (kind === 'review') { await onReview(recommendation); }
+    } catch {
+      void learningApi.recordRecommendationInteraction(recommendation.id, 'failure').catch(() => undefined);
+    }
   }
 
-  const kinds = new Set(actions.map(action => action.kind));
-  if (!kinds.has('check')) actions.push({ id: 'check', label: 'Check understanding', kind: 'check' });
-  if (!kinds.has('quiz')) actions.push({ id: 'quiz', label: 'Quiz this concept', kind: 'quiz' });
-  if (!kinds.has('review')) actions.push({ id: 'review', label: 'Review concepts', kind: 'review' });
-
-  async function select(action: LocalAction) {
-    if (action.item) {
-      void learningApi.recordRecommendationInteraction(action.item.id, 'selection').catch(() => undefined);
-    }
-    try {
-      if (action.kind === 'check') { onCheck(); return; }
-      if (action.kind === 'learn') { await onLearn(action.item); return; }
-      if (action.kind === 'ask' && action.item) { await onAsk(action.item); return; }
-      if (action.kind === 'quiz') { await onQuiz(action.item); return; }
-      if (action.kind === 'review') { await onReview(action.item); return; }
-    } catch {
-      if (action.item) void learningApi.recordRecommendationInteraction(action.item.id, 'failure').catch(() => undefined);
-    }
+  function dismiss() {
+    setDismissedFingerprint(recommendationKey);
+    void learningApi.recordRecommendationInteraction(recommendation.id, 'dismissal').catch(() => undefined);
   }
 
   return (
-    <div className={styles.list} aria-label="Suggested next steps">
-      {actions.map(action => (
-        <button
-          key={action.id}
-          type="button"
-          className={styles.action}
-          disabled={!enabled}
-          onClick={() => void select(action)}
-        >
-          <span>{action.label}</span>
-          <ArrowRight size={14} />
-        </button>
-      ))}
-      {primary?.rationale ? <details className={styles.why}>
-        <summary>Why this next?</summary>
-        <p>{primary.rationale}</p>
+    <div className={styles.suggestion} role="group" aria-label="Suggested next step">
+      <span className={styles.label}><Sparkles size={13} aria-hidden="true" /> Suggested</span>
+      <button type="button" className={styles.action} onClick={() => void select()}>
+        <span>{suggestionLabel(recommendation)}</span>
+        <ArrowRight size={14} aria-hidden="true" />
+      </button>
+      {recommendation.rationale ? <details className={styles.why}>
+        <summary>Why?</summary>
+        <p>{recommendation.rationale}</p>
       </details> : null}
+      <button type="button" className={styles.dismiss} aria-label="Dismiss suggested next step" onClick={dismiss}>
+        <X size={14} aria-hidden="true" />
+      </button>
     </div>
   );
 }

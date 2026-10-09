@@ -84,7 +84,27 @@ def export_owner(store, owner):
         payload['status'] = 'exported_disconnected'
         row['device_id'] = None
         row['payload'] = json.dumps(payload)
-    exported['readme'] = 'Tables retain original IDs and relationships. Files contain base64 originals with SHA-256. Transcript and note text are in their source tables; derived rows are not evidence of mastery.'
+    # Portable restore intentionally accepts only safe content, never live
+    # execution state. Make the export/import boundary machine-readable so a
+    # package consumer does not mistake exported task history for restorable
+    # checkpoints, approvals, schedules, or provider credentials.
+    from .identity_import import OMIT
+    exported['compatibility'] = {
+        'policyVersion': 1,
+        'restoreMode': 'safe_content_only',
+        'restorableTables': sorted(set(exported['tables']) - OMIT),
+        'exportOnlyTables': sorted(set(exported['tables']) & OMIT),
+        'privateTablesNotExported': sorted(PRIVATE_TABLES),
+        'executionStateRestored': False,
+        'externalApprovalsRestored': False,
+        'providerCredentialsRestored': False,
+        'limitations': [
+            'Agent and browser tasks, checkpoints, messages, activity, artifacts, schedules, leases, and approvals are not resumed by portable import.',
+            'Exported files linked only to excluded execution records remain archival export data and are not imported as runnable artifacts.',
+            'Infrastructure backup restore requires a separate revocation-reconciliation step before traffic or workers resume.',
+        ],
+    }
+    exported['readme'] = 'Tables retain original IDs and relationships. Files contain base64 originals with SHA-256. Transcript and note text are in their source tables; derived rows are not evidence of mastery. The compatibility manifest states which exported records portable import can restore.'
     return exported
 
 
@@ -146,9 +166,15 @@ def cleanup_objects(store):
     return bool(items)
 
 
-def erase_owner(store, owner):
+def erase_owner(store, owner, *, revocation_journal=None):
     from .identity_import import _profile_locks
+    from .identity_revocation import account_deletion_record, configured_revocation_journal
     with _profile_locks[owner]:
+        journal = revocation_journal if revocation_journal is not None else configured_revocation_journal()
+        if journal is not None:
+            # The append-only authority receives the tombstone before local data
+            # is erased, so a later database restore cannot revive the account.
+            journal.append(account_deletion_record(owner))
         return _erase_owner(store, owner)
 
 

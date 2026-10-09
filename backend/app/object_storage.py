@@ -60,9 +60,14 @@ class LocalImmutableObjects:
                 output.flush()
                 os.fsync(output.fileno())
             try:
-                # Hard-link creation is atomic and never overwrites an existing
-                # immutable key, even with concurrent processes.
-                os.link(temporary, path)
+                # Windows does not reliably permit hard links in restricted
+                # app/workspace directories. Its rename primitive is atomic
+                # and fails when the destination already exists; POSIX keeps
+                # using link, which has the same no-overwrite property.
+                if os.name == "nt":
+                    os.rename(temporary, path)
+                else:
+                    os.link(temporary, path)
             except FileExistsError:
                 verify(path.read_bytes(), checksum)
             if os.name != "nt":

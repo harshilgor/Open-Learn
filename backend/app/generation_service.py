@@ -16,7 +16,7 @@ from .generation_store import GenerationStore, TERMINAL
 from .context_provenance import block_decision, provider_input_fingerprint
 from .journey_service import JourneyService
 from .model_provider import ModelProviderError, OpenRouterLessonProvider, usage_metrics
-from .teaching_output_limits import teaching_output_limit
+from .teaching_output_limits import conversation_output_limit, teaching_output_limit
 from .streaming_lesson import ProgressiveLessonParser
 
 ERRORS = {"VALIDATION_FAILED", "CONTEXT_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_ERROR", "VISION_UNSUPPORTED", "STREAM_INTERRUPTED", "REPLAY_EXPIRED", "CANCELLED", "PERSISTENCE_FAILED", "REVISION_CONFLICT"}
@@ -222,6 +222,73 @@ class GenerationManager:
             prepared["visualType"] = request.visual_type
             for future in emitted_futures:
                 await asyncio.wrap_future(future)
+            if prepared.get("responseKind") == "social":
+                context_ready_at = time.time()
+                self.records.update_metrics(generation_id, {
+                    "contextReadyAt": context_ready_at,
+                    "contextBuildSeconds": context_ready_at - started_at,
+                    "responseRoute": "social",
+                    "modelInvoked": False,
+                })
+                event = await self.buffer.append(generation_id, "generation.context_ready", {
+                    "sourceCount": 0,
+                    "actionId": prepared["actionId"],
+                    "decision": "social_reply",
+                })
+                sequence = event.sequence
+                if self.records.cancelled(generation_id):
+                    await self._cancel(generation_id)
+                    return
+                self.records.transition(generation_id, "streaming")
+                block_id = f"social_{generation_id}"
+                event = await self.buffer.append(generation_id, "lesson.block_started", {
+                    "block": {"id": block_id, "kind": "explanation", "heading": ""},
+                })
+                sequence = event.sequence
+                event = await self.buffer.append(generation_id, "text.delta", {
+                    "blockId": block_id,
+                    "text": prepared["directReply"],
+                })
+                sequence = event.sequence
+                event = await self.buffer.append(generation_id, "lesson.block_completed", {"blockId": block_id})
+                sequence = event.sequence
+                self.records.transition(generation_id, "finalizing", sequence=sequence)
+                with self.store.transaction() as connection:
+                    from sqlalchemy import text
+                    cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
+                    if cancelled:
+                        raise asyncio.CancelledError()
+                    artifact, journey = JourneyService(self.store, provider).commit_stream(
+                        connection, owner, prepared, request, prepared["directReply"], [],
+                    )
+                    result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
+                    completed_at = time.time()
+                    final_metrics = {
+                        "completedAt": completed_at,
+                        "completionSeconds": completed_at - started_at,
+                        "outputCharacters": len(prepared["directReply"]),
+                        "estimatedOutputTokens": 0,
+                        "totalTokens": 0,
+                        "promptTokens": 0,
+                        "completionTokens": 0,
+                        "usageSource": "estimated",
+                        "responseRoute": "social",
+                        "modelInvoked": False,
+                    }
+                    self.records.update_metrics(generation_id, final_metrics, connection)
+                    self.records.transition(generation_id, "completed", sequence=sequence, result=result, connection=connection)
+                    self.records.append_event(generation_id, "generation.completed", {
+                        "result": result,
+                        "usage": {
+                            "totalTokens": 0,
+                            "promptTokens": 0,
+                            "completionTokens": 0,
+                            "usageSource": "estimated",
+                            "provider": getattr(provider, "provider_name", "unknown"),
+                            "model": getattr(provider, "model", "unknown"),
+                        },
+                    }, connection)
+                return
             context_ready_at = time.time()
             self.records.update_metrics(generation_id, {"contextReadyAt": context_ready_at, "contextBuildSeconds": context_ready_at - started_at})
             await self.buffer.append(generation_id, "generation.context_ready", {"sourceCount": len(prepared["sources"]), "actionId": prepared["actionId"], "decision": prepared.get("decision")})
@@ -249,7 +316,7 @@ class GenerationManager:
             self.records.update_metrics(generation_id, {"providerStartedAt": provider_started_at})
             provider_input = prepared["generationContext"] if getattr(provider, "supports_generation_context", False) else prepared["prompt"]
             context = prepared["generationContext"]
-            output_limit = teaching_output_limit(request.gear, provider, context)
+            output_limit = conversation_output_limit(request.gear, provider, context) if prepared.get("responseKind") == "conversation" else teaching_output_limit(request.gear, provider, context)
             block_decisions = [block_decision(block) for block in context.blocks]
             wire_payload = provider.streaming_payload(provider_input, output_limit, prepared.get("images")) if hasattr(provider, "streaming_payload") else provider_input
             # Hash the exact provider-facing payload together with the model and
@@ -276,6 +343,8 @@ class GenerationManager:
                 "contextOmitted": ",".join(context.omitted),
                 "contextTokensByBlock": json.dumps({block.kind: block.estimated_tokens for block in context.blocks}, sort_keys=True),
                 "recentEstimatedTokens": sum(max(1, len(message["content"].encode("utf-8")) // 3) for message in context.recent_messages),
+                "responseRoute": prepared.get("responseKind", "teaching"),
+                "modelInvoked": True,
                 "conversationStateVersion": prepared.get("conversationStateVersion", 0),
                 "summaryUsed": any(block.kind == "conversationState" for block in context.blocks),
                 "compactionTriggered": prepared.get("compactionTriggered", False),

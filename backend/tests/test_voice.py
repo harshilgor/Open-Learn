@@ -230,6 +230,34 @@ def test_acceptance_rollout_only_admits_configured_authenticated_email(env, monk
     assert not _voice_usage_ready()
 
 
+def test_local_voice_acceptance_is_explicitly_development_only(env, monkeypatch):
+    _enable_metered_voice(monkeypatch)
+    monkeypatch.setenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED', 'false')
+    monkeypatch.setenv('OPENLEARN_VOICE_ACCEPTANCE_MODE', 'true')
+    monkeypatch.setenv('OPENLEARN_VOICE_SESSION_SECONDS', '90')
+    monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '1')
+    monkeypatch.setenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED', 'false')
+    monkeypatch.setenv('AI_TUTOR_ENV', 'development')
+    monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY', 'true')
+    from backend.app.voice.routes import _voice_account_allowed, _voice_usage_ready
+    token = principal_context.set(Principal('local', 'local'))
+    try:
+        assert not _voice_account_allowed()
+        monkeypatch.setenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED', 'true')
+        assert _voice_usage_ready()
+        assert _voice_account_allowed()
+        monkeypatch.setenv('AI_TUTOR_ENV', 'production')
+        assert not _voice_account_allowed()
+    finally:
+        principal_context.reset(token)
+
+
+def test_voice_dispatch_uses_configured_agent_name(monkeypatch):
+    from backend.app.voice import media
+    monkeypatch.setenv('OPENLEARN_VOICE_AGENT_NAME', 'openlearn-voice-local')
+    assert media.configured_agent_name() == 'openlearn-voice-local'
+
+
 @pytest.mark.parametrize('kind', ['voice_turn', 'voice_action', 'voice_teach'])
 def test_interactive_worker_dispatches_durable_voice_jobs_to_correct_executor(env, monkeypatch, kind):
     store, _, sid = env

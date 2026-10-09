@@ -14,6 +14,9 @@ from backend.app.browser_assistant.intent import compile_intent
     ('go through my courses on Canvas', 'browser'), ('research spaced repetition', 'research'),
     ('remind me tomorrow at 7 to study', 'reminder'), ('make flashcards from this lesson', 'flashcards'),
     ('analyze my lab results', 'analysis'), ('draft an email to my professor', 'connected_action'),
+    ("What's on my calendar tomorrow?", 'calendar_read'), ('What meetings do I have next week?', 'calendar_read'),
+    ('Show my schedule today', 'calendar_read'), ("What's my calendar look like tomorrow?", 'calendar_read'),
+    ('Create a calendar event tomorrow', 'connected_action'),
     ('Explain gravity', 'direct'), ('Explain how to open YouTube', 'direct'),
     ("Don't open YouTube", 'direct'), ('Open the lesson', 'direct'),
 ])

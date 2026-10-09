@@ -45,6 +45,10 @@ class FakeSandbox:
 @pytest.fixture
 def sandbox(env,monkeypatch):
     monkeypatch.setenv('OPENLEARN_SANDBOX_ENABLED','true');monkeypatch.setenv('OPENLEARN_DAYTONA_SNAPSHOT','test-snapshot');monkeypatch.setenv('DAYTONA_API_KEY','test-key-never-used')
+    # These tests inject a deterministic FakeSandbox. They exercise the
+    # sandbox job lifecycle, not production paid-route readiness; keep the
+    # live-adapter payment guard tested separately and do not weaken it.
+    monkeypatch.setattr('backend.app.agent_execution.sandbox_config.readiness',lambda:{'state':'available','reasonCode':None})
     db,svc,repo=env;adapter=FakeSandbox();policy=SandboxPolicy(enabled=True,snapshot='test-snapshot')
     service=SandboxService(db,adapter,policy)
     worker=AgentWorker(db,sandbox_factory=lambda store:SandboxService(store,adapter,policy))
@@ -264,7 +268,9 @@ def test_quiz_learner_answer_uses_existing_assisted_evaluation(sandbox):
     result=quiz_service.public('alice',quiz_id)
     assert result['attempts'][0]['assisted'] is True and result['summary']['score']==100
     evidence=LearnerStateService(db).list_evidence('alice')
-    assert len(evidence)==1 and evidence[0].condition.value=='assisted'
+    # Agent-generated quiz context is explicitly excluded from mastery evidence,
+    # even though the submitted response remains scored and marked as assisted.
+    assert evidence==[]
 
 
 def test_account_erasure_preserves_remote_cleanup_obligation(sandbox):

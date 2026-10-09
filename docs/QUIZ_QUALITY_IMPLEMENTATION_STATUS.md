@@ -1,7 +1,20 @@
 # Quiz quality implementation status
 
 This tracker accompanies `QUIZ_QUALITY_AND_EXPERIENCE_IMPLEMENTATION_PLAN.md`.
-Implementation is in the working tree. Production deployment and educator validation are not complete.
+Quiz release `fcb0056c723f47dd56733929b49bd58535deb392` is deployed to production as of 2026-10-09. Educator validation remains pending.
+
+## Production release
+
+- Render deployment `dep-db4k3bqd0e5s73clkfug` reports **Deploy succeeded | Live**, serving commit `fcb0056` on the existing Free service.
+- Vercel deployment `dpl_E2umGYk5wZtw6P3Numr5HEv2dPRJ` is READY and promoted to `https://open-learn-eta.vercel.app`.
+- Both `main` and `codex/free-render-backend` received the isolated quiz-only commit. Concurrent classification, agent-platform, chat and dictation changes were excluded.
+- New v2/UI/model-profile enrollment is enabled. Sol 6.1 authors at high effort and verifies/evaluates written answers at medium effort. Prefetch remains off for this initial rollout; existing allowance and platform limits were preserved.
+- Live synthetic author + independent verification passed in 52.859 seconds. Live written grading passed in 23.969 seconds after exact unique quotation anchoring was added. This validates integration, not educator-reviewed superiority or production latency percentiles.
+- The isolated checkout passed 28 quiz and billing tests. An additional focused test verifies offset re-anchoring accepts only exact unique learner quotations and refuses fabricated/ambiguous quotations.
+- Public `/ready` returned HTTP 200; the live OpenAPI schema includes quiz capabilities, finish, and usefulness endpoints. Production homepage returned HTTP 200 and the authenticated Practice workspace loaded.
+- Tariff snapshot: `sol61-20261009-v1`, OpenRouter model `openai/gpt-6.1-sol`, USD per million tokens: input 2, output 10, cache read 0.1, cache write 2.5.
+- Two live integration issues were fixed before release: strict schemas duplicated in prompts exceeded reservation limits, and role/profile metadata incorrectly changed a model's shared rate-card hash. Legacy Haiku rate-card shape is preserved.
+- Rollback: disable new v2/UI/model enrollment in Render; preserve pinned tariffs and v2 readers for in-flight sessions. Prior Vercel release was `dpl_C3WH7UvDUuAhmfsrWmyPKiC2FyAv`; prior Render code was `1a5940d`.
 
 ## Implemented in the working tree
 
@@ -47,9 +60,9 @@ Implementation is in the working tree. Production deployment and educator valida
 - Live Sol request reached OpenRouter and returned HTTP 402 Payment Required. No successful live question generation or grading comparison has been established.
 - Visual preview revealed low contrast because the synthetic preview set `data-theme=dark` without the application's `.dark` class. The preview now applies both; visual recheck is pending.
 
-## Configuration and staged activation
+## Configuration defaults and rollback
 
-Leave new model routing disabled until live generation and budgets are validated:
+The template/rollback defaults below disable new enrollment. Production overrides enabling v2, UI v2 and model profiles are recorded above:
 
 ```dotenv
 AI_TUTOR_QUIZ_V2=false
@@ -98,7 +111,7 @@ python -m backend.scripts.assessment_live_smoke --generate --output outputs/quiz
 
 ## Outstanding requirements: do not mark the whole plan complete
 
-- Successful live author/verifier/evaluator contracts and sufficient output budget at supported effort settings.
+- Broader live author/verifier/evaluator acceptance across subjects and long sources; the first live generation and grading contracts passed.
 - Blind educator comparison and execution of the reviewed grading report; runner implemented but no reviewed references or successful provider calls established.
 - Full screen-reader validation and a complete live UI-to-API journey; synthetic component checks and durable API tests have passed.
 - Resolve the outdated Review/Journey fixture contracts with their owning workstreams. Final production build passed.
@@ -106,6 +119,6 @@ python -m backend.scripts.assessment_live_smoke --generate --output outputs/quiz
 - Real process-restart acceptance journey; final-exhaustion, expiry, persisted checking-reservation, cancellation, and deferred-finalization source-change tests passed.
 - Confirm every external context consumer honors deferred exam feedback; identified note, voice and challenge paths are fixed.
 - Full operational measurements from real sessions: cost per presented question, discarded-prefetch costs, waiting-time percentiles, coverage displacement, and learner usefulness. Summary/collection code exists; actual values require real sessions.
-- Production activation/rollback validation. New model/v2/UI/prefetch enrollment remains disabled; production deployment has not been performed.
+- Full production rollback exercise and measured enrollment expansion. Production v2/UI/model routing is enabled; background prefetch remains disabled.
 
 Rollback disables new v2/model/prefetch enrollment through configuration; already-created sessions still need their stored contracts and model profiles to finish. Never remove the v2 deserializers as a flag rollback.

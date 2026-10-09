@@ -8,7 +8,7 @@ from .learning_policy import assemble_action_context, resolve_prerequisites, cho
 from .learner_graph import LearnerGraphRepository
 from .material_service import MaterialService, problem
 from .model_provider import ModelProviderError
-from .session_models import LessonArtifact, LessonBlock, TeachingIntent, RunStatus, ActionStatus
+from .session_models import LessonArtifact, LessonBlock, TeachingIntent, RunStatus, ActionStatus, short_title
 from .models import utc_now
 from .state_models import StateEventCreate
 from .state_service import LearnerStateService
@@ -16,8 +16,9 @@ from .session_snapshot_service import SessionSnapshotService
 from .workflow_store import WorkflowStore, uid
 from .workspace_note_context import WorkspaceNoteContextService
 from .assessment_context import select_attempts
-from .teaching_prompts import build_teaching_instructions
+from .teaching_prompts import build_conversation_instructions, build_teaching_instructions
 from .teaching_output_limits import teaching_output_limit
+from .buddy_response_policy import social_reply
 
 
 class JourneyService:
@@ -333,6 +334,29 @@ class JourneyService:
             raise ModelProviderError("Connect a model provider to start a guided learning journey. Your session is saved.")
         session = MaterialService(self.store).session(owner, sid)
         graph = self.store.get_graph(session.graph_id)
+        from .buddy_service import BuddyService
+        presentation = BuddyService(self.store).presentation(owner, sid)
+        is_conversation = command.mode == "ask" and presentation == "conversation"
+        if command.mode == "ask" and presentation == "conversation" and command.action == "message":
+            reply = None
+            if not command.selected_text and not command.selected_span_ids and not command.note_context:
+                reply = social_reply(command.message)
+            if reply:
+                self._set_mode(journey, command.mode, command.gear.value)
+                return {
+                    "journey": journey,
+                    "generationId": generation_id,
+                    "conceptId": session.current_concept_id or (graph.concepts[0].id if graph.concepts else "conversation"),
+                    "title": short_title(command.message),
+                    "directReply": reply,
+                    "responseKind": "social",
+                    "generatedBy": "deterministic_social",
+                    "sources": [],
+                    "noteReceipt": {"label": "learner_provided_unverified_context", "notes": [], "totalCharacters": 0},
+                    "contextId": None,
+                    "actionId": uid("action"),
+                    "question": command.message,
+                }
         task_graph_scope = self._apply_task_scope(owner, journey, command, graph)
         self._set_mode(journey, command.mode, command.gear.value)
         if command.mode == "learn":
@@ -362,8 +386,8 @@ class JourneyService:
         note_receipt = {"label": note_manifest.label, "notes": [{"noteId": item.note_id, "title": item.title,
             "revision": item.revision, "startOffset": item.start_offset, "endOffset": item.end_offset} for item in note_manifest.notes],
             "totalCharacters": note_manifest.total_characters}
-        sources = retrieve(self.store, owner, sid,
-                           f"{journey['goal']} {command.message} {step['title'] if step else ''} {concept.title if concept else ''}",
+        retrieval_query = command.message if is_conversation else f"{journey['goal']} {command.message} {step['title'] if step else ''} {concept.title if concept else ''}"
+        sources = retrieve(self.store, owner, sid, retrieval_query,
                            metadata_scope={"conceptId": concept_id})
         images = MaterialService(self.store).image_context(owner, sid)
         manifest = save_manifest(self.store, owner, sid, command.message, sources)
@@ -384,7 +408,7 @@ class JourneyService:
                 owner=owner,
                 session_id=sid,
                 learner_message=command.message or "",
-                learning_objective=journey.get("goal") or "",
+                learning_objective="" if is_conversation else journey.get("goal") or "",
                 graph_id=graph.id,
                 source_policy="attached_preferred",
                 materials_insufficient=not bool(sources),
@@ -441,7 +465,8 @@ class JourneyService:
                     active_node = next((n for n in roadmap if n.status == "in_progress"), None)
                     if not active_node:
                         active_node = next((n for n in roadmap if n.status == "planned"), None)
-                    query_terms = set(re.findall(r"[a-z0-9]{4,}", f"{journey['goal']} {command.message} {step['title'] if step else ''}".lower()))
+                    course_query = command.message if is_conversation else f"{journey['goal']} {command.message} {step['title'] if step else ''}"
+                    query_terms = set(re.findall(r"[a-z0-9]{4,}", course_query.lower()))
                     def roadmap_relevance(node):
                         title_terms = set(re.findall(r"[a-z0-9]{4,}", f"{node.title} {node.phase}".lower()))
                         return (5 if node.concept_id == concept_id else 0) + len(query_terms & title_terms) + (2 if node.id == getattr(active_node, "id", None) else 0)
@@ -467,30 +492,70 @@ class JourneyService:
         selection = getattr(command, "selected_text", None)
         from .web_evidence.prompting import evidence_prompt_section
         evidence_section = evidence_prompt_section(web_bundle)
-        prompt_instructions = build_teaching_instructions(
-            profile=context.teaching_profile, task=command.mode, output="journey_markdown",
-            selected_passage=bool(selection), evidence_instruction=evidence_section["instruction"],
-        )
+        if is_conversation:
+            prompt_instructions = build_conversation_instructions(
+                gear=command.gear.value,
+                selected_passage=bool(selection),
+                evidence_instruction=evidence_section["instruction"],
+            )
+        else:
+            prompt_instructions = build_teaching_instructions(
+                profile=context.teaching_profile, task=command.mode, output="journey_markdown",
+                selected_passage=bool(selection), evidence_instruction=evidence_section["instruction"],
+            )
         from .buddy_service import BuddyService
         prompt_instructions += BuddyService(self.store).instructions(owner,sid)
-        context_data = {
-            # Companion preferences are bounded instructions, not learner evidence.
-            "controlDecision": LearningControlPlane.prompt_constraints(control),
-            "sharedContext": (control or {}).get("context", {}).get("text"),
-            "selectedPassage": selection, "selectedLessonId": getattr(command, "selected_lesson_id", None),
-            "selectedBlockId": getattr(command, "selected_block_id", None), "goal": journey["goal"],
-            "step": step, "gear": command.gear.value, "plan": plan.model_dump(mode="json"),
-            "lessonState": lesson_state, "evidence": evidence.model_dump(mode="json"),
-            "assessments": attempts, "sources": sources, "attachedImages": [image.title for image in images],
-            "learnerNotes": note_manifest.model_dump(mode="json"), "course": course_context,
-            "evidenceTools": evidence_section,
-        }
+        if is_conversation:
+            safe_sources = [{key: source.get(key) for key in ("title", "pageLabel", "text") if source.get(key)}
+                            for source in sources]
+            safe_notes = [{"title": item.title, "text": item.text} for item in note_manifest.notes]
+            safe_course = None
+            if course_context:
+                safe_course = {key: course_context.get(key) for key in (
+                    "courseName", "courseGoal", "activeRoadmapNode", "activePhase", "roadmapPosition", "roadmapLength"
+                ) if course_context.get(key) is not None}
+                safe_course["relevantRoadmapNodes"] = [
+                    {key: node.get(key) for key in ("title", "phase", "status") if node.get(key) is not None}
+                    for node in course_context.get("relevantRoadmapNodes", [])
+                ]
+            safe_evidence_tools = {key: value for key, value in evidence_section.items()
+                                   if key != "toolResult"}
+            tool_result = evidence_section.get("toolResult")
+            if isinstance(tool_result, dict):
+                safe_evidence_tools["toolResult"] = {
+                    key: value for key, value in tool_result.items()
+                    if key in {"retrievalOccurred", "evidenceOutcome", "evidence"}
+                }
+            context_data = {
+                "selectedPassage": selection,
+                "gear": command.gear.value,
+                "sources": safe_sources,
+                "learnerNotes": {"notes": safe_notes} if safe_notes else None,
+                "course": safe_course,
+                "attachedImages": [image.title for image in images],
+                "evidenceTools": safe_evidence_tools,
+            }
+        else:
+            context_data = {
+                # Companion preferences are bounded instructions, not learner evidence.
+                "controlDecision": LearningControlPlane.prompt_constraints(control),
+                "sharedContext": (control or {}).get("context", {}).get("text"),
+                "selectedPassage": selection, "selectedLessonId": getattr(command, "selected_lesson_id", None),
+                "selectedBlockId": getattr(command, "selected_block_id", None), "goal": journey["goal"],
+                "step": step, "gear": command.gear.value, "plan": plan.model_dump(mode="json"),
+                "lessonState": lesson_state, "evidence": evidence.model_dump(mode="json"),
+                "assessments": attempts, "sources": sources, "attachedImages": [image.title for image in images],
+                "learnerNotes": note_manifest.model_dump(mode="json"), "course": course_context,
+                "evidenceTools": evidence_section,
+            }
         from .context_engine import ContextBlock, ContextEngine
         priorities = {"goal": 1, "step": 1, "gear": 1, "plan": 1, "lessonState": 1, "selectedPassage": 1,
                       "evidence": 2, "course": 3, "assessments": 4, "sources": 5,
                       "learnerNotes": 5, "evidenceTools": 5, "attachedImages": 5}
-        required_keys = {"controlDecision", "sharedContext", "goal", "step", "gear", "plan", "selectedPassage", "learnerNotes"}
-        if command.mode == "learn":
+        required_keys = {"selectedPassage", "learnerNotes"} if is_conversation else {
+            "controlDecision", "sharedContext", "goal", "step", "gear", "plan", "selectedPassage", "learnerNotes"
+        }
+        if command.mode == "learn" and not is_conversation:
             required_keys.add("lessonState")
         def relevance_score(value):
             return max((float(item.get("relevanceScore") or 0) for item in value if isinstance(item, dict)), default=0.0) if isinstance(value, list) else 0.0
@@ -504,21 +569,24 @@ class JourneyService:
                 for note in (turn.get("noteContext") or {}).get("notes", [])
                 if note.get("noteId")
             }
+            note_query = command.message if is_conversation else f"{journey['goal']} {command.message}"
             auto_notes = retrieve_relevant_notes(
-                self.store, owner, f"{journey['goal']} {command.message}", session.course_id,
+                self.store, owner, note_query, session.course_id,
                 {item.note_id for item in note_manifest.notes},
                 recently_referenced_ids=recently_referenced_notes,
             )
         except Exception:
             auto_notes = []
         if auto_notes:
-            candidates.append(ContextBlock("automaticNotes", auto_notes, "learner_note_search", 6,
+            safe_auto_notes = [{"title": item.get("title"), "text": item.get("text")}
+                               for item in auto_notes] if is_conversation else auto_notes
+            candidates.append(ContextBlock("automaticNotes", safe_auto_notes, "learner_note_search", 6,
                                            relevance_score=relevance_score(auto_notes)))
         configured_budget = getattr(self.provider, "context_input_budget_tokens", 12000)
         input_budget = configured_budget if isinstance(configured_budget, int) and configured_budget > 0 else 12000
         configured_image_reserve = getattr(self.provider, "context_image_token_reserve", 1200)
         image_reserve = configured_image_reserve if isinstance(configured_image_reserve, int) and configured_image_reserve >= 0 else 1200
-        current_message = command.message or (step.get("objective") if step else None) or journey["goal"] or graph.title
+        current_message = command.message if is_conversation else command.message or (step.get("objective") if step else None) or journey["goal"] or graph.title
         engine = ContextEngine(input_budget_tokens=input_budget)
         try:
             generation_context = engine.build_generation_context(
@@ -589,6 +657,7 @@ class JourneyService:
             "prompt": generation_context.legacy_prompt(), "generationContext": generation_context,
             "sources": sources, "noteReceipt": note_receipt, "contextId": manifest["id"], "actionId": context.action_id,
             "images": images, "question": command.message or ("Start learning" if command.action == "start" else "Continue"),
+            "responseKind": "conversation" if is_conversation else "teaching",
             "courseContext": course_context,
             "automaticNoteCount": len(auto_notes),
             "conversationStateVersion": conversation_state["version"],
@@ -622,7 +691,7 @@ class JourneyService:
             ))
         artifact = LessonArtifact(id=uid("lesson"), session_id=prepared["journey"]["sessionId"], concept_id=prepared["conceptId"],
             graph_revision=MaterialService(self.store).session(owner, prepared["journey"]["sessionId"]).graph_revision,
-            gear=command.gear, title=prepared["title"], generated_by=self.provider.provider_name,
+            gear=command.gear, title=prepared["title"], generated_by=prepared.get("generatedBy", self.provider.provider_name),
             blocks=lesson_blocks)
         conn.execute(text("INSERT INTO lesson_artifacts(id,session_id,payload) VALUES(:id,:session,:payload)"), {
             "id": artifact.id, "session": artifact.session_id, "payload": artifact.model_dump_json()})
@@ -631,6 +700,8 @@ class JourneyService:
             "sessionId": journey["sessionId"], "sources": prepared["sources"], "contextId": prepared["contextId"],
             "mode": command.mode, "noteContext": prepared["noteReceipt"], "actionId": prepared["actionId"],
             "transitionSuggestion": prepared.get("transitionSuggestion"), "status": "completed"}
+        if prepared.get("responseKind"):
+            completed["responseKind"] = prepared["responseKind"]
         pending = next((turn for turn in reversed(journey["turns"]) if turn.get("status") == "pending" and turn.get("generationId") == prepared.get("generationId")), None)
         if prepared.get("generationId") and pending is None:
             problem("revision_conflict", "This submitted turn is no longer pending.", 409)

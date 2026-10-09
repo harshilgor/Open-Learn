@@ -159,7 +159,8 @@ def build_learning_router(store_provider, provider_getter):
         session = MaterialService(db).session(owner, sid)
         journey = JourneyService(db, None).get(owner, sid)
         transitions = ModeTransitionService(db)
-        provider = provider_getter() if __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "rules").lower() == "provider" else None
+        classifier = __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid").lower()
+        provider = provider_getter() if classifier in {"provider", "hybrid"} else None
         if command.bypass_suggestion_id:
             if not transitions.valid_bypass(owner, sid, command.bypass_suggestion_id):
                 problem("transition_unavailable", "This transition request has expired.", 409)

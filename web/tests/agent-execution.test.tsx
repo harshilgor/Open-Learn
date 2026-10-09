@@ -40,3 +40,16 @@ it('shows and sends the explicit agent-task maximum',async()=>{
   await act(async()=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
   expect(mocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({capability:'lab_analysis',acceptedUsageCapMicro:50_000_000}),expect.any(String));
 });
+it('resnapshots and replaces stale activity after the server prunes the replay cursor',async()=>{
+  mocks.snapshot.mockResolvedValueOnce({cursor:1,hasMore:false,resnapshotRequired:false,items:[{id:'old',sequence:1,type:'user.message',text:'Old replayed item'}],tasks:[task]})
+    .mockResolvedValueOnce({cursor:4,hasMore:false,resnapshotRequired:true,prunedThrough:3,items:[],tasks:[task]})
+    .mockResolvedValueOnce({cursor:4,hasMore:false,resnapshotRequired:false,prunedThrough:3,items:[{id:'new',sequence:4,type:'user.message',text:'Fresh item'}],tasks:[task]});
+  await mount();
+  expect(container.textContent).toContain('Old replayed item');
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(1,'session',undefined);
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(2,'session',1);
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(3,'session');
+  expect(container.textContent).toContain('Fresh item');
+  expect(container.textContent).not.toContain('Old replayed item');
+});

@@ -132,6 +132,9 @@ def test_cloud_request_guard_allows_public_navigation_but_blocks_private_and_mut
     assert private.action=='aborted' and blocked==[]
 
     mutation=Route(Request('https://example.com/submit',method='POST'))
+    # A configuration value alone cannot bypass the read-only executor; a
+    # future write path must authorize the exact action before dispatch.
+    monkeypatch.setenv('OPENLEARN_BROWSER_WRITES_ENABLED','true')
     assert guard_browser_request(mutation,connection) is False
     assert mutation.action=='aborted'
 

@@ -42,7 +42,10 @@ def monitor_usage_if_due(store, now=None):
     _last_usage_monitor = now
     from .usage.ledger import Ledger
     try:
-        return Ledger(store).monitor()
+        result = Ledger(store).monitor()
+        from .usage.admin_ops import UsageAdmin
+        UsageAdmin(store).emit_operations_alerts()
+        return result
     except Exception as exc:
         log.warning("Usage health monitor iteration failed (%s)", type(exc).__name__)
         return None

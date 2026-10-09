@@ -2,6 +2,7 @@
 
 import { useId } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { Sparkles } from 'lucide-react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import styles from './web-research-activity.module.css';
 
@@ -17,6 +18,9 @@ export type AgentActivity =
     }
   | {
       type: 'writing';
+    }
+  | {
+      type: 'visualizing';
     }
   | null;
 
@@ -265,6 +269,19 @@ function WritingVisual({ reduceMotion }: { reduceMotion: boolean | null }) {
   );
 }
 
+function VisualizingVisual({ reduceMotion }: { reduceMotion: boolean | null }) {
+  return (
+    <div className={styles.visualWrapper} aria-hidden="true">
+      <motion.div
+        animate={reduceMotion ? undefined : { rotate: [0, 12, -12, 0], scale: [1, 1.08, 1] }}
+        transition={reduceMotion ? undefined : { duration: 1.8, repeat: Infinity, ease: 'easeInOut' }}
+      >
+        <Sparkles size={22} strokeWidth={1.7} />
+      </motion.div>
+    </div>
+  );
+}
+
 export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
   const reduceMotion = useAppReducedMotion();
 
@@ -281,13 +298,15 @@ export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
       accessibleStatus = `Searching the web. ${activity.sourceCount} source${activity.sourceCount === 1 ? '' : 's'} found.`;
     } else {
       accessibleStatus = activity.query
-        ? `Searching the web for ${activity.query}. Finding reliable sources.`
-        : 'Searching the web. Finding reliable sources.';
+        ? `Searching the web for ${activity.query}.`
+        : 'Searching the web.';
     }
   } else if (activity.type === 'synthesizing') {
     accessibleStatus = 'Synthesizing findings into your lesson.';
   } else if (activity.type === 'writing') {
     accessibleStatus = 'Writing your explanation.';
+  } else if (activity.type === 'visualizing') {
+    accessibleStatus = 'Planning a visual to explain this.';
   }
 
   return (
@@ -313,6 +332,7 @@ export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
       )}
       {activity.type === 'synthesizing' && <SynthesizingVisual reduceMotion={reduceMotion} />}
       {activity.type === 'writing' && <WritingVisual reduceMotion={reduceMotion} />}
+      {activity.type === 'visualizing' && <VisualizingVisual reduceMotion={reduceMotion} />}
 
       {/* Label and detailed progress text */}
       <div className={styles.textGroup}>
@@ -335,10 +355,10 @@ export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
               </div>
               <p className={styles.subtitle}>
                 {activity.sourceCount > 0
-                  ? `${activity.sourceCount} reliable source${activity.sourceCount === 1 ? '' : 's'} identified…`
+                  ? `${activity.sourceCount} source${activity.sourceCount === 1 ? '' : 's'} found…`
                   : activity.query
                   ? `“${activity.query}”`
-                  : 'Finding reliable sources…'}
+                  : 'Finding relevant sources…'}
               </p>
             </motion.div>
           )}
@@ -361,7 +381,7 @@ export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
               </div>
               <p className={styles.subtitle}>
                 {activity.sourceCount > 0
-                  ? `${activity.sourceCount} reliable sources gathered`
+                  ? `${activity.sourceCount} relevant sources gathered`
                   : 'Sources reviewed'}
               </p>
             </motion.div>
@@ -409,6 +429,19 @@ export function WebResearchActivity({ activity }: { activity: AgentActivity }) {
                 <span>Writing your explanation…</span>
               </div>
               <p className={styles.subtitle}>Crafting step-by-step guidance</p>
+            </motion.div>
+          )}
+
+          {activity.type === 'visualizing' && (
+            <motion.div
+              key="visualizing"
+              initial={reduceMotion ? false : { opacity: 0, y: 3 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? undefined : { opacity: 0, y: -3 }}
+              transition={{ duration: 0.18 }}
+            >
+              <div className={styles.titleRow}><span>Planning a visual…</span></div>
+              <p className={styles.subtitle}>Adding a visual aid to the explanation</p>
             </motion.div>
           )}
         </AnimatePresence>

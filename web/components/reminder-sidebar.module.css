@@ -1,0 +1,27 @@
+.panel { padding: 10px 2px 24px; color: var(--sidebar-foreground); }
+.header { display: flex; align-items: center; gap: 10px; padding: 12px 10px 16px; }
+.header h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.header p { margin: 4px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.45; }
+.icon { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 10px; color: var(--foreground); background: var(--sidebar-accent); }
+.section { padding: 14px 8px 4px; border-top: 1px solid var(--sidebar-border); }
+.sectionHeading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.sectionHeading h3 { margin: 0; font-size: 12px; font-weight: 650; }
+.sectionHeading > span { color: var(--muted-foreground); font-size: 11px; }
+.list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.card { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 11px 10px; border: 1px solid var(--sidebar-border); border-radius: 11px; background: var(--background); }
+.copy { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.copy strong { font-size: 12px; line-height: 1.4; font-weight: 600; overflow-wrap: anywhere; }
+.copy > span { color: var(--muted-foreground); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.copy small { color: var(--muted-foreground); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.switch { position: relative; width: 38px; height: 22px; flex: none; padding: 2px; border: 0; border-radius: 999px; background: #747b76; cursor: pointer; transition: background .16s ease; }
+.switch > span { display: block; width: 18px; height: 18px; border-radius: 999px; background: white; box-shadow: 0 1px 2px #0003; transition: transform .16s ease; }
+.switchOn { background: #18836f; }
+.switchOn > span { transform: translateX(16px); }
+.switch:focus-visible, .courseLink:focus-visible, .error button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.switch:disabled { opacity: .55; cursor: wait; }
+.reminderIcon { flex: none; color: var(--muted-foreground); }
+.courseLink { flex: none; padding: 6px 8px; border: 1px solid var(--sidebar-border); border-radius: 7px; background: var(--card); color: var(--foreground); font-size: 10px; cursor: pointer; }
+.empty, .state { margin: 0; padding: 10px 4px; color: var(--muted-foreground); font-size: 11px; line-height: 1.55; }
+.error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 8px 10px; padding: 9px; border: 1px solid var(--destructive); border-radius: 9px; color: var(--destructive); font-size: 11px; overflow-wrap: anywhere; }
+.error button { display: grid; place-items: center; min-width: 32px; min-height: 32px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; }
+.footnote { margin: 14px 10px 0; color: var(--muted-foreground); font-size: 10px; line-height: 1.5; }

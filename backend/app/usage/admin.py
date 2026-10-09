@@ -33,6 +33,9 @@ def main(argv=None):
     _operator_arguments(reconcile)
     alerts = commands.add_parser('alerts', help='List recent unacknowledged provider-liability alerts.')
     alerts.add_argument('--limit', type=int, default=100)
+    operations = commands.add_parser('operations', help='Read redacted queue, lease, delivery, and cleanup metrics.')
+    operations.add_argument('--stale-queue-seconds', type=int, default=300)
+    operations.add_argument('--stale-dispatch-seconds', type=int, default=90)
     ack = commands.add_parser('ack-alert', help='Acknowledge one alert with a durable operator audit record.')
     ack.add_argument('alert_id')
     _operator_arguments(ack)
@@ -65,6 +68,9 @@ def main(argv=None):
         _print(admin.reconcile(actor=args.actor, reason=args.reason, idempotency_key=args.idempotency_key))
     elif args.command == 'alerts':
         _print(admin.open_alerts(args.limit))
+    elif args.command == 'operations':
+        _print(admin.operations_snapshot(stale_queue_seconds=args.stale_queue_seconds,
+                                         stale_dispatch_seconds=args.stale_dispatch_seconds))
     elif args.command == 'ack-alert':
         _print(admin.acknowledge_alert(args.alert_id, actor=args.actor, reason=args.reason,
                                        idempotency_key=args.idempotency_key))

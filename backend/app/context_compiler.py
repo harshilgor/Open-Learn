@@ -10,6 +10,11 @@ from .source_memory import SourceMemory
 from .shared_contracts import Contract, Identifier
 
 
+class OperationalNoteRef(Contract):
+    id: Identifier
+    revision: int = Field(ge=1)
+
+
 class ContextCompileRequest(Contract):
     """Validated purpose, scope, and budget passed to the shared compiler."""
     purpose: Literal['teaching','assessment','readiness','planning','execution','coordination']
@@ -17,6 +22,7 @@ class ContextCompileRequest(Contract):
     session_id: Identifier | None = None
     course_id: Identifier | None = None
     required_source_ids: tuple[Identifier,...] = Field(default=(),max_length=100)
+    operational_note_refs: tuple[OperationalNoteRef,...] = Field(default=(),alias='operationalNoteRefs',max_length=20)
     target_concept_ids: tuple[Identifier,...] = Field(default=(),max_length=100)
     token_budget: int = Field(default=12_000,ge=1,le=128_000)
     reserve_output_tokens: int = Field(default=2_000,ge=0)
@@ -65,13 +71,14 @@ class ContextCompiler:
         # Conservative UTF-8 bound, configurable provider tokenizer can replace it.
         return max(1,len(value.encode('utf-8')))
 
-    def compile(self,owner,session_id,purpose,request,*,required_source_ids=(),token_budget=12000,quiz_scope=None,course_id=None,target_concept_ids=(),reserve_output_tokens=2000,expected_revisions=None):
+    def compile(self,owner,session_id,purpose,request,*,required_source_ids=(),operational_note_refs=(),token_budget=12000,quiz_scope=None,course_id=None,target_concept_ids=(),reserve_output_tokens=2000,expected_revisions=None):
         command=ContextCompileRequest.model_validate({'purpose':purpose,'request':request,'session_id':session_id,
-            'required_source_ids':required_source_ids,'token_budget':token_budget,'quiz_scope':quiz_scope,
+            'required_source_ids':required_source_ids,'operationalNoteRefs':operational_note_refs,'token_budget':token_budget,'quiz_scope':quiz_scope,
             'course_id':course_id,'target_concept_ids':target_concept_ids,
             'reserve_output_tokens':reserve_output_tokens,'expected_revisions':expected_revisions})
         purpose,request,session_id=command.purpose,command.request,command.session_id
         required_source_ids,token_budget,quiz_scope=command.required_source_ids,command.token_budget,command.quiz_scope
+        operational_note_refs=tuple(ref.model_dump() for ref in command.operational_note_refs)
         course_id,target_concept_ids=command.course_id,command.target_concept_ids
         reserve_output_tokens,expected_revisions=command.reserve_output_tokens,command.expected_revisions
         if session_id:
@@ -169,8 +176,8 @@ class ContextCompiler:
                     cost+=amount
                     if dependency and dependency not in dependencies: dependencies.append(dependency)
             candidates=SourceMemory(self.store).retrieve(conn,owner,request,course_id,required_source_ids,purpose=purpose)
-            candidates+=self.legacy_sources(conn,owner,course_id,request,required_source_ids,purpose=purpose)
-            required=set(required_source_ids); available={c['sourceId'] for c in candidates}
+            candidates+=self.legacy_sources(conn,owner,course_id,request,required_source_ids,purpose=purpose,session_id=session_id,operational_note_refs=operational_note_refs)
+            required=set(required_source_ids)|{ref['id'] for ref in operational_note_refs}; available={c['sourceId'] for c in candidates}
             if required-available: status='insufficient_context'; omissions.extend({'id':s,'reason':'required_source_unavailable'} for s in sorted(required-available))
             # Round robin across sources retains primary-source diversity.
             groups={}
@@ -204,7 +211,7 @@ class ContextCompiler:
             return packet
 
     @staticmethod
-    def legacy_sources(conn,owner,course,query,required,purpose='teaching'):
+    def legacy_sources(conn,owner,course,query,required,purpose='teaching',session_id=None,operational_note_refs=()):
         terms=set(re.findall(r'\w+',query.lower())); candidates=[]
         def add(sid,revision,content,kind,dep,metadata=None):
             sha=hashlib.sha256(content.encode()).hexdigest()
@@ -236,6 +243,25 @@ class ContextCompiler:
             add(row['recording_id'],row['generation_version']+1,row['normalized_text'],'lecture',{'kind':'lecture_segment','record_id':row['id'],'revision':max(row['normalization_version'],row['transcription_version']),'sha256':hashlib.sha256(row['normalized_text'].encode()).hexdigest()},{'segmentId':row['id'],'startMs':row['start_ms'],'endMs':row['end_ms']})
         for row in conn.execute(text('SELECT b.*,v.version FROM material_blocks b JOIN material_versions v ON v.id=b.version_id JOIN materials m ON m.id=v.material_id WHERE m.owner_id=:owner AND m.deleted=false AND (CAST(:course AS VARCHAR) IS NULL OR m.course_id=:course) AND v.version=(SELECT MAX(v2.version) FROM material_versions v2 WHERE v2.material_id=m.id)'),params).mappings():
             add(row['version_id'],row['version'],row['text'],'material',{'kind':'material_version','record_id':row['version_id'],'revision':row['version'],'blockId':row['id'],'sha256':hashlib.sha256(row['text'].encode()).hexdigest()},{'blockId':row['id'],'pageIndex':row['page_index']})
+        if operational_note_refs:
+            if purpose not in {'execution','coordination'}:
+                fail('context_scope_denied','Operational instructions are available only to execution context.',403)
+            if not session_id:
+                fail('context_session_required','Execution notes require a conversation scope.',422)
+            seen=set()
+            for ref in operational_note_refs:
+                identifier,expected_revision=ref['id'],ref['revision']
+                if identifier in seen: continue
+                seen.add(identifier)
+                row=conn.execute(text('SELECT n.revision,n.payload,r.session_id,r.course_id FROM agent_operational_notes n JOIN agent_responsibilities r ON r.id=n.responsibility_id AND r.owner_id=n.owner_id WHERE n.owner_id=:owner AND n.id=:id'),{'owner':owner,'id':identifier}).mappings().first()
+                if row is None or row['session_id']!=session_id or course and row['course_id']!=course:
+                    fail('context_source_unavailable','An operational note is unavailable in this conversation.',409)
+                if row['revision']!=expected_revision:
+                    fail('context_source_changed','An operational note changed; refresh execution context.',409)
+                content=json.loads(row['payload']).get('text','')
+                for block in SourceMemory.blocks(content):
+                    candidates.append({**block,'sourceId':identifier,'revision':row['revision'],'kind':'operational_note','score':1,'required':True,
+                                       'dependency':{'kind':'agent_operational_note','record_id':identifier,'revision':row['revision']}})
         # Conversation snapshots are deliberately absent here. Quiz context
         # should come from assigned notes/material and lecture intervals.
         return sorted(candidates,key=lambda c:(not c.get('required',False),-c['score']))
@@ -267,6 +293,7 @@ class ContextCompiler:
             elif dep['kind']=='conversation_state': sql="SELECT sequence FROM context_records WHERE owner_id=:owner AND id=:id AND kind='conversation_state'"
             elif dep['kind']=='concept_graph': sql='SELECT revision FROM concept_graph_revisions WHERE owner_id=:owner'
             elif dep['kind']=='derived_memory': sql='SELECT 1 FROM memory_derived WHERE owner_id=:owner AND id=:id AND valid=true'
+            elif dep['kind']=='agent_operational_note': sql='SELECT revision FROM agent_operational_notes WHERE owner_id=:owner AND id=:id'
             else: fail('unknown_context_dependency','Cannot verify this context dependency.',409)
             revision=conn.execute(text(sql),{'owner':owner,'id':dep['record_id']}).scalar_one_or_none()
             if revision!=dep['revision']: fail('context_source_changed','A source changed or was removed during generation.',409)

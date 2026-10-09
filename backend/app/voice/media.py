@@ -47,8 +47,12 @@ async def dispatch(sid, capability, expires_at):
         'empty_timeout': 60,
         'departure_timeout': 90,
         'max_participants': 2,
-        'agents': [{'agent_name': 'openlearn-voice', 'metadata': json.dumps({'sessionId': sid, 'capability': capability, 'expiresAt': expires_at})}],
+        'agents': [{'agent_name': configured_agent_name(), 'metadata': json.dumps({'sessionId': sid, 'capability': capability, 'expiresAt': expires_at})}],
     })
+
+
+def configured_agent_name():
+    return os.getenv('OPENLEARN_VOICE_AGENT_NAME', 'openlearn-voice')
 
 
 async def close(sid):

@@ -34,7 +34,7 @@ function Get-LoopbackPortOwners([int]$Port) {
 }
 
 if (-not (Test-LocalService 'http://127.0.0.1:8000/health')) {
-    $api = Start-Process -FilePath $runtime -ArgumentList @('-m', 'uvicorn', 'backend.app.main:app', '--host', '127.0.0.1', '--port', '8000') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logRoot 'api.log') -RedirectStandardError (Join-Path $logRoot 'api-error.log')
+    $api = Start-Process -FilePath $runtime -ArgumentList @('backend/scripts/run_local_api.py') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logRoot 'api.log') -RedirectStandardError (Join-Path $logRoot 'api-error.log')
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         if (Test-LocalService 'http://127.0.0.1:8000/health') { $ready = $true; break }

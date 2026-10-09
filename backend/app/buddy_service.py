@@ -132,6 +132,12 @@ class BuddyService:
         # Only validated finite preference values enter model instructions; names stay presentation data.
         return '\nCommunication preferences only (retain all teaching, evidence, and permission rules): use a '+profile['style']+' tone. '+('Prefer concise explanations. ' if profile['concise'] else 'Allow developed explanations. ')+('Use relevant examples. ' if profile['examples'] else '')+('For ordinary answers, converse naturally and prioritize useful next steps; provide detail when requested.' if presentation=='conversation' else 'For Ask, provide developed, structured responses when useful.' if presentation=='ask' else '')
 
+    def presentation(self, owner, session):
+        """Return the saved, owner-scoped presentation for response routing."""
+        with self.store.engine.connect() as conn:
+            value=conn.execute(text('SELECT presentation FROM buddy_chats WHERE id=:id AND owner_id=:owner'), {'id':session,'owner':owner}).scalar_one_or_none()
+        return value if value in {'conversation','ask','learn','quiz'} else 'ask'
+
     def mode(self, owner, session, mode):
         with self.store.transaction() as conn:
             if not conn.execute(text('SELECT 1 FROM learning_sessions WHERE id=:id AND learner_id=:owner'), {'id':session,'owner':owner}).first():fail('session_not_found','Conversation unavailable.',404)

@@ -1,7 +1,12 @@
 """Shared, versioned conversational capability selection; decisions grant no authority."""
+import logging
 import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict
+from ..classification.config import min_score, rollout_mode, should_sample_shadow
+from ..classification.service import ClassificationService
+
+logger = logging.getLogger(__name__)
 
 PUBLIC_SITES = {
     'youtube': 'https://www.youtube.com', 'github': 'https://github.com',
@@ -16,7 +21,7 @@ URL = re.compile(r'https://[^\s<>"\)]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>"\)
 class AdmissionPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: Literal['conversation-admission-v1'] = 'conversation-admission-v1'
-    kind: Literal['direct', 'browser', 'research', 'analysis', 'flashcards', 'reminder', 'control', 'connected_action', 'memory', 'responsibility']
+    kind: Literal['direct', 'browser', 'research', 'analysis', 'flashcards', 'reminder', 'control', 'connected_action', 'calendar_read', 'memory', 'responsibility']
     source_url: str | None = None
     source_alias: str | None = None
     action: Literal['pause', 'resume', 'cancel'] | None = None
@@ -30,6 +35,17 @@ def plan_message(message: str) -> AdmissionPlan:
     """
     value = message.strip()
     lower = value.lower()
+    calendar_subject = re.search(r'\b(?:my|the)?\s*(?:google\s+)?(?:calendar|schedule|meetings?|events?)\b', lower)
+    calendar_read = re.search(
+        r"\b(?:what(?:'s| is) on|show|list|check|read|find|summari[sz]e|look at|look through|go through|review)\b.{0,60}\b(?:(?:my|the)\s+)?(?:google\s+)?(?:calendar|schedule|meetings?|events?)\b|"
+        r"\bwhat(?:'s| is)\s+(?:my|the)\s+(?:google\s+)?(?:calendar|schedule|meetings?|events?)\b|"
+        r"\bwhat\s+(?:meetings?|events?)\s+do\s+i\s+have\b|"
+        r"\b(?:do i have|am i)\b.{0,40}\b(?:meetings?|events?)\b",
+        lower,
+    )
+    calendar_write = re.search(r'\b(?:create|add|update|delete|remove|cancel|move|reschedule)\b|\bschedule\s+(?:(?:a|an|the|my)\s+)?(?:meetings?|events?|appointments?|classes?)\b', lower)
+    if calendar_subject and calendar_read and not calendar_write:
+        return AdmissionPlan(kind='calendar_read')
     if re.match(r'^(?:explain|teach me|tell me how|show me how|what is|what are|how (?:do|does))\b', lower):
         return AdmissionPlan(kind='direct')
     if re.match(r'^(?:please\s+)?remember that\s+', lower):
@@ -62,3 +78,54 @@ def plan_message(message: str) -> AdmissionPlan:
     if re.search(r'\b(?:send|draft|compose)\b.*\b(?:email|gmail)\b|\b(?:create|add|update)\b.*\b(?:calendar event|meeting)\b', lower):
         return AdmissionPlan(kind='connected_action')
     return AdmissionPlan(kind='direct')
+
+
+def classify_message(message: str, *, context: dict | None = None) -> AdmissionPlan:
+    """Route free text semantically through JEV, with deterministic fallback.
+
+    Exact local control commands remain deterministic. A JEV label can select an
+    existing capability, but never grants authority to execute it.
+    """
+    fallback = plan_message(message)
+    if fallback.kind in {'control', 'calendar_read'}:
+        return fallback
+    mode = rollout_mode('turn_route')
+    if mode == 'off' or mode == 'shadow' and not should_sample_shadow('turn_route', message):
+        return fallback
+    try:
+        decision = ClassificationService().turn_route(message, context=context)
+    except Exception as exc:
+        # Route safely using the existing deterministic classifier if JEV is
+        # unavailable, invalid, or not metered.
+        logger.info('classification_fallback', extra={
+            'classification_contract':'turn_route', 'classification_error':type(exc).__name__,
+        })
+        return fallback
+    if mode == 'shadow':
+        return fallback
+    threshold = min_score('turn_route', decision.value, default=0.82)
+    if decision.score < threshold:
+        return fallback
+    if decision.value == 'none':
+        return AdmissionPlan(kind='direct')
+    kind = {
+        'direct_answer': 'direct', 'learn': 'direct', 'quiz': 'direct',
+        'browser_academic': 'browser', 'research': 'research', 'data_analysis': 'analysis',
+        'flashcards': 'flashcards', 'reminder': 'reminder', 'memory': 'memory',
+        'responsibility': 'responsibility',
+    }.get(decision.value)
+    if not kind:
+        return fallback
+    if kind == 'browser':
+        parsed = fallback if fallback.kind == 'browser' else None
+        if parsed is None:
+            url = URL.search(message)
+            source_url = None
+            if url:
+                raw_url = url.group().rstrip('.,;!?')
+                source_url = raw_url if raw_url.lower().startswith('https://') else 'https://' + raw_url
+            named = next((name for name in PUBLIC_SITES if re.search(r'\b' + name + r'\b', message, re.I)), None)
+            parsed = AdmissionPlan(kind='browser', source_url=source_url or PUBLIC_SITES.get(named),
+                                   source_alias=None if source_url or named else None)
+        return parsed
+    return AdmissionPlan(kind=kind)
