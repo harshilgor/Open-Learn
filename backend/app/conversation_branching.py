@@ -200,7 +200,7 @@ class ConversationBranchStore:
                                "messageId": client_message_id})
         if target_id and target_status not in {"completed", "failed", "cancelled", "interrupted"}:
             changed = connection.execute(text("""
-                UPDATE generation_records SET cancellation_requested=1,
+                UPDATE generation_records SET cancellation_requested=TRUE,
                     status=CASE WHEN status='queued' THEN 'cancelled'
                                 WHEN status IN ('preparing','streaming','finalizing') THEN 'cancel_requested'
                                 ELSE status END,updated_at=:now
