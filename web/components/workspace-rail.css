@@ -17,3 +17,12 @@
 
 .rail-account>div{display:none}
 @media(max-width:1023px){.forma-app-shell .mobile-chat-header .buddy-header{padding:0;gap:0}.forma-app-shell .mobile-chat-header .buddy-header>button:not(.buddy-mobile-switch){display:none}.forma-app-shell .mobile-chat-header .buddy-mobile-switch{min-height:32px}.forma-app-shell .mobile-chat-header .buddy-mobile-switch strong{max-width:100px;font-size:13px}.forma-app-shell .mobile-chat-header .buddy-avatar{width:24px;height:24px;font-size:16px}.forma-app-shell .mobile-chat-header .mobile-header-title{flex:1}.forma-app-shell .mobile-chat-header .mobile-header-title>strong{font-size:11px;max-width:140px}.forma-app-shell .mobile-chat-header{gap:2px}}
+
+/* Companions stand freely in the rail; selection is a small side marker. */
+.workspace-rail .rail-buddy>button:not(.rail-history-toggle){width:52px;height:52px;border:0;border-radius:0;background:transparent;box-shadow:none;outline:none}
+.workspace-rail .rail-buddy>button:not(.rail-history-toggle):hover,.workspace-rail .rail-buddy>button:not(.rail-history-toggle)[aria-pressed=true]{background:transparent;box-shadow:none;outline:none}
+.workspace-rail .rail-buddy>button:not(.rail-history-toggle):focus-visible{outline:2px solid var(--ring);outline-offset:2px;border-radius:6px}
+.workspace-rail .rail-buddy>button:not(.rail-history-toggle)[aria-pressed=true]::before{content:"";position:absolute;left:-6px;top:24px;width:4px;height:4px;border-radius:50%;background:var(--ring)}
+.workspace-rail .rail-buddy .buddy-avatar{width:48px;height:48px;border:0;border-radius:0;background:transparent}
+.workspace-rail .rail-history-toggle{border:0;background:transparent;box-shadow:none;right:-3px;bottom:-2px}
+.workspace-rail .rail-history-toggle:hover{background:transparent;color:var(--ring)}
