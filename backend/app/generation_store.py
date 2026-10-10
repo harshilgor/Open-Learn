@@ -297,12 +297,12 @@ class GenerationStore:
         transition_values = {**values, "previous": current}
         if owner_token is not None:
             transition_values["owner_token"] = owner_token
-            ownership_clause += " AND capacity_reserved=1 AND lease_expires_at>:now"
+            ownership_clause += " AND capacity_reserved=TRUE AND lease_expires_at>:now"
         if status == "failed":
             # A durable Stop request wins a race against provider/error handling.
             # Recheck in the UPDATE predicate so a concurrent cancellation cannot
             # be overwritten after the row was initially read above.
-            ownership_clause += " AND cancellation_requested=0"
+            ownership_clause += " AND cancellation_requested=FALSE"
         updated = connection.execute(text(f"""
             UPDATE generation_records SET status=:status,updated_at=:now,error_code=:error,
                 sequence=:sequence,result=:result WHERE id=:id AND status=:previous{ownership_clause}
@@ -364,7 +364,7 @@ class GenerationStore:
                 return None
             claimed = connection.execute(text("""
                 UPDATE generation_records SET status='preparing',owner_token=:token,
-                    owner_fence=owner_fence+1,lease_expires_at=:expires,capacity_reserved=1,
+                    owner_fence=owner_fence+1,lease_expires_at=:expires,capacity_reserved=TRUE,
                     provider=COALESCE(:provider,provider),model=COALESCE(:model,model),updated_at=:now
                 WHERE id=:id AND status='queued'
             """), {"token": owner_token, "expires": now + lease_seconds, "now": now,
@@ -390,7 +390,7 @@ class GenerationStore:
                                  self._capacity_id(row["owner_id"], row["session_id"]), now)
         self._decrement_capacity(connection, "global", "deployment", now)
         connection.execute(text("""
-            UPDATE generation_records SET capacity_reserved=0,lease_expires_at=NULL
+            UPDATE generation_records SET capacity_reserved=FALSE,lease_expires_at=NULL
             WHERE id=:id
         """), {"id": row["id"]})
 
@@ -399,9 +399,9 @@ class GenerationStore:
         with self.store.transaction() as connection:
             result = connection.execute(text("""
                 UPDATE generation_records SET lease_expires_at=:expires,updated_at=:now
-                WHERE id=:id AND owner_token=:token AND capacity_reserved=1
+                WHERE id=:id AND owner_token=:token AND capacity_reserved=TRUE
                     AND lease_expires_at>:now
-                    AND cancellation_requested=0
+                    AND cancellation_requested=FALSE
                     AND status IN ('preparing','streaming','finalizing')
             """), {"id": generation_id, "token": owner_token, "expires": now + lease_seconds, "now": now})
             return result.rowcount == 1
@@ -414,7 +414,7 @@ class GenerationStore:
                 UPDATE generation_records SET partial_output=COALESCE(partial_output,'')||:output,
                     output_seq=CASE WHEN :sequence IS NULL THEN output_seq+1 ELSE :sequence END,
                     lease_expires_at=:expires,updated_at=:now
-                WHERE id=:id AND owner_token=:token AND capacity_reserved=1 AND lease_expires_at>:now
+                WHERE id=:id AND owner_token=:token AND capacity_reserved=TRUE AND lease_expires_at>:now
                     AND status IN ('streaming','finalizing')
             """), {"id": generation_id, "token": owner_token, "output": output,
                    "sequence": output_sequence, "expires": now + lease_seconds, "now": now})
@@ -427,13 +427,13 @@ class GenerationStore:
         with self.store.transaction() as connection:
             rows = connection.execute(text("""
                 SELECT * FROM generation_records
-                WHERE capacity_reserved=1 AND lease_expires_at IS NOT NULL AND lease_expires_at<=:now
+                WHERE capacity_reserved=TRUE AND lease_expires_at IS NOT NULL AND lease_expires_at<=:now
                     AND status IN ('preparing','streaming','finalizing','cancel_requested')
             """), {"now": now}).mappings().all()
             for row in rows:
                 changed = connection.execute(text("""
                     UPDATE generation_records SET status='interrupted',error_code='STREAM_INTERRUPTED',
-                        capacity_reserved=0,lease_expires_at=NULL,updated_at=:now
+                        capacity_reserved=FALSE,lease_expires_at=NULL,updated_at=:now
                     WHERE id=:id AND owner_token=:token AND lease_expires_at<=:now
                         AND status IN ('preparing','streaming','finalizing','cancel_requested')
                 """), {"id": row["id"], "token": row["owner_token"], "now": now})
@@ -461,14 +461,14 @@ class GenerationStore:
         with self.store.transaction() as connection:
             rows = connection.execute(text("""
                 SELECT * FROM generation_records
-                WHERE owner_token IS NULL AND capacity_reserved=0
+                WHERE owner_token IS NULL AND capacity_reserved=FALSE
                     AND status IN ('preparing','streaming','finalizing','cancel_requested')
             """)).mappings().all()
             for row in rows:
                 changed = connection.execute(text("""
                     UPDATE generation_records SET status='interrupted',error_code='STREAM_INTERRUPTED',
                         lease_expires_at=NULL,updated_at=:now
-                    WHERE id=:id AND owner_token IS NULL AND capacity_reserved=0
+                    WHERE id=:id AND owner_token IS NULL AND capacity_reserved=FALSE
                         AND status IN ('preparing','streaming','finalizing','cancel_requested')
                 """), {"id": row["id"], "now": now})
                 if changed.rowcount != 1:
@@ -507,7 +507,7 @@ class GenerationStore:
             if state["status"] in TERMINAL:
                 return state
             already_requested = state["cancellationRequested"]
-            conn.execute(text("UPDATE generation_records SET cancellation_requested=1,status=CASE WHEN status IN ('queued','preparing','streaming','finalizing') THEN 'cancel_requested' ELSE status END,updated_at=:now WHERE id=:id"), {"id": generation_id, "now": time.time()})
+            conn.execute(text("UPDATE generation_records SET cancellation_requested=TRUE,status=CASE WHEN status IN ('queued','preparing','streaming','finalizing') THEN 'cancel_requested' ELSE status END,updated_at=:now WHERE id=:id"), {"id": generation_id, "now": time.time()})
             updated = self._row(conn.execute(text("SELECT * FROM generation_records WHERE id=:id"), {"id": generation_id}).mappings().one())
             if not already_requested:
                 ConversationBranchStore(self.store).append_cancel_event(conn, owner, state["session"], generation_id)
@@ -527,7 +527,7 @@ class GenerationStore:
         query = "SELECT payload FROM generation_records WHERE id=:id"
         params = {"id": generation_id}
         if owner_token is not None:
-            query += " AND owner_token=:token AND capacity_reserved=1 AND lease_expires_at>:now"
+            query += " AND owner_token=:token AND capacity_reserved=TRUE AND lease_expires_at>:now"
             params.update({"token": owner_token, "now": time.time()})
         row = connection.execute(text(query), params).first()
         if not row:
@@ -538,7 +538,7 @@ class GenerationStore:
         query = "UPDATE generation_records SET payload=:payload,updated_at=:now WHERE id=:id"
         params = {"id": generation_id, "payload": _json(payload), "now": time.time()}
         if owner_token is not None:
-            query += " AND owner_token=:token AND capacity_reserved=1 AND lease_expires_at>:now"
+            query += " AND owner_token=:token AND capacity_reserved=TRUE AND lease_expires_at>:now"
             params["token"] = owner_token
             params["now"] = time.time()
         updated = connection.execute(text(query), params)
@@ -573,15 +573,15 @@ class GenerationStore:
             if allow_cancelled_checkpoint and event_type != "text.delta":
                 raise ValueError("Only a final text checkpoint may be written after cancellation.")
             if allow_cancelled_checkpoint:
-                ownership_clause += " AND capacity_reserved=1 AND lease_expires_at>:now"
-                ownership_clause += " AND status='cancel_requested' AND cancellation_requested=1"
+                ownership_clause += " AND capacity_reserved=TRUE AND lease_expires_at>:now"
+                ownership_clause += " AND status='cancel_requested' AND cancellation_requested=TRUE"
             elif event_type in {"generation.completed", "generation.cancelled", "generation.error", "generation.interrupted"}:
                 ownership_clause += " AND status IN ('completed','cancelled','failed','interrupted')"
             elif event_type == "generation.cancel_requested":
-                ownership_clause += " AND status='cancel_requested' AND capacity_reserved=1"
+                ownership_clause += " AND status='cancel_requested' AND capacity_reserved=TRUE"
             else:
-                ownership_clause += " AND capacity_reserved=1 AND lease_expires_at>:now"
-                ownership_clause += " AND status IN ('preparing','streaming','finalizing') AND cancellation_requested=0"
+                ownership_clause += " AND capacity_reserved=TRUE AND lease_expires_at>:now"
+                ownership_clause += " AND status IN ('preparing','streaming','finalizing') AND cancellation_requested=FALSE"
         if event_type == "text.delta" and isinstance((data or {}).get("text"), str):
             values["text"] = (data or {})["text"]
             row = connection.execute(text(f"""
@@ -606,7 +606,7 @@ class GenerationStore:
     def validate_owner(self, connection, generation_id: str, owner_token: str) -> dict:
         row = connection.execute(text("""
             SELECT * FROM generation_records WHERE id=:id AND owner_token=:token
-                AND capacity_reserved=1 AND lease_expires_at>:now
+                AND capacity_reserved=TRUE AND lease_expires_at>:now
         """), {"id": generation_id, "token": owner_token, "now": time.time()}).mappings().first()
         if not row:
             raise StaleGenerationWrite("Generation ownership lease was lost")
