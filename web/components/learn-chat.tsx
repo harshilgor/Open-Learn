@@ -1099,7 +1099,11 @@ export function LearnChat({
         catch { setError('This tab is out of date. Reload to continue.'); }
       } else {
         try { applyJourney(await getJourney(sid)); }
-        catch { setTurns(current => current.map(turn => turn.generationId === streamId ? { ...turn, connectionLost: true, activity: undefined, progress: undefined } : turn)); }
+        catch { setTurns(current => current.map(turn => {
+          if (turn.generationId !== streamId) return turn;
+          const confirmed = ['failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? turn.generationStatus as 'failed'|'cancelled'|'interrupted' : undefined;
+          return { ...turn, ...(confirmed ? {status:confirmed} : {}), connectionLost: !confirmed, activity: undefined, progress: undefined };
+        })); }
         if (cause instanceof GenerationConnectionError) setTurns(current => current.map(turn => turn.generationId === streamId && !turn.lesson && !turn.answer && !['completed','failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? { ...turn, connectionLost: true, activity: undefined, progress: undefined } : turn));
         setError(cause instanceof GenerationConnectionError ? '' : cause instanceof Error ? cause.message : 'The lesson could not be completed.');
       }
@@ -1392,7 +1396,7 @@ export function LearnChat({
           ? null
           : null}
         {turn.partialOutput && !turn.stream ? <div className={styles.partialOutput}><span>Saved partial response</span><p>{turn.partialOutput}</p></div> : null}
-        {!turn.connectionLost && !turn.lesson && !turn.answer && turn.status && turn.status !== 'pending' ? <div className={styles.turnStatus} role="status">
+        {!turn.connectionLost && !turn.lesson && !turn.answer && ['failed','cancelled','interrupted'].includes(turn.status || '') ? <div className={styles.turnStatus} role="status">
           <span>{turn.status === 'cancelled' ? 'Response stopped.' : turn.status === 'interrupted' ? 'Response interrupted. Your saved draft is still here.' : 'Response failed. Your message is still here.'}</span>
           {(turn.status === 'interrupted' || turn.status === 'failed') && !hasLaterAttempt
             ? <button type="button" disabled={Boolean(turn.generationId && retryingResponses.has(turn.generationId))} onClick={() => askAgain(turn)}>{turn.generationId && retryingResponses.has(turn.generationId) ? 'Retrying…' : 'Ask again'}</button>
