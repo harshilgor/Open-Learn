@@ -32,7 +32,7 @@ import { WORKSPACE_PASSAGE_MENTION_EVENT, type WorkspacePassageMention } from '@
 import {openSideChat} from '@/lib/workspace-side-chat-events';
 import { openWorkspaceNote, openWorkspaceNoteDraft, openWorkspaceSource, WORKSPACE_NOTE_MENTION_EVENT, WORKSPACE_NOTE_REPLACE_DRAFT_EVENT, WORKSPACE_QUIZ_REQUEST_EVENT, type WorkspaceNoteMention } from '@/lib/workspace-events';
 import { WebResearchActivity, type AgentActivity } from './web-research-activity';
-import { AgentWorkingIndicator } from './agent-working-indicator';
+import { BuddyReplyStatus } from './buddy-reply-status';
 import { generationActivityCopy } from '@/lib/generation-activity';
 import { ModeTransitionCard, OriginBadge } from './mode-transition-card';
 import { useBuddies, BuddyAvatar } from './buddies';
@@ -1331,6 +1331,13 @@ export function LearnChat({
   const latestTurn = turns.at(-1);
   const latestTurnKey = latestTurn?.generationId || latestTurn?.lesson?.id || latestTurn?.stream?.id || '';
   const latestTurnHasResponse = Boolean(latestTurn?.lesson || latestTurn?.answer || latestTurn?.stream?.status === 'completed');
+  const waitingTurn = [...turns].reverse().find(turn => {
+    const live = turn.generationStatus ? ['queued','preparing','streaming','finalizing','cancel_requested'].includes(turn.generationStatus) : turn.status === 'pending';
+    return live && !turn.lesson && !turn.answer && !turn.stream?.blocks.some(block => block.body.trim()) && !turn.activity;
+  });
+  const replyStatus = !streaming && !activity && (busy || waitingTurn)
+    ? waitingTurn?.progress || progress || (turns.length ? 'Working on your study request…' : 'Getting your answer ready…')
+    : null;
   function chooseMode(mode: ChatMode, conversational = false) {
     if (activeModeSuggestion?.status === 'accepted') { setError('Continue the saved mode switch before choosing another mode.'); return; }
     if (activeModeSuggestion) {
@@ -1370,7 +1377,6 @@ export function LearnChat({
     {scheduledMessages.map(message=><article key={message.id} className="buddy-preview"><strong>{message.title}</strong><p>{message.body}</p><a href={message.url}>Open activity</a></article>)}
     {noteDrafts.filter(draft => !turns.some(turn => turn.sessionId === draft.sessionId)).map(draft => <NoteDraftCard key={draft.id} draft={draft} onHandled={updated => setNoteDrafts(current => current.map(item => item.id === updated.id ? updated : item))}/>)}
     {quizClarification ? <div className={styles.turnStatus} role="status"><strong>What topic should I quiz you on?</strong><p>Reply in Ask chat with the topic, then I’ll start your quiz.</p><Button type="button" variant="ghost" size="sm" onClick={() => { if (quizClarification.sourceTransitionId && quizClarification.sessionId) void learningApi.recordTransitionInteraction(quizClarification.sourceTransitionId, 'failed', 'quiz', quizClarification.sessionId).catch(() => undefined); setQuizClarification(null); }}>Cancel</Button></div> : null}
-    {!turns.length && !outbox.messages.length && busy && !streaming && !activity ? <article className={`${styles.lessonArticle} ${styles.workingBubble}`}><AgentWorkingIndicator label={progress || 'Getting your answer ready…'} /></article> : null}
     {!turns.length && activity ? <article className={`${styles.lessonArticle} ${styles.workingBubble}`}><AnimatePresence mode="wait"><WebResearchActivity activity={activity} /></AnimatePresence></article> : null}
     {turns.map((turn, turnIndex) => {
       const filed = turn.lesson?.id ? filedRef.current[turn.lesson.id] : undefined;
@@ -1398,13 +1404,13 @@ export function LearnChat({
             : null}
         </div> : null}
         {!turn.lesson && !turn.stream && !turn.answer && turn.status === 'pending' && showLiveStatus
-          ? turn.activity ? <WebResearchActivity activity={turn.activity} /> : <AgentWorkingIndicator label={turn.progress || 'Getting your answer ready…'} />
+          ? turn.activity ? <WebResearchActivity activity={turn.activity} /> : null
           : null}
         {!turn.lesson && !turn.answer && turn.stream && showLiveStatus && turn.activity
           ? <WebResearchActivity activity={turn.activity} />
           : null}
         {!turn.lesson && !turn.answer && turn.stream && showLiveStatus && !turn.activity && !hasVisibleStreamText
-          ? <AgentWorkingIndicator label={turn.progress || 'Getting your answer ready…'} />
+          ? null
           : null}
         {turn.partialOutput && !turn.stream ? <div className={styles.partialOutput}><span>Saved partial response</span><p>{turn.partialOutput}</p></div> : null}
         {!turn.lesson && !turn.answer && turn.status && turn.status !== 'pending' ? <div className={styles.turnStatus} role="status">
@@ -1434,7 +1440,6 @@ export function LearnChat({
     </motion.div>;
     })}
     <OutgoingMessages messages={outbox.messages} turns={turns} onRetry={outbox.retry} onRemove={outbox.remove}/>
-    {(turns.length > 0 || outbox.messages.length > 0) && busy && !streaming && !activity ? <article className={`${styles.lessonArticle} ${styles.workingBubble}`}><AgentWorkingIndicator label={progress || 'Working on your study request…'} /></article> : null}
     {appliedNote ? <div className={panelStyles.updated} role="status"><Check size={14} /><span>Lesson updated in Notes · {appliedNote.applyKind === 'refined' ? 'Expanded' : 'Added'} “{appliedNote.heading}”</span><button type="button" onClick={() => openWorkspaceNote(appliedNote.noteId)}>Open lesson</button><button type="button" aria-label="Dismiss" onClick={() => setAppliedNote(null)}><X size={14} /></button></div> : null}
     {checking && sessionId && <QuizWorkspace key={`${sessionId}:${journey?.position || 0}`} inline sessionId={sessionId} conceptId={journey?.steps[journey.position]?.conceptId || lesson?.conceptId} onReturn={() => setChecking(false)} onReviewInLearn={suggestion => void handleAcceptTransition(suggestion)} onCreateRepairNote={attemptId => void createQuizFeedbackDraft(attemptId)} />}
     {sessionId && turns.length > 0 && chatMode === 'learn' ? <ConceptProgressWhy conceptId={journey?.steps[journey.position]?.conceptId || lesson?.conceptId} enabled={!busy} /> : null}
@@ -1461,6 +1466,7 @@ export function LearnChat({
       )}
     </AnimatePresence>
     <div className={styles.composerDock}><div className={styles.composerInner}>
+      {replyStatus ? <BuddyReplyStatus buddy={buddies.active} label={replyStatus}/> : null}
       {new Set(activeGenerationStreams.current.values()).size > 1
         ? <button type="button" className={styles.stopAllResponses} onClick={stopAllResponses}>Stop all responses</button>
         : null}

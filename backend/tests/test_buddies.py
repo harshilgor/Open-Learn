@@ -166,3 +166,25 @@ def test_buddy_learning_ignores_sources_and_other_owners(env):
     svc.instructions('alice',chat.id,'Skip examples')
     assert 'Avoid examples unless requested' in svc.instructions('alice',chat.id)
     assert 'Use relevant examples' in svc.instructions('alice',session(env,buddy=other['id']).id)
+
+def test_personal_appearance_and_focus_round_trip(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Custom',appearance={'shape':7,'accessories':['Cap','Scarf'],'face':'round','celebration':'roll','palette':'ocean','keepsake':'star','sleepy':False},focus='Physics intuition'))
+    saved=next(p for p in svc.snapshot('alice')['profiles'] if p['id']==buddy['id'])
+    assert saved['appearance']==buddy['appearance']
+    assert saved['focus']=='Physics intuition'
+    assert 'Physics intuition' in svc.instructions('alice',session(env,buddy=buddy['id']).id)
+
+
+def test_hints_and_example_theme_learning_can_be_disabled(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Custom'))
+    chat=session(env,buddy=buddy['id'])
+    svc.instructions('alice',chat.id,'Give me hints first')
+    result=svc.instructions('alice',chat.id,'Use music examples')
+    assert 'Offer a hint before revealing solutions' in result
+    assert 'prefer this theme: music' in result
+    profile=next(p for p in svc.snapshot('alice')['profiles'] if p['id']==buddy['id'])
+    svc.update('alice',buddy['id'],BuddyUpdate(**{**profile,'rememberPreferences':False,'expectedRevision':profile['revision']}))
+    result=svc.instructions('alice',chat.id,'Use sports examples')
+    assert 'prefer this theme: music' in result

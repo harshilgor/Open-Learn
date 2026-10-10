@@ -17,6 +17,7 @@ import {ExecutionPanel} from './assistant/execution-panel';
 import { useBuddies } from './buddies';
 import {useVoice} from './voice/voice-provider';
 import {reportVoiceFocus,VOICE_REFRESH} from '@/lib/voice/client';
+import { BuddyReplyStatus } from './buddy-reply-status';
 
 /** A shared context boundary for note discussions and future concept explanations. */
 export type TutorChatContext = {
@@ -144,10 +145,10 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
       {drafts.map(draft=><NoteDraftCard key={draft.id} draft={draft} onHandled={updated=>setDrafts(current=>current.map(value=>value.id===updated.id?updated:value))}/>)}
       {!turns.length && !pending ? <p className={styles.empty}>Ask about an idea, an example, or something unclear in this note.</p> : null}
       {turns.map((turn, index) => <div className={styles.turn} key={`${turn.generationId || index}`}><p className={styles.question}>{turn.question}</p>{turn.lesson?<LessonReader id={turn.lesson.id} lessonId={turn.lesson.id} blocks={turn.lesson.blocks}/>:null}</div>)}
-      {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? <LessonReader id="side-chat-stream" blocks={pending.blocks.map((block,index)=>({...block,visualizations:(pending.visualizations||[]).filter(value=>parseVisualArtifact(value)?.blockIndex===index)}))}/> : <p role="status">Thinking…</p>}</div> : null}
+      {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? <LessonReader id="side-chat-stream" blocks={pending.blocks.map((block,index)=>({...block,visualizations:(pending.visualizations||[]).filter(value=>parseVisualArtifact(value)?.blockIndex===index)}))}/> : null}</div> : null}
       <ExecutionPanel showTools={false} sessionId={sessionId} courseId={context.courseId} onSession={id => { setSessionId(id); try { localStorage.setItem(storageKey, id); } catch { /* Durable server state remains available. */ } }} />
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </div>
-    <div className={styles.composer}><BrowserTaskDock tasks={browserAssistant.tasks} onCommand={browserAssistant.command} notice={browserAssistant.notice} error={browserAssistant.error} replyTarget={browserAssistant.replyTarget} replyTargets={browserAssistant.replyTargets} onReplyTargetChange={browserAssistant.setReplyTarget}/><ChatComposer onVoice={voice?()=>void startVoice():undefined} variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>
+    <div className={styles.composer}>{busy && (!pending || !pending.blocks.length) ? <BuddyReplyStatus buddy={buddy} label="Thinking about that…"/> : null}<BrowserTaskDock tasks={browserAssistant.tasks} onCommand={browserAssistant.command} notice={browserAssistant.notice} error={browserAssistant.error} replyTarget={browserAssistant.replyTarget} replyTargets={browserAssistant.replyTargets} onReplyTargetChange={browserAssistant.setReplyTarget}/><ChatComposer onVoice={voice?()=>void startVoice():undefined} variant="compact" value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => void submit()} onCancel={busy ? () => { requestController.current?.abort(); void stream.current?.stop().catch(cause => setError(String(cause))); } : undefined} busy={busy} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode="ask" /></div>
   </aside>;
 }

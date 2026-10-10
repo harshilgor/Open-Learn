@@ -8,12 +8,24 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from './ui/dial
 import { Button } from './ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from './ui/sheet';
 import './buddies.css';
+import {Buddy as Character, type Expression} from './buddy-character';
+import {BuddyCustomization,buddyColors} from './buddy-customization';
+import {defaultAppearance} from '@/lib/buddies';
+import {useBuddyPresence} from '@/lib/buddy-presence';
 
-const icons = { spark:'✦', owl:'🦉', cat:'🐱', leaf:'🌿', planet:'🪐' };
+
 type BuddyContext = { snapshot:BuddySnapshot|null; active:Buddy|undefined; select:(id:string)=>void; refresh:()=>Promise<void>; edit:(buddy?:Buddy)=>void; error:string };
 const Context=createContext<BuddyContext>({snapshot:null,active:undefined,select:()=>{},refresh:async()=>{},edit:()=>{},error:''});
 export const useBuddies=()=>useContext(Context);
-export function BuddyAvatar({buddy}:{buddy:Buddy}) { return <span className={`buddy-avatar buddy-${buddy.color}`} aria-hidden="true">{icons[buddy.avatar]}</span>; }
+export function BuddyAvatar({buddy,expression}:{buddy:Buddy;expression?:Expression}) {
+  const {active}=useBuddies();
+  const look={...defaultAppearance,...buddy.appearance};
+  const presence=useBuddyPresence(buddy.id,look.sleepy && active?.id===buddy.id);
+  const [reaction,setReaction]=useState<'Happy'|'Curious'|null>(null);
+  const lastGreeting=useRef(0);
+  useEffect(()=>{if(!reaction)return;const timer=setTimeout(()=>setReaction(null),reaction==='Happy'?3500:1500);return()=>clearTimeout(timer);},[reaction]);
+  return <span className="buddy-avatar buddy-character-avatar" aria-hidden="true" onPointerEnter={()=>{if(Date.now()-lastGreeting.current>12000){lastGreeting.current=Date.now();setReaction('Curious');}}} onClick={()=>setReaction('Happy')}><Character {...look} index={look.shape} color={buddyColors[buddy.color]} expression={expression||reaction||presence} size={38} animated/></span>;
+}
 
 export function BuddyProvider({children}:{children:ReactNode}) {
   const [snapshot,setSnapshot]=useState<BuddySnapshot|null>(null),[activeId,setActiveId]=useState(''),[error,setError]=useState('');
@@ -34,10 +46,11 @@ function BuddyEditor({existing,onClose,onSaved}:{existing?:Buddy;onClose:()=>voi
 
   async function save(){setBusy(true);setError('');try{await onSaved(await buddyApi.save(input,existing));}catch(e){setError(e instanceof Error?e.message:'Could not save.');}finally{setBusy(false);}}
   async function archive(){if(!existing||!replacement)return;setBusy(true);try{await buddyApi.archive(existing,replacement);await refresh();onClose();}catch(e){setError(e instanceof Error?e.message:'Could not archive.');}finally{setBusy(false);}}
-  return <Dialog open onOpenChange={value=>{if(!value&&!busy)onClose();}}><DialogContent><DialogTitle>{existing?'Customize':'Create'} Buddy</DialogTitle><DialogDescription>What would you like to call your study partner?</DialogDescription>
+  return <Dialog open onOpenChange={value=>{if(!value&&!busy)onClose();}}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogTitle>{existing?'Customize':'Create'} Buddy</DialogTitle><DialogDescription>What would you like to call your study partner?</DialogDescription>
     <label className="flex flex-col gap-2 text-sm font-medium">Buddy name<input autoFocus placeholder="e.g. Nova" className="w-full rounded-lg border border-border bg-background px-3 py-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring" maxLength={60} value={input.name} onChange={e=>setInput({...input,name:e.target.value})} onKeyDown={e=>{if(e.key==='Enter'&&!busy&&snapshot&&input.name.trim())void save();}}/></label>
+    <BuddyCustomization value={input} onChange={setInput}/>
     <p className="text-xs leading-relaxed text-muted-foreground">Your Buddy learns how you like to study as you talk. You can always ask it to change its approach.</p>    {!snapshot?<div role="status"><p>{connectionError?'Reconnect to save your Buddy. You can customize it here while the service is unavailable.':'Connecting to your account. You can customize your Buddy while we connect.'}</p><Button variant="outline" onClick={()=>void refresh()}>Retry connection</Button></div>:null}
-    {error?<p role="alert">{error}</p>:null}<Button disabled={busy||!snapshot||!input.name.trim()} onClick={()=>void save()}>{busy?'Saving…':existing?'Save name':'Create Buddy'}</Button>
+    {error?<p role="alert">{error}</p>:null}<Button disabled={busy||!snapshot||!input.name.trim()} onClick={()=>void save()}>{busy?'Saving…':existing?'Save Buddy':'Create Buddy'}</Button>
     {existing?<><Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{await buddyApi.makeDefault(existing.id);await refresh();}catch(e){setError(String(e));}finally{setBusy(false);}}}>Use as my default</Button><details><summary>Archive Buddy</summary><p>{Object.values(snapshot?.courses||{}).filter(id=>id===existing.id).length} assigned courses and {snapshot?.responsibilities?.[existing.id]||0} responsibility records will transfer to the replacement. Chats stay attributed to this Buddy in All chats. Existing reminder and task IDs remain unchanged.</p><select aria-label="Replacement Buddy" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Choose replacement</option>{snapshot?.profiles.filter(p=>!p.archived&&p.id!==existing.id).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><Button variant="outline" disabled={busy||!replacement} onClick={()=>void archive()}>Archive and reassign</Button></details></>:null}
   </DialogContent></Dialog>;
 }

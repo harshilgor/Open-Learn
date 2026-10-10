@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { BuddyProvider, BuddyRail } from '@/components/buddies';
-vi.mock('@/lib/buddies', () => ({ buddyApi: { snapshot: vi.fn().mockRejectedValue(new Error('Service unavailable')) } }));
+vi.mock('@/lib/buddies', async importOriginal => ({ ...await importOriginal<typeof import('@/lib/buddies')>(), buddyApi: { snapshot: vi.fn().mockRejectedValue(new Error('Service unavailable')) } }));
 it('keeps navigation and Buddy creation available during an outage', async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement('div'); document.body.appendChild(container);
