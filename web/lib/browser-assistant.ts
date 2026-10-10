@@ -66,7 +66,10 @@ export function useBrowserAssistant(sessionId:string|null, courseId?:string|null
     alive.current=true;
     generation.current++;
     let loading=false;
-    const update=()=>{if(loading)return;loading=true;void refresh().catch(e=>{if(alive.current)setError(e.message);}).finally(()=>{loading=false;});};
+    // This endpoint is polled to discover real browser tasks. A network failure
+    // here does not mean a browser task failed, so keep it out of the task dock.
+    // Explicit task commands still report their own errors below.
+    const update=()=>{if(loading)return;loading=true;void refresh().catch(()=>undefined).finally(()=>{loading=false;});};
     const timer=window.setTimeout(()=>{setTasks([]);setError('');setNotice('');update();},0);
     const interval=window.setInterval(update,5000);
     const clear=()=>{generation.current++;eventCursors.current.clear();dismissedRequests.current.clear();setDismissedRequestIds([]);setReplyTarget(null);setTasks([]);setError('');setNotice('');update();};
@@ -154,6 +157,11 @@ export function useBrowserAssistant(sessionId:string|null, courseId?:string|null
     if (!admission.handled) {
       if(target)throw new Error('Buddy could not apply that reply to the selected website question. Refresh the task and try again.');
       return false;
+    }
+    if (admission.calendarReceipt) {
+      window.dispatchEvent(new Event('openlearn-calendar-changed'));
+      if(alive.current)setNotice('');
+      return true;
     }
     if (admission.question || admission.message) {
       if (alive.current) setNotice(admission.question || admission.message || '');

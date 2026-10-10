@@ -373,6 +373,8 @@ export function apiBaseUrl(): string {
     ? undefined
     : (window as Window & { formaDesktop?: { apiBaseUrl?: string } }).formaDesktop?.apiBaseUrl;
   if (desktop) return desktop.replace(/\/$/, '');
+  // Local web previews use the development proxy, avoiding port-specific CORS.
+  if (process.env.NODE_ENV === 'development' && isLocalWeb()) return '';
   if (configured) {
     try {
       const parsed = new URL(configured);
@@ -429,6 +431,22 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const headers = [...new Headers(init.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
   const key = JSON.stringify([epoch, identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
   return readCache.read(key, () => requestUncached<T>(path, init), init.cache === 'no-cache' ? 0 : readFreshness(path));
+}
+
+export type ChatOutboxMetrics = {
+  clientId: string; queuedCount: number; sendingCount: number; acceptedCount: number;
+  failedCount: number; choiceCount: number; oldestPendingAgeSeconds: number;
+};
+
+/** Send aggregate queue health without invalidating unrelated read caches or uploading message text. */
+export async function recordChatOutboxMetrics(sessionId: string, metrics: ChatOutboxMetrics): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json', 'Accept': 'application/json' });
+  const token = desktopToken();
+  if (token) headers.set('X-Forma-Desktop-Token', token);
+  const response = await authenticatedFetch(url(`/v1/sessions/${encodeURIComponent(sessionId)}/outbox-metrics`), {
+    method: 'PUT', headers, body: JSON.stringify(metrics),
+  });
+  if (!response.ok) throw new LearningApiError(response.status, 'outbox_metrics_failed', 'Could not record chat outbox status.');
 }
 
 async function requestUncached<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -595,6 +613,7 @@ export type ChatSessionSummary = {
   courseId?: string | null;
   updatedAt: string;
   turnCount: number;
+  preview?: string | null;
 };
 
 export type ChatSessionList = {
@@ -791,7 +810,7 @@ export const learningApi = {
     return request<KnowledgeGraph>(`/v1/graphs/${encodeURIComponent(graphId)}${suffix}`, { signal: params.signal });
   },
 
-  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null; buddyId?: string }): Promise<LearningSession> {
+  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null; buddyId?: string; parentSessionId?:string }): Promise<LearningSession> {
     return request<LearningSession>('/v1/sessions', {
       method: 'POST',
       body: JSON.stringify({
@@ -1021,6 +1040,9 @@ export const learningApi = {
     });
   },
 
+  getWorkspaceNoteVersions(noteId:string,learnerId='local'):Promise<{versions:{id:string;noteRevision:number;title:string;body:string;savedAt:string}[]}> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}/versions`,{cache:'no-store'});
+  },
   getWorkspaceNote(noteId: string, learnerId = 'local'): Promise<WorkspaceNote> {
     return request<WorkspaceNote>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}`, {
       headers: { 'X-Dev-Learner-Id': learnerId },

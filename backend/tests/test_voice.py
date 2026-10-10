@@ -13,6 +13,22 @@ from backend.app.voice.coordinator import Coordinator
 from backend.app.voice.routes import build_voice_router
 from backend.app.voice.tools import Tools
 
+def test_workspace_voice_actions_use_owned_selected_note(env,monkeypatch,tmp_path):
+    store,_,_=env
+    monkeypatch.setenv('AI_TUTOR_NOTE_VAULT_DIR',str(tmp_path/'notes'))
+    from backend.app.workspace_note_service import WorkspaceNoteService
+    from backend.app.workspace_note_models import WorkspaceNoteCreate
+    monkeypatch.setattr('backend.app.voice.tools.MaterialService.session',lambda *args: {})
+    note=WorkspaceNoteService(store).create('alice',WorkspaceNoteCreate(title='Biology',body='Photosynthesis stores energy.'))
+    tools=Tools(store,None)
+    session={'chat_id':'chat-test','context':{'focus':{'note_id':note.id,'expected_revision':1,'selection_start':0,'selection_end':14}}}
+    assert tools.execute('alice',session,'workspace_focus',{'focused':True},'focus')['uiIntent']['action']=='focus_workspace'
+    result=tools.execute('alice',session,'side_chat_open',{},'side')
+    assert result['result']['excerpt']=='Photosynthesis'
+    session['context']['focus']['expected_revision']=2
+    with pytest.raises(HTTPException) as error:tools.execute('alice',session,'side_chat_open',{},'stale')
+    assert error.value.status_code==409
+
 
 @pytest.fixture
 def env(monkeypatch):

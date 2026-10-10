@@ -1,0 +1,12 @@
+# Buddy creation and adaptation
+
+Creation asks only for a name. The existing API supplies a neutral avatar, sage color, encouraging tone, concise answers, and relevant examples. The new Buddy becomes active after saving. Rename uses the same single-field form; account management and archiving remain available for existing Buddies.
+
+Teaching adapts on two levels:
+
+- Each turn uses the existing teaching context, learner evidence, course context, and current request. Current requests take priority over saved communication defaults. Uncertainty should lead to a short clarification rather than an invented learner trait.
+- Explicit standalone communication requests persist in the existing owner-scoped Buddy profile. Supported requests include “keep answers short”, “explain in detail”, “use examples”, “skip examples”, and requests for direct, calm, encouraging, or playful tone. New requests replace the corresponding preference and apply in subsequent chats with that Buddy.
+
+The journey response paths apply preferences before generating a reply. Persistence accepts only finite, validated preference values; names and arbitrary user text never become system instructions. Quoted/source text and inferred sensitive traits are not persisted. Changes increment the existing revision and respect account and Buddy boundaries. No extra model call, provider, schema migration, or paid routing is introduced.
+
+This implementation deliberately limits durable learning to explicit supported requests. Broader inference from repeated behavior would require confidence, provenance, user inspection/reset controls, and evaluation before it can be claimed as reliable automatic learning. Voice receives adaptation when it uses these same journey response paths; independently generated voice responses need the same integration before claiming parity.

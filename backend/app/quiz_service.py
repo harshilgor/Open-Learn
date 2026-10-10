@@ -337,7 +337,7 @@ class QuizService:
             sources = [self.study_context(owner, quiz_id)]
             quiz["contextSource"] = True
         manifest = save_manifest(self.store, owner, session.id, concept.title, sources, selected_span_ids=quiz.get("selectedSpanIds"))
-        difficulty = quiz["difficulty"]
+        difficulty = quiz.get('questionDifficulty', {}).get(str(len([item for item in first if not item.get('retryOf')])+1), quiz["difficulty"])
         if difficulty == "adaptive":
             difficulty = "stretch" if plan.objective == "transfer_check" else "standard"
         plan.source_revisions = [{"spanId": s.get("spanId"), "versionId": s.get("versionId")} for s in sources]
@@ -510,6 +510,41 @@ class QuizService:
             quiz = self.records.read(owner, presentation["quizId"], "quiz", conn)
             self._save_quiz(conn, owner, quiz, quiz["revision"])
         return {"quizId": presentation.get("quizId")}
+
+    def revise_question(self, owner, quiz_id, question_number, difficulty, revision, key):
+        """Adjust unattempted questions; preserve all exposed answer history."""
+        import hashlib
+        identifier='quiz_edit_'+hashlib.sha256(f'{owner}:{quiz_id}:{key}'.encode()).hexdigest()
+        command={'questionNumber':question_number,'difficulty':difficulty,'expectedRevision':revision}
+        with self.store.transaction() as conn:
+            existing=conn.execute(text('SELECT payload FROM practice_records WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).scalar_one_or_none()
+            if existing:
+                previous=json.loads(existing)
+                if previous['command']!=command:problem('idempotency_conflict','This request key already changed another question.',409)
+                return previous['result']
+            self._lock_quiz(conn,owner,quiz_id)
+            quiz=self.records.read(owner,quiz_id,'quiz',conn)
+            if quiz['revision']!=revision:problem('revision_conflict','Reload the quiz before changing a question.',409)
+            if quiz['status'] in {'completed','paused'}:problem('quiz_not_active','Open an active quiz before changing its questions.',409)
+            attempted=len([aid for aid in quiz['attempts'] if not self.records.read(owner,aid,'attempt',conn).get('retryOf')])
+            if not attempted < question_number <= quiz['count']:problem('question_already_answered','Answered questions stay in your history. Choose an upcoming question.',422)
+            if difficulty not in {'foundational','standard','stretch'}:problem('invalid_difficulty','Choose a supported difficulty.',422)
+            quiz.setdefault('questionDifficulty',{})[str(question_number)]=difficulty
+            current=quiz.get('current')
+            regenerate=question_number==attempted+1
+            if regenerate and current:
+                presentation=self.records.read(owner,current,'presentation',conn)
+                if presentation.get('attemptId'):regenerate=False
+                else:
+                    stop_answering(quiz)
+                    quiz['current']=None
+            self._save_quiz(conn,owner,quiz,revision)
+            result={'quizId':quiz_id,'revision':revision+1,'questionNumber':question_number,'regenerating':regenerate}
+            if regenerate:
+                job=self.records.enqueue(owner,quiz_id,'next',{'expected_revision':revision+1},key+':next',connection=conn)
+                result['jobId']=job['id']
+            self.records.put(conn,owner,'quiz_edit',{'id':identifier,'command':command,'result':result},parent=quiz_id)
+            return result
 
     def retry(self, conn, owner, quiz_id, revision):
         quiz = self.records.read(owner, quiz_id, "quiz", conn)

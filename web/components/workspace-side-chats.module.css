@@ -1,0 +1,10 @@
+.window{position:fixed;width:min(360px,calc(100vw - 16px));height:min(510px,75dvh);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--border);border-radius:14px;background:var(--background);box-shadow:0 12px 45px #0005}
+.window[hidden]{display:none}
+.window>aside{position:static;width:100%;flex:1;min-height:0;border:0}
+.handle{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;cursor:move;touch-action:none;border-bottom:1px solid var(--border);font-size:12px}
+.handle span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.handle button{padding:6px;cursor:pointer}
+.chips{position:fixed;bottom:8px;left:90px;z-index:62;display:flex;gap:6px;max-width:calc(100vw - 110px);overflow:auto}
+.chips:empty{display:none}
+.chips button{display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;border:1px solid var(--border);border-radius:18px;background:var(--background);padding:7px 12px}
+@media(max-width:700px){.window{left:8px!important;top:auto!important;bottom:44px;width:calc(100vw - 16px);height:70dvh}.window:not([data-active=true]){display:none}.chips{left:8px;max-width:calc(100vw - 16px)}}

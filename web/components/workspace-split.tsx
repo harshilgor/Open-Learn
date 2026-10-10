@@ -12,9 +12,10 @@ import {WORKSPACE_CANVAS_EVENT} from '@/lib/workspace-events';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
+import { request } from '@/lib/api';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
-const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 50, collapsed: true, tabs: ['notes', 'sources', 'practice', 'reminders'], activeTab: 'notes' };
+const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes', 'sources', 'practice', 'reminders'], activeTab: 'notes' };
 
 export type WorkspaceSplitContextValue = {
   collapsed: boolean;
@@ -46,6 +47,8 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   const [accountGeneration, setAccountGeneration] = useState(0);
   const [canvasValue, setCanvasValue] = useState<unknown>(null);
   const [ready, setReady] = useState(false);
+  const [layoutOwner,setLayoutOwner]=useState<string|null>(null);
+  const [focusChatOpen,setFocusChatOpen]=useState(false);
   const [compact, setCompact] = useState(false);
   const [noteSeed, setNoteSeed] = useState<WorkspaceNoteSeed | null>(null);
   const [noteToOpen, setNoteToOpen] = useState<string | null>(null);
@@ -53,10 +56,24 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   const [quizToOpen, setQuizToOpen] = useState<WorkspaceQuizOpen | null>(null);
   const [flashcardLaunch,setFlashcardLaunch]=useState<FlashcardView|null>(null);
   const [classId,setClassId]=useState<string|null>(null);
+  const protection = useRef({pinned:false,dirty:false});
+  useEffect(()=>{protection.current.pinned=!!layout.pinned;},[layout.pinned]);
+  const [workspaceDirty,setWorkspaceDirty]=useState(false);
+  const bypassProtection=useRef(false);
+  const [pendingItem,setPendingItem]=useState<{type:string;detail:unknown}|null>(null);
+  useEffect(()=>{
+    const incoming=(event:Event)=>{if(bypassProtection.current||(event as Event & {workspaceManual?:boolean}).workspaceManual)return;if(!protection.current.pinned&&!protection.current.dirty)return;event.stopImmediatePropagation();setPendingItem({type:event.type,detail:(event as CustomEvent).detail});};
+    const dirty=(event:Event)=>{protection.current.dirty=!!(event as CustomEvent).detail;setWorkspaceDirty(protection.current.dirty);};
+    const events=[WORKSPACE_NOTE_SEED_EVENT,WORKSPACE_NOTE_OPEN_EVENT,WORKSPACE_SOURCE_OPEN_EVENT,WORKSPACE_QUIZ_OPEN_EVENT,WORKSPACE_CANVAS_EVENT,WORKSPACE_FLASHCARDS_OPEN_EVENT];
+    for(const type of events)window.addEventListener(type,incoming,true);
+    window.addEventListener('openlearn:workspace-dirty',dirty);
+    return()=>{for(const type of events)window.removeEventListener(type,incoming,true);window.removeEventListener('openlearn:workspace-dirty',dirty);};
+  },[]);
+  useEffect(()=>{const focus=(event:Event)=>setLayout(current=>({...current,collapsed:false,focused:!!(event as CustomEvent).detail}));window.addEventListener('openlearn:workspace-focus',focus);return()=>window.removeEventListener('openlearn:workspace-focus',focus);},[]);
   useEffect(()=>{
     const open=(event:Event)=>{const detail=(event as CustomEvent<FlashcardView>).detail;if(!detail)return;setFlashcardLaunch(detail);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('flashcards')?current.tabs:[...current.tabs,'flashcards'],activeTab:'flashcards'}));const url=new URL(window.location.href);url.searchParams.set('flashcards',detail.deckId||'library');if(detail.reviewSessionId)url.searchParams.set('flashcardReview',detail.reviewSessionId);else url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     const restore=()=>{const query=new URLSearchParams(window.location.search);const deckId=query.get('flashcards'),reviewSessionId=query.get('flashcardReview');if(deckId||reviewSessionId)open(new CustomEvent(WORKSPACE_FLASHCARDS_OPEN_EVENT,{detail:{deckId:deckId==='library'?undefined:deckId||undefined,view:reviewSessionId?'review':deckId==='library'?'library':'editor',reviewSessionId:reviewSessionId||undefined}}));};
-    const clear=()=>{setAccountGeneration(value => value + 1);setNoteSeed(null);setNoteToOpen(null);setSourceToOpen(null);setQuizToOpen(null);setCanvasValue(null);setFlashcardLaunch(null);setClassId(null);setActiveClassContext(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
+    const clear=()=>{setReady(false);setLayoutOwner(null);setPendingItem(null);setAccountGeneration(value => value + 1);setNoteSeed(null);setNoteToOpen(null);setSourceToOpen(null);setQuizToOpen(null);setCanvasValue(null);setFlashcardLaunch(null);setClassId(null);setActiveClassContext(null);setLayout(DEFAULT_LAYOUT);const url=new URL(window.location.href);url.searchParams.delete('flashcards');url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
     window.addEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.addEventListener('popstate',restore);window.addEventListener(ACCOUNT_CHANGED,clear);restore();return()=>{window.removeEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT,open);window.removeEventListener('popstate',restore);window.removeEventListener(ACCOUNT_CHANGED,clear);};
   },[]);
   useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setActiveClassContext(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
@@ -134,23 +151,21 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     };
   }, []);
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    let live=true;
+    void request<{ownerId:string}>('/v1/account').then(account=>{
+      if(!live)return;
       try {
-        const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-        if (validLayout(stored)) {
-          const hasSavedQuiz = Boolean(localStorage.getItem(`forma-quiz:${quizSessionId || 'panel'}`) || localStorage.getItem('forma-quiz'));
-          const tabs = [...new Set<import('./workspace-panel').WorkspaceTab>(['notes', 'sources', 'practice', 'reminders', ...stored.tabs])].filter(tab => tab !== 'class' && (tab !== 'quiz' || hasSavedQuiz));
-          setLayout(current=>current.tabs.includes('class')||current.tabs.includes('flashcards')?current:{ ...stored, width: Math.min(70, Math.max(30, stored.width)), tabs: tabs.length ? tabs : ['notes'], activeTab: tabs.includes(stored.activeTab) ? stored.activeTab : 'notes' });
-        }
-      } catch { /* A session remains usable without browser storage. */ }
-      setReady(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, []);
+        const stored=JSON.parse(localStorage.getItem(`${STORAGE_KEY}:${account.ownerId}`)||'null');
+        if(validLayout(stored)){setLayout(current=>({...current,width:Math.min(70,Math.max(30,stored.width)),pinned:stored.pinned,focused:false,noteId:stored.noteId}));if(typeof stored.noteId==='string')setNoteToOpen(stored.noteId);}
+      } catch { /* Layout persistence is optional. */ }
+      setLayoutOwner(account.ownerId);setReady(true);
+    }).catch(()=>{});
+    return()=>{live=false;};
+  },[accountGeneration]);
   useEffect(() => {
-    if (!ready) return;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(layout)); } catch { /* Layout persistence is optional. */ }
-  }, [layout, ready]);
+    if (!ready||!layoutOwner) return;
+    try { localStorage.setItem(`${STORAGE_KEY}:${layoutOwner}`, JSON.stringify(layout)); } catch { /* Layout persistence is optional. */ }
+  }, [layout, ready,layoutOwner]);
   useEffect(() => {
     const resize = (event: PointerEvent) => {
       if (!resizing.current || !groupRef.current) return;
@@ -180,9 +195,11 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     onExpand={() => setLayout(current => ({ ...current, collapsed: false }))} />;
 
   return <WorkspaceSplitContext.Provider value={contextValue}>
+    {pendingItem ? <div className={styles.pendingResult} role="status">New workspace item ready <button onClick={()=>{if(protection.current.dirty)return;bypassProtection.current=true;try{window.dispatchEvent(new CustomEvent(pendingItem.type,{detail:pendingItem.detail}));setPendingItem(null);}finally{bypassProtection.current=false;}}} disabled={workspaceDirty}>{workspaceDirty?'Save current edits first':'Open'}</button><button aria-label="Dismiss ready item notice" onClick={()=>setPendingItem(null)}>×</button></div> : null}
     <div ref={groupRef} className={compact ? styles.compact : styles.group}>
-      <div className={styles.main} inert={compact && !layout.collapsed && !hidePanel}>{children}</div>
-      {!compact && !hidePanel && !layout.collapsed && (
+      {layout.focused && !layout.collapsed && !hidePanel && !compact ? <button className={styles.focusChatToggle} aria-label={focusChatOpen?'Minimize floating Buddy chat':'Open floating Buddy chat'} onClick={()=>setFocusChatOpen(value=>!value)}>{focusChatOpen?'Minimize chat':'Chat with Buddy'}</button> : null}
+      <div hidden={!!layout.focused && !layout.collapsed && !hidePanel && !focusChatOpen} className={layout.focused && !layout.collapsed && !hidePanel ? styles.floatingMain : styles.main} inert={compact && !layout.collapsed && !hidePanel}>{children}</div>
+      {!compact && !hidePanel && !layout.collapsed && !layout.focused && (
         <div className={styles.handle} role="separator" aria-orientation="vertical" aria-label="Resize workspace panel" aria-valuemin={30} aria-valuemax={70} aria-valuenow={layout.width} tabIndex={0}
           onPointerDown={event => { event.preventDefault(); resizing.current = true; }}
           onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const change = event.key === 'ArrowLeft' ? 2 : -2; setLayout(current => ({ ...current, collapsed: false, width: Math.max(30, Math.min(70, current.width + change)) })); } }} />
@@ -203,7 +220,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
           if (event.shiftKey && document.activeElement === first && last) { event.preventDefault(); last.focus(); }
           else if (!event.shiftKey && document.activeElement === last && first) { event.preventDefault(); first.focus(); }
         }}
-        style={{ '--workspace-panel-width': layout.collapsed ? '0px' : `${layout.width}%` } as CSSProperties}
+        style={{ '--workspace-panel-width': layout.collapsed ? '0px' : layout.focused ? '100%' : `${layout.width}%` } as CSSProperties}
         animate={reduceMotion ? undefined : { opacity: layout.collapsed ? 0 : 1 }}
         transition={{ duration: 0.2, ease: 'easeOut' }}
       >

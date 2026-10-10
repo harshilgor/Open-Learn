@@ -35,7 +35,25 @@ def _liability_nano(input_tokens, output_tokens, input_rate, output_rate):
     return int(raw.to_integral_value(rounding=ROUND_CEILING))
 
 
-def begin_model(payload, store=None, *, assessment_profile=None):
+def has_multimodal_input(payload):
+    """Inspect content blocks, not words inside text/tool results or schemas."""
+    media_types={'input_image','image_url','image','input_audio','audio','video','video_url','file','input_file'}
+    def block(value):
+        if not isinstance(value,dict):return False
+        if value.get('type') in media_types:return True
+        return any(key in value for key in ('image_url','input_audio','image','file_data','video_url')) and value.get('type')!='text'
+    for message in payload.get('messages',[]):
+        content=message.get('content') if isinstance(message,dict) else None
+        if isinstance(content,list) and any(block(value) for value in content):return True
+    inputs=payload.get('input',[])
+    if isinstance(inputs,list):
+        for value in inputs:
+            if block(value):return True
+            if isinstance(value,dict) and isinstance(value.get('content'),list) and any(block(item) for item in value['content']):return True
+    return False
+
+
+def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=False):
     from .context import current_store, current_root
     policy=Policy.load()
     if policy.mode=='off':return None
@@ -48,20 +66,27 @@ def begin_model(payload, store=None, *, assessment_profile=None):
     free_model = model=='openrouter/free' or model.endswith(':free')
     configured_model=os.getenv('OPENROUTER_MODEL','openrouter/free').strip()
     assessment_rates = None
+    visual_rates = None
+    if visual_profile and not free_model:
+        try:
+            from ..visual_pricing import approved_visual_tariff
+            visual_rates=approved_visual_tariff(model)
+        except (ValueError,KeyError,TypeError):
+            raise UsageError('usage_provider_unavailable','Visual model has no reviewed pinned tariff.',503) from None
     if assessment_profile:
         try:
             from ..assessment_profiles import approved_tariff
             assessment_rates = approved_tariff(model, assessment_profile)
         except (ValueError, KeyError, TypeError):
             raise UsageError('usage_provider_unavailable','Assessment model has no approved pinned tariff.',503) from None
-    if not free_model and (not policy.paid or (assessment_rates is None and (model!=configured_model or model!='anthropic/claude-haiku-5.5'))):
+    if not free_model and (not policy.paid or (assessment_rates is None and visual_rates is None and (model!=configured_model or model!='anthropic/claude-haiku-5.5'))):
         raise UsageError('usage_provider_unavailable','This model has no approved usage tariff.',503)
     maximum=payload.get('max_output_tokens',payload.get('max_tokens',2000))
     if not isinstance(maximum,int) or maximum<1 or maximum>16000:raise UsageError('usage_input_limit','The response limit is unsupported.',422)
     # UTF-8 bytes is a conservative bound for supported text tokenizers.
     # Images/audio require an audited multimodal bound; do not estimate from base64.
     encoded=json.dumps({k:v for k,v in payload.items() if k not in {'model','stream','stream_options'}},ensure_ascii=False)
-    if any(marker in encoded for marker in ('input_image','image_url','input_audio','data:')):
+    if has_multimodal_input(payload):
         raise UsageError('usage_provider_unavailable','Multimodal billing needs a configured bounded tariff.',503)
     tokens=len(encoded.encode('utf-8'))
     if tokens>48000:raise UsageError('usage_input_limit','Narrow this request or its supporting material.',422)
@@ -72,7 +97,7 @@ def begin_model(payload, store=None, *, assessment_profile=None):
     liability=0
     rates=None
     if not free_model:
-        configured=assessment_rates or haiku55_rates()
+        configured=assessment_rates or visual_rates or haiku55_rates()
         input_rate=max(configured['usd_per_million_input'], configured.get('usd_per_million_cache_write',configured['usd_per_million_input']))
         output_rate=configured['usd_per_million_output']
         # Reserve at four times the serialized byte count to cover tokenizer

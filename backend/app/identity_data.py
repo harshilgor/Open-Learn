@@ -5,6 +5,7 @@ from .identity import assert_owner_active
 
 PRIVATE_TABLES = {'identity_devices', 'identity_accounts', 'browser_session_leases', 'browser_provider_cleanup', 'notification_subscriptions', 'assistant_steps','agent_sandbox_cleanup','agent_sandbox_leases'}
 PRIVATE_TABLES.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions'})
+PRIVATE_TABLES.update({'calendar_permissions','calendar_proposals','calendar_operations','calendar_sync'})
 
 
 def owned_rows(connection, owner):

@@ -642,6 +642,12 @@ class WorkspaceNoteService:
         self._assert_not_externally_changed(learner_id, note_id)
         if current.revision != request.expected_revision:
             raise WorkspaceNoteError("revision_conflict", "The note changed; reload before saving.", 409)
+        from .workflow_store import WorkflowStore
+        from uuid import uuid5, NAMESPACE_URL
+        version_id = 'note_version_' + uuid5(NAMESPACE_URL, f'{learner_id}:{note_id}:{current.revision}').hex
+        with self.store.transaction() as conn:
+            if not conn.execute(text('SELECT id FROM practice_records WHERE id=:id AND owner_id=:owner'), {'id':version_id,'owner':learner_id}).first():
+                WorkflowStore(self.store).put(conn, learner_id, 'note_version', {'id':version_id,'noteId':note_id,'noteRevision':current.revision,'title':current.title,'body':current.body,'savedAt':current.updated_at.isoformat()}, parent=note_id)
         now = _utc_now()
         frontmatter = dict(current.frontmatter) if request.frontmatter is None else {**current.frontmatter, **request.frontmatter}
         title = request.title.strip() if request.title is not None else current.title

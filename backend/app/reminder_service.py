@@ -33,6 +33,9 @@ class ReminderCreate(BaseModel):
     quietStart: int = Field(default=22,ge=0,le=23)
     quietEnd: int = Field(default=8,ge=0,le=23)
     catchupMinutes: int = Field(default=120,ge=1,le=1440)
+    calendarPresentation: Literal['automation','study_session'] = 'automation'
+    calendarId: str | None = Field(default=None,max_length=160)
+    durationMinutes: int = Field(default=30,ge=5,le=480)
 
     @model_validator(mode='after')
     def timing(self):
@@ -127,6 +130,9 @@ class ReminderService:
             if command.courseId:
                 from .browser_assistant.policy import require_course
                 require_course(conn,owner,command.courseId)
+            if command.calendarId:
+                calendar=conn.execute(text("SELECT id FROM calendar_calendars WHERE id=:id AND owner_id=:owner AND status='active'"),{'id':command.calendarId,'owner':owner}).first()
+                if not calendar:fail('not_found','Calendar unavailable.',404)
             if command.buddyId:buddy_service.profile(conn,owner,command.buddyId)
             for action in command.actions:
                 if action.args.get('sessionId'):
@@ -251,6 +257,10 @@ class ReminderService:
             for row in rows:
                 assert_owner_active(conn,row['owner_id'])
                 payload=json.loads(row['payload']);policy=None
+                if payload.get('calendarEventId'):
+                    from .calendar.reminders import calendar_fire_current
+                    if not calendar_fire_current(conn,row):
+                        conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id"),{'id':row['id']});continue
                 if row['policy_id']:
                     policy=conn.execute(text('SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner'),{'id':row['policy_id'],'owner':row['owner_id']}).mappings().first()
                     if not policy or not policy['active'] or policy['revision']!=row['policy_revision']:

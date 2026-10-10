@@ -4,6 +4,7 @@ import { ACCOUNT_CHANGED } from '@/lib/account-session';
 import { observeVoice, voiceApi, VOICE_FOCUS, VOICE_REFRESH, type VoiceEvent, type VoiceFocus, type VoiceSession } from '@/lib/voice/client';
 import { openWorkspaceNote, openWorkspaceQuiz, openWorkspaceFlashcards } from '@/lib/workspace-events';
 import { VoiceDock } from './voice-dock';
+import {openSideChat} from '@/lib/workspace-side-chat-events';
 
 type VoiceContext = { start: (chatId: string) => Promise<void>; active: boolean; state: string; error: string };
 const Context = createContext<VoiceContext | null>(null);
@@ -47,7 +48,10 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   const intent = useCallback((event: VoiceEvent) => {
     const current = sessionRef.current;
     if (!current || !event.uiIntent) return;
-    const { action, targetId } = event.uiIntent;
+      const { action, targetId } = event.uiIntent;
+      if(action==='open_note_draft'&&targetId){window.dispatchEvent(new CustomEvent('openlearn:note-draft-ready',{detail:{chatId:current.chatId,draftId:targetId}}));return;}
+      if(action==='focus_workspace'||action==='restore_workspace'){window.dispatchEvent(new CustomEvent('openlearn:workspace-focus',{detail:action==='focus_workspace'}));return;}
+      if(action==='open_side_chat'&&event.result&&typeof event.result.title==='string'&&typeof event.result.excerpt==='string'){openSideChat({id:crypto.randomUUID(),title:event.result.title,excerpt:event.result.excerpt,note:event.result.note as {noteId:string;expectedRevision:number;startOffset:number;endOffset:number}});return;}
     if (action === 'open_quiz' && targetId) openWorkspaceQuiz({ sessionId: current.chatId, quizId: targetId, origin: 'ask' });
     else if (action === 'open_note' && targetId) openWorkspaceNote(targetId);
     else if (action === 'open_flashcards' && targetId) openWorkspaceFlashcards({ deckId: targetId, view: 'editor' });
@@ -149,10 +153,12 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
   }, [device, end, receive, reconnect]);
 
   const start = useCallback(async (chatId: string) => {
-    if (sessionRef.current || connecting.current) return;
+    if (connecting.current) return;
+    if(sessionRef.current?.chatId===chatId)return;
+    if(sessionRef.current)await end();
     try { const capability = await voiceApi.capabilities(); if (!capability.enabled) { setError(capability.message); return; } setSetup(chatId); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Voice unavailable.'); }
-  }, []);
+  }, [end]);
 
   useEffect(() => {
     const changed = () => { void end(); setEvents([]); setSetup(null); };

@@ -2,13 +2,15 @@ const requestHeaders = ['authorization', 'content-type', 'accept', 'last-event-i
 const responseHeaders = ['content-type', 'content-disposition', 'content-range', 'accept-ranges', 'retry-after', 'etag'];
 
 export async function proxyHostedApi(request: Request, segments: string[]): Promise<Response> {
-  const configured = process.env.OPENLEARN_API_ORIGIN?.trim();
+  const localPreview = process.env.NODE_ENV === 'development' && ['localhost','127.0.0.1','[::1]'].includes(new URL(request.url).hostname);
+  const configured = process.env.OPENLEARN_API_ORIGIN?.trim() || (localPreview ? 'http://127.0.0.1:8000' : undefined);
   const unavailable = () => Response.json({ detail: { code: 'service_unavailable', message: 'Open Learn is temporarily unavailable. Your draft is still here. Please retry.' } }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   if (!configured) return unavailable();
   let origin: URL;
   try {
     origin = new URL(configured);
-    if (origin.protocol !== 'https:' || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)) return unavailable();
+    const localUpstream = localPreview && origin.origin === 'http://127.0.0.1:8000';
+    if ((!localUpstream && (origin.protocol !== 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) return unavailable();
   } catch { return unavailable(); }
   if (segments.some(part => !part || part === '.' || part === '..' || part.includes('/') || part.includes('\\'))) return Response.json({ detail: { code: 'invalid_path', message: 'Invalid request.' } }, { status: 400 });
   const upstream = new URL('/v1/' + segments.map(encodeURIComponent).join('/'), origin);

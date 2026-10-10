@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/CopilotKit/OpenIntelligentUI",
+  "commit": "f6e4388b26a64b9a0714943b08a1ce622b924eec",
+  "files": {
+    "apps/agent/pyproject.toml": "a84143be58bb006f51fc7161aad3cf25ab8c8cb08286ca925971cbcf1d6a203b",
+    "apps/agent/uv.lock": "a03b8bbc378660571c6ffc762d90b31f181cc1e4bdaa173738504415d696d514",
+    "LICENSE": "762b41400d3df28a12505b38ee3410d373776157388ca4468647769bb48a012d",
+    "apps/agent/src/model.py": "61adba76bf2e58d705ec52fb6d8f652be88b4e85bc03d618170de414da771745",
+    "apps/agent/src/visualization_router.py": "e7aa437f55c9d2653d32827f7b498ac9949cb494176b599b270c7e966ff5c089",
+    "apps/agent/src/anthropic_compat.py": "bfadc19a4a55fd7c7de5209c5dc44adb1041967c79a5c067951caec91f6a32d6",
+    "apps/agent/src/bounded_memory_saver.py": "7e407317d8f570f0ee99368d7c844f55e0931a2d9cd8d0f3258524b59f7cb450",
+    "apps/agent/src/skill_backend.py": "c4ee0a3928a29d3a1276fc96998651e92c08ffd7be64a4d770e195b9c09d5a62",
+    "apps/agent/src/prompt.py": "89b391b24f5782a403a5b729ba5ad432d7cd9f36aceb11bd2a1801b2d1323e1a",
+    "apps/agent/src/credentials.py": "43a4e6024f5c2c1b533e5c295f0d11fd4968b4ecd6dba3ba60a7db5a90d40e81",
+    "apps/agent/src/trip_images.py": "eadeea8ea97737158bf65c219e73c4f4c25873ea56ec601b79b8fc4589263d33",
+    "apps/agent/skills/advanced-visualization/SKILL.md": "65d3c7b6af9230963f0ed08820ce8d1ea8ba0c48ad748010450c2a7126f2672b",
+    "apps/agent/skills/master-playbook/SKILL.md": "37ef55dfa024a79176fe8d5e66576fc25c488b752195e084b90844e66c1d0d04",
+    "apps/agent/skills/svg-diagrams/SKILL.md": "333e603a611a2aa65427d1e8b812cefbc84521b4ede18e53fd853775772eefba",
+    "apps/agent/src/plan.py": "89bf396d94ab9ce298b81f48766b046171d9c0734d67334b7c02df776ca16ecd"
+  }
+}

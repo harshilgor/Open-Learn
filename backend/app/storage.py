@@ -164,17 +164,30 @@ class Store:
         return ([LearningSession.model_validate_json(row["payload"]) for row in rows], int(total))
 
     def journey_turn_count(self, owner: str, session_id: str) -> int:
+        return self.journey_history_metadata(owner, session_id)["turn_count"]
+
+    def journey_history_metadata(self, owner: str, session_id: str) -> dict:
+        """Bounded learner-message preview; never expose lesson or answer content."""
         with self.engine.connect() as connection:
             row = connection.execute(
                 text("SELECT payload FROM practice_records WHERE id = :id AND owner_id = :owner"),
                 {"id": f"journey_{session_id}", "owner": owner},
             ).mappings().first()
         if row is None:
-            return 0
+            return {"turn_count": 0, "preview": None}
         try:
-            return len(json.loads(row["payload"]).get("turns", []))
+            turns = json.loads(row["payload"]).get("turns", [])
+            if not isinstance(turns, list):
+                return {"turn_count": 0, "preview": None}
+            preview = next((turn.get("question") for turn in reversed(turns)
+                            if isinstance(turn, dict) and isinstance(turn.get("question"), str)
+                            and turn["question"].strip()), None)
+            if preview:
+                preview = " ".join(preview.split())
+                preview = preview[:177] + "…" if len(preview) > 180 else preview
+            return {"turn_count": len(turns), "preview": preview}
         except (ValueError, AttributeError):
-            return 0
+            return {"turn_count": 0, "preview": None}
 
     def rename_session(self, session_id: str, owner: str, title: str) -> LearningSession | None:
         session = self.get_session(session_id)

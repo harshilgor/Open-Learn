@@ -1,21 +1,23 @@
 "use client";
 import { VoiceProvider } from './voice/voice-provider';
+import {WorkspaceSideChats} from './workspace-side-chats';
 import dynamic from 'next/dynamic';
 import mobileLayout from './mobile-workspace.module.css';
 import { useMobileViewport } from '@/hooks/use-mobile-viewport';
 import { DeferredWorkspace } from './deferred-workspace';
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, ChevronsUpDown, CircleHelp, Compass, ExternalLink, FileText, FolderClosed, FolderPlus, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Settings, Sparkles, SquarePen, X } from 'lucide-react';
-import { Sidebar, SidebarContent, SidebarFooter, SidebarProvider, SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, CircleHelp, ExternalLink, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Settings, Sparkles, X } from 'lucide-react';
+import { SidebarProvider, useSidebar } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { AccountMenuActions, AccountProfile } from '@/components/account-access';
 import { LearnChat } from '@/components/learn-chat';
+import { WorkspaceRail, MobileChatHistory } from './workspace-rail';
 import { MobileHeader } from './mobile-header';
 import { buddyApi } from '@/lib/buddies';
-import { BuddyRail, BuddyHeader, useBuddies } from '@/components/buddies';
+import { BuddyHeader, useBuddies } from '@/components/buddies';
 import { StudyDashboard } from './study-dashboard';
+import { CourseIndex } from './course-index';
+const CalendarWorkspace = dynamic(() => import('./calendar/calendar-workspace').then(module => module.CalendarWorkspace));
 import {CLASS_OPEN_EVENT,classApi,openClassWorkspace} from '@/lib/in-class';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -26,12 +28,11 @@ import { learningApi, type LessonArtifact, type CourseSummary } from '@/lib/api'
 import { getJourney, navigateToSession, rememberSessionHint, resolveSessionHint, sessionIdFromPath, workflow } from '@/lib/learning-workflows';
 import { WorkspaceSplit, useWorkspacePanel } from '@/components/workspace-split';
 import { WorkspacePanel, type WorkspacePanelLayout, NotesWorkspace } from '@/components/workspace-panel';
-import { ChatHistory } from '@/components/chat-history';
 import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceNote, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
 import type { SettingsCategory } from '@/components/settings-page';
 import type { Task } from '@/components/course-study-planner';
 import { ClassRecorder } from '@/components/class-recorder';
-import { WorkspaceSidebar, type WorkspaceSidebarTab, type NotesCommand } from './workspace-sidebar';
+import { type WorkspaceSidebarTab, type NotesCommand } from './workspace-sidebar';
 import { sidebarTabFromPath, workspacePath } from '@/lib/workspace-navigation';
 
 type Branch = { id:string;mapId:string;conceptId:string;anchor:string;mode:string;parent:string|null;draft:string;note:string };
@@ -75,28 +76,24 @@ function NotesPanelTrigger() {
   );
 }
 
-function AdaptiveSidebarTrigger({ inSidebar = false }: { inSidebar?: boolean }) {
-  const { state, isMobile, openMobile } = useSidebar();
-  const showInside = isMobile ? openMobile : state === 'expanded';
-  if (inSidebar !== showInside) return null;
-  return <SidebarTrigger className={inSidebar ? 'collapse-control' : undefined} aria-label={inSidebar ? 'Collapse sidebar' : isMobile ? 'Open chats and navigation' : 'Open sidebar'} title={isMobile ? 'Chats' : undefined} />;
-}
-
-
-export default function LearningWorkspace(props: { initialSessionId?: string | null; initialCourseId?: string | null; initialSidebarTab?: WorkspaceSidebarTab }) {
-  return <VoiceProvider><LearningWorkspaceContent {...props} /></VoiceProvider>;
+export default function LearningWorkspace(props: { initialSessionId?: string | null; initialCourseId?: string | null; initialSidebarTab?: WorkspaceSidebarTab; initialView?: 'calendar' }) {
+  return <VoiceProvider><LearningWorkspaceContent {...props} /><WorkspaceSideChats/></VoiceProvider>;
 }
 
 function LearningWorkspaceContent({
   initialSessionId = null,
   initialCourseId = null,
   initialSidebarTab = 'home',
+  initialView,
 }: {
   initialSessionId?: string | null;
   initialCourseId?: string | null;
   initialSidebarTab?: WorkspaceSidebarTab;
+  initialView?: 'calendar';
 }) {
  const [state,setState]=useState<Stored>(INITIAL);
+  const [recordedNoteId,setRecordedNoteId]=useState<string|null>(null);
+  const [sidebarTab, setSidebarTab] = useState<WorkspaceSidebarTab>(initialSidebarTab);
  const viewportRef = useMobileViewport();
  const buddies=useBuddies();
  const appliedReminderLink=useRef('');
@@ -107,7 +104,7 @@ function LearningWorkspaceContent({
  const [ready,setReady]=useState(false);
   const [mobile, setMobile] = useState(false);
   useEffect(() => { const media = window.matchMedia('(max-width: 1023px)'); const sync = () => setMobile(media.matches); sync(); media.addEventListener('change',sync); return () => media.removeEventListener('change',sync); }, []);
-  const [view,setView]=useState<'home'|'maps'|'saved'|'topic'|'quiz'|'notes'|'review'|'settings'|'course'|'reminders'|'courses'|'dashboard'|'mobile-tool'>(initialSidebarTab);
+  const [view,setView]=useState<'home'|'maps'|'saved'|'topic'|'quiz'|'notes'|'review'|'settings'|'course'|'reminders'|'courses'|'dashboard'|'mobile-tool'|'calendar'>(initialView || initialSidebarTab);
  const [mobileToolLayout,setMobileToolLayout]=useState<WorkspacePanelLayout>({width:100,collapsed:false,tabs:['notes'],activeTab:'notes'});
  const [mobileTool,setMobileTool]=useState<Partial<Parameters<typeof WorkspacePanel>[0]>>({});
  useEffect(() => {
@@ -124,7 +121,7 @@ function LearningWorkspaceContent({
    return()=>{window.removeEventListener(WORKSPACE_NOTE_OPEN_EVENT,note);events.forEach(name=>window.removeEventListener(name,open));};
  }, [mobile]);
 
-  const [sidebarTab, setSidebarTab] = useState<WorkspaceSidebarTab>(initialSidebarTab);
+
   const [notesHost, setNotesHost] = useState<HTMLDivElement | null>(null);
   const [notesCommand, setNotesCommand] = useState<NotesCommand | null>(null);
   const [courses,setCourses]=useState<CourseSummary[]>([]);
@@ -134,7 +131,7 @@ function LearningWorkspaceContent({
   const [courseDialogOpen,setCourseDialogOpen]=useState(false);
   const [recordSetupOpen,setRecordSetupOpen]=useState(false);
   const [recordFolder,setRecordFolder]=useState<string|null>(null);
-  const [recordedNoteId,setRecordedNoteId]=useState<string|null>(null);
+
   const [selectedNoteId,setSelectedNoteId]=useState<string|null>(null);
   const [settingsCategory,setSettingsCategory]=useState<SettingsCategory>('general');
   const [activeSessionId,setActiveSessionId]=useState<string|null>(initialSessionId);
@@ -214,7 +211,8 @@ function LearningWorkspaceContent({
     buddies.select(id);setActiveCourseId(null);
     let previous:string|null|undefined=lastBuddyChats.current[id]||buddies.snapshot?.lastChats[id];
     try{previous??=localStorage.getItem(`openlearn-last-chat:${id}`);}catch{}
-    openSession(previous&&buddies.snapshot?.chats[previous]===id?previous:null);
+    const fallback=Object.keys(buddies.snapshot?.chats||{}).find(session=>buddies.snapshot?.chats[session]===id);
+    openSession(previous&&buddies.snapshot?.chats[previous]===id?previous:fallback||null);
   }
   useEffect(()=>{
     const opened=(event:Event)=>{const detail=(event as CustomEvent<{classId:string;sessionId?:string}>).detail;if(!detail?.classId)return;setView('home');if(detail.sessionId){openSession(detail.sessionId,false);window.history.replaceState({},'',window.location.pathname+'?class='+encodeURIComponent(detail.classId));void buddies.refresh();}else void classApi.snapshot(detail.classId).then(value=>{openSession(value.session.sessionId,false);window.history.replaceState({},'',window.location.pathname+'?class='+encodeURIComponent(detail.classId));void buddies.refresh();}).catch(()=>undefined);};
@@ -341,16 +339,14 @@ function LearningWorkspaceContent({
 
    return <SidebarProvider ref={viewportRef} className={`forma-app-shell ${mobileLayout.shell}`} style={{'--sidebar-width':'260px'} as CSSProperties}>
   <MobileNavigationDismiss navigationKey={`${view}:${activeSessionId}:${activeCourseId}:${sidebarTab}`} />
-  <BuddyRail onSwitch={switchBuddy} onHome={()=>openSession(null)} onSettings={()=>{setSettingsCategory('general');setView('settings');}} />
-  {view==='settings'?<div className="settings-full"><SettingsPage category={settingsCategory} onCategoryChange={setSettingsCategory} onBack={()=>setView('home')} /></div>:<><Sidebar className="forma-sidebar"><SidebarContent>
-    <WorkspaceSidebar tab={sidebarTab} onTabChange={switchSidebarTab} collapseControl={<AdaptiveSidebarTrigger inSidebar />} courses={courses} activeCourseId={activeCourseId} onCourseSelect={selectCourse} onCourseOpen={id=>{setActiveCourseId(id);setView('course');setBranchId(null);}} onNewChat={()=>openSession(null)} onNewCourse={()=>setCourseDialogOpen(true)} onNotesCommand={action=>setNotesCommand(current=>({id:(current?.id||0)+1,action}))} onDashboard={()=>{setView('dashboard');setBranchId(null);}} dashboardActive={view==='dashboard'} activeSessionId={activeSessionId} refreshKey={historyVersion} onOpenSession={openSession} notesHost={setNotesHost} />
-   </SidebarContent><SidebarFooter><DropdownMenu><DropdownMenuTrigger asChild><button className="profile" aria-label="Account menu"><AccountProfile/><ChevronsUpDown size={15}/></button></DropdownMenuTrigger><DropdownMenuContent side="top" align="start" sideOffset={8} className="w-[224px] learner-menu"><DropdownMenuLabel><div className="flex items-center gap-2.5"><span className="avatar">L</span><div className="grid gap-0.5"><strong className="text-sm font-semibold leading-none">Learner</strong><small className="text-xs text-muted-foreground">Your Open Learn account</small></div></div></DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuItem onSelect={()=>openSession(null)}><Plus size={15}/>New topic<DropdownMenuShortcut>⌘ K</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('general');setView('settings');setBranchId(null);}}><Settings size={15}/>Settings<DropdownMenuShortcut>Ctrl+,</DropdownMenuShortcut></DropdownMenuItem><DropdownMenuItem onSelect={()=>{setSettingsCategory('about');setView('settings');setBranchId(null);}}><CircleHelp size={15}/>Help &amp; app info</DropdownMenuItem><AccountMenuActions/></DropdownMenuContent></DropdownMenu></SidebarFooter></Sidebar>
-    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={mobile||view==='dashboard'||view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar workspace-topbar">
-      <MobileHeader title={view==='mobile-tool'?({notes:'Notes',sources:'Sources',canvas:'Canvas',quiz:'Practice',flashcards:'Flashcards',practice:'Practice',class:'Class',reminders:'Reminders'}[mobileToolLayout.activeTab]):view==='home'?'Buddy':view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='courses'||view==='course'?'Courses':view==='review'?'Review':view==='reminders'?'Reminders':'Open Learn'} onNewChat={()=>openSession(null)} onNavigate={destination=>{if(destination==='home'||destination==='notes')switchSidebarTab(destination);else if(destination==='courses')setView('courses');else if(destination==='dashboard')setView('dashboard');else if(destination==='review')setView('review');else if(destination==='settings'){setSettingsCategory('general');setView('settings');}}}/>
+  <WorkspaceRail activeSessionId={activeSessionId} refreshKey={historyVersion} courses={courses} onSwitch={switchBuddy} onOpen={openSession} onNavigate={destination=>{if(destination==='notes')switchSidebarTab('notes');else {setView(destination as typeof view);setBranchId(null);}}}/>
+  {view==='settings'?<div className="settings-full"><SettingsPage category={settingsCategory} onCategoryChange={setSettingsCategory} onBack={()=>setView('home')} /></div>:<>
+    <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={mobile||view==='dashboard'||view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'||view==='calendar'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar workspace-topbar">
+      <MobileHeader buddyPicker={<BuddyHeader onSwitch={switchBuddy}/>} history={<MobileChatHistory activeSessionId={activeSessionId} refreshKey={historyVersion} courses={courses} onOpen={openSession}/>} title={view==='mobile-tool'?({notes:'Notes',sources:'Sources',canvas:'Canvas',quiz:'Practice',flashcards:'Flashcards',practice:'Practice',class:'Class',reminders:'Reminders'}[mobileToolLayout.activeTab]):view==='home'?(activeSessionId?chatTitle:'New chat'):view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='calendar'?'Calendar':view==='courses'||view==='course'?'Courses':view==='review'?'Review':view==='reminders'?'Reminders':'Open Learn'} onNewChat={()=>openSession(null)} onNavigate={destination=>{if(destination==='home'||destination==='notes')switchSidebarTab(destination);else if(destination==='courses')setView('courses');else if(destination==='dashboard')setView('dashboard');else if(destination==='calendar')setView('calendar');else if(destination==='review')setView('review');else if(destination==='reminders')setView('reminders');else if(destination==='settings'){setSettingsCategory('general');setView('settings');}}}/>
 
       <div className="topbar-primary">
-        <AdaptiveSidebarTrigger/>
-        <BuddyHeader onSwitch={switchBuddy} />
+
+        <BuddyHeader onSwitch={switchBuddy} onNewChat={()=>openSession(null)} />
       </div>
       <div className="topbar-context" aria-label="Current workspace">
         {view === 'course' ? (
@@ -358,23 +354,25 @@ function LearningWorkspaceContent({
         ) : view === 'home' && activeCourseId ? (
           <><button className="text-muted-foreground hover:text-foreground transition-colors truncate max-w-[160px]" onClick={()=>{setView('course');}}>{courses.find((c) => c.id === activeCourseId)?.name || 'Course'}</button><ChevronRight size={13}/><strong className="truncate max-w-[210px]" title={chatTitle}>{chatTitle}</strong>{activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}{(courses.find(c=>c.id===activeCourseId)?.roadmapProgress||0)>0?<span className="header-progress" role="img" aria-label={`${courses.find(c=>c.id===activeCourseId)?.roadmapProgress}% course progress`} style={{'--progress':`${courses.find(c=>c.id===activeCourseId)?.roadmapProgress}%`} as CSSProperties}/>:null}</>
         ) : (
-          <><strong className="text-foreground font-medium truncate max-w-[250px]" title={view==='home'?chatTitle:undefined}>{view==='topic'?currentMap.title:view==='saved'?'Saved explorations':view==='maps'?'Knowledge maps':view==='quiz'?'Quiz':view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='review'?'Review':view==='reminders'?'Reminders':view==='courses'?'Courses':chatTitle}</strong>{view==='home'&&activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}</>
+          <><strong className="text-foreground font-medium truncate max-w-[250px]" title={view==='home'?chatTitle:undefined}>{view==='topic'?currentMap.title:view==='saved'?'Saved explorations':view==='maps'?'Knowledge maps':view==='quiz'?'Quiz':view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='calendar'?'Calendar':view==='review'?'Review':view==='reminders'?'Reminders':view==='courses'?'Courses':chatTitle}</strong>{view==='home'&&activeConceptTitle?<><ChevronRight size={13}/><span className="truncate max-w-[160px]" title={activeConceptTitle}>{activeConceptTitle}</span></>:null}</>
         )}
       </div>
       <div className="topbar-actions">
+        {view === 'notes' ? <><Button size="sm" variant="outline" onClick={()=>setNotesCommand(current=>({id:(current?.id||0)+1,action:'new-note'}))}><Plus size={15}/>New note</Button><Button size="sm" variant="ghost" onClick={()=>setNotesCommand(current=>({id:(current?.id||0)+1,action:'new-folder'}))}>New folder</Button></> : null}
 
         {reviewDueCount > 0 ? <Button variant="outline" size="sm" className="review-due-button" onClick={()=>{setView('review');setBranchId(null);}}>Review · {reviewDueCount} due</Button> : null}
-        {view !== 'dashboard' && view !== 'notes' && view !== 'review' && view !== 'course' ? <NotesPanelTrigger /> : null}
+        {view !== 'dashboard' && view !== 'notes' && view !== 'review' && view !== 'course' && view !== 'calendar' && view !== 'courses' ? <NotesPanelTrigger /> : null}
       </div>
     </header>
    {reviewReturnBanner?<div className="toast-message" role="status"><RotateCcw size={16}/>Return to your review when you are ready.<button type="button" onClick={()=>{if(reviewReturnBanner.startsWith('fcr_'))openWorkspaceFlashcards({view:'review',reviewSessionId:reviewReturnBanner});else{setReviewContext({sessionId:reviewReturnBanner});setView('review');}setReviewReturnBanner(null);}}>Return to Review</button><button onClick={()=>setReviewReturnBanner(null)} aria-label="Dismiss"><X size={14}/></button></div>:null}
    {view==='mobile-tool'?<div className="mobile-tool-page"><WorkspacePanel {...mobileTool} layout={mobileToolLayout} onLayoutChange={setMobileToolLayout} onCollapse={()=>setView('home')} onExpand={()=>{}} noteSeed={mobileTool.noteSeed||null} noteToOpen={null} onNoteSeedConsumed={()=>setMobileTool(current=>({...current,noteSeed:null}))} onNoteOpenConsumed={()=>{}}/></div>:null}
-   {view==='dashboard'?<StudyDashboard courses={courses} onReview={()=>{setReviewContext({});setView('review');}} onCourse={id=>{setActiveCourseId(id);setView('course');}} onAddCourse={()=>setCourseDialogOpen(true)} onReminders={()=>setView('reminders')} onStudy={()=>openSession(activeSessionId)} onClass={id=>{setActiveCourseId(id);setRecordSetupOpen(true);}} onPrep={(id,title)=>{const buddy=buddies.snapshot?.courses[id]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);setActiveCourseId(id);openSession(null);setAskTutorPrompt(`Help me prepare for ${title}. Use my course materials when available.`);setAutoSubmitTutorPrompt(false);}}/>:null}
+   {view==='dashboard'?<StudyDashboard onCalendar={()=>setView('calendar')} courses={courses} onReview={()=>{setReviewContext({});setView('review');}} onCourse={id=>{setActiveCourseId(id);setView('course');}} onAddCourse={()=>setCourseDialogOpen(true)} onReminders={()=>setView('reminders')} onStudy={()=>openSession(activeSessionId)} onClass={id=>{setActiveCourseId(id);setRecordSetupOpen(true);}} onPrep={(id,title)=>{const buddy=buddies.snapshot?.courses[id]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);setActiveCourseId(id);openSession(null);setAskTutorPrompt(`Help me prepare for ${title}. Use my course materials when available.`);setAutoSubmitTutorPrompt(false);}}/>:null}
    {view==='reminders'?<BuddyReminders initialReminderId={reminderId} onCourse={id=>{setActiveCourseId(id);setView('course');}}/>:null}
-   {view==='courses'?<section className="buddy-home"><h2>Your courses</h2><Button onClick={()=>setCourseDialogOpen(true)}>Add a course</Button>{courses.map(course=>{const id=buddies.snapshot?.courses[course.id]||buddies.snapshot?.defaultBuddyId;return <button className="nav-item" key={course.id} onClick={()=>{setActiveCourseId(course.id);setView('course');}}>{course.name} · {buddies.snapshot?.profiles.find(p=>p.id===id)?.name||'Buddy'}</button>;})}{!courses.length?<p>Add a course to organize your chats and class sessions.</p>:null}</section>:null}
+   {view==='calendar'?<CalendarWorkspace courses={courses} onCourse={id=>{setActiveCourseId(id);setView('course');}} onStudy={event=>{if(event.courseId)setActiveCourseId(event.courseId);openSession(null);setAskTutorPrompt(`Help me prepare for ${event.title}. Use my course materials when available.`);setAutoSubmitTutorPrompt(false);}}/>:null}
+   {view==='courses'?<CourseIndex courses={courses} buddyForCourse={courseId=>{const id=buddies.snapshot?.courses[courseId]||buddies.snapshot?.defaultBuddyId;return buddies.snapshot?.profiles.find(profile=>profile.id===id)?.name||'Buddy';}} onAddCourse={()=>setCourseDialogOpen(true)} onCourse={id=>{setActiveCourseId(id);setView('course');}}/>:null}
    <div className={`chat-view ${mobileLayout.chat}`} hidden={view!=='home'}><LearnChat onMissingSession={()=>openSession(null)} key={`${learnVersion}:${buddies.active?.id}`} onInClass={()=>setRecordSetupOpen(true)} onSessionCreated={id=>{setActiveSessionId(id);if(buddies.active){lastBuddyChats.current[buddies.active.id]=id;void buddyApi.remember(buddies.active.id,id).catch(()=>{});try{localStorage.setItem(`openlearn-last-chat:${buddies.active.id}`,id);}catch{}}}} initialSessionId={activeSessionId} initialPrompt={askTutorPrompt||undefined} preferredMode={askTutorMode} autoSubmitInitialPrompt={autoSubmitTutorPrompt} studyTask={studyTask} onStudyTaskCompleted={()=>setStudyTask(null)} onInitialPromptConsumed={()=>{setAskTutorPrompt(null);setAutoSubmitTutorPrompt(false);}} onQuiz={async (sessionId,conceptId,origin='ask',requestedTopic,sourceTransitionId)=>{const lessonNoteId=origin==='learn'?(await learningApi.createStudyNote(sessionId)).noteId:undefined;setQuizContext({sessionId,conceptId});setView('home');openWorkspaceQuiz({sessionId,conceptId,origin,requestedTopic,lessonNoteId,sourceTransitionId});}} onReview={(sessionId,conceptId)=>{setReviewContext({sessionId,conceptId});setView('review')}} courseId={activeCourseId} courseName={courses.find(c => c.id === activeCourseId)?.name} onCourseClick={(cid)=>{setActiveCourseId(cid);setView('course');}} /></div>
    {view==='course'&&activeCourseId?<CourseHome key={activeCourseId} onSavedQuiz={quiz=>{openSession(quiz.sessionId);openWorkspaceQuiz({sessionId:quiz.sessionId,quizId:quiz.id,lessonNoteId:quiz.lessonNoteId||undefined,origin:quiz.origin==='learn'?'learn':'ask'});}} onStartClass={()=>setRecordSetupOpen(true)} courseId={activeCourseId} onOpenSession={(sid)=>openSession(sid)} onNewSession={()=>{const buddy=buddies.snapshot?.courses[activeCourseId]||buddies.snapshot?.defaultBuddyId;if(buddy)buddies.select(buddy);openSession(null);}} onOpenNote={(nid)=>{setRecordedNoteId(nid);switchSidebarTab('notes');}} onQuizSession={(sid)=>{void Promise.all([learningApi.getSession(sid),learningApi.getStudyNote(sid)]).then(([session,note])=>{setActiveSessionId(sid);setQuizContext({sessionId:sid});setView('home');openWorkspaceQuiz({sessionId:sid,origin:note?'learn':'ask',lessonNoteId:note?.noteId,requestedTopic:session.goal||undefined});}).catch(cause=>setNotice(cause instanceof Error?cause.message:'Could not open this quiz.'));}} onLaunchTask={async(task:Task)=>{const topic=String(task.launch.requestedTopic||task.reason).slice(0,200);const session=await learningApi.createSession({topic,goal:task.reason,courseId:activeCourseId||undefined});setActiveCourseId(activeCourseId);openSession(session.id);return session.id;}} onLaunchReady={(task:Task,sessionId:string,revision:number)=>{const workflow=String(task.launch.workflow);const topic=String(task.launch.requestedTopic||task.reason);const canonicalConceptIds=task.conceptIds||[];if(workflow==='quiz'){setQuizContext({sessionId,conceptId:undefined});openWorkspaceQuiz({sessionId,origin:'ask',requestedTopic:topic,taskId:task.id,taskCourseId:activeCourseId||undefined,taskRevision:revision,canonicalConceptIds});return;}setStudyTask({taskId:task.id,courseId:activeCourseId||'',revision,canonicalConceptIds});setAskTutorMode('learn');setAskTutorPrompt(`Teach me ${topic}. Focus on the learning task: ${task.reason}`);setAutoSubmitTutorPrompt(true);}} onUpdated={()=>{void refreshCourses();setHistoryVersion(v=>v+1);}} onDeleted={()=>{setActiveCourseId(null);setView('home');void refreshCourses();}} />:null}
-  <div className="notes-view" hidden={view!=='notes'}><DeferredWorkspace active={view==='notes'}><NotesWorkspace compact={mobile} listHost={notesHost} courses={courses} courseFilter={activeCourseId} onCourseFilter={selectCourse} command={notesCommand} onRecordClass={folder=>{setRecordFolder(folder);setRecordSetupOpen(true);}} noteToOpen={recordedNoteId || selectedNoteId} onNoteOpenConsumed={()=>setRecordedNoteId(null)} onNoteSelected={selectNote} /></DeferredWorkspace></div>
+  <div className="notes-view" hidden={view!=='notes'}><div className="notes-navigation-host" ref={setNotesHost}/><DeferredWorkspace active={view==='notes'}><NotesWorkspace compact={mobile} listHost={notesHost} courses={courses} courseFilter={activeCourseId} onCourseFilter={selectCourse} command={notesCommand} onRecordClass={folder=>{setRecordFolder(folder);setRecordSetupOpen(true);}} noteToOpen={recordedNoteId || selectedNoteId} onNoteOpenConsumed={()=>setRecordedNoteId(null)} onNoteSelected={selectNote} /></DeferredWorkspace></div>
   {view==='quiz' ? <QuizWorkspace historyOnly sessionId={quizContext?.sessionId} conceptId={quizContext?.conceptId} onStartQuiz={()=>{setView('home');requestWorkspaceQuiz();}} onReturn={()=>setView('home')} onReviewInLearn={suggestion=>{
     const sid = quizContext?.sessionId || activeSessionId;
     if (!sid) { setNotice('Open the original conversation to review this topic.'); return; }

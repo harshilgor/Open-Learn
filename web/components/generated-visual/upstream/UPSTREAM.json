@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/CopilotKit/OpenIntelligentUI",
+  "commit": "f6e4388b26a64b9a0714943b08a1ce622b924eec",
+  "adaptations": [
+    "Open Learn host bridge instead of CopilotKit chat submission",
+    "local bundled library importmap",
+    "preview and final CSP",
+    "portable isolated export supplied by host",
+    "truthful progress message",
+    "typed numeric state persistence"
+  ]
+}

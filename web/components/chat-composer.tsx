@@ -2,7 +2,7 @@
 import { useVoice } from './voice/voice-provider';
 import { AudioLines } from 'lucide-react';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, ChevronDown, Mic, CircleHelp, FileText, GraduationCap, MessageCircle, MessageCircleQuestion, Plus, Square, X, Upload, type LucideIcon } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
@@ -88,9 +88,9 @@ export function ChatModeSelector({ mode, onModeChange, disabled, conversation, o
 export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string; uploadPath?: string; resumableUploadPath?: string; uploadSessionUrl?: string; uploadComplete?: boolean };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
-export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry, onVoice }: {
+export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, allowSendWhileBusy = false, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry, onVoice }: {
   value: string; onChange: (value: string) => void; attachments: ChatAttachment[];
-  onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
+  onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; allowSendWhileBusy?: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
   mode?: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
   noteMentions?: ChatNoteMention[]; onAddNoteMention?: (note: WorkspaceNoteSummary) => void; onRemoveNoteMention?: (noteId: string) => void; onOpenNoteMention?: (noteId: string) => void;
   unavailable?: string; onRetry?: () => void;
@@ -99,6 +99,8 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
 }) {
   const voice = useVoice();
   const dictation = useDictation();
+  const uniqueId=useId();
+  const messageId=variant==='main'?'chat-message':`chat-message-${uniqueId}`;
   const cancelDictation = dictation.cancel;
   useEffect(() => { if (voice?.active) cancelDictation(); }, [voice?.active, cancelDictation]);
   const dictationSnapshot = useRef({ draft: '', start: 0, end: 0 });
@@ -122,17 +124,16 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
   const { snapshot: allowance, error: allowanceError } = useAllowance(busy || Boolean(voice?.active));
   const allowancePercent = allowance ? usagePercent(allowance) : null;
   const allowanceBlocked = !allowance || Boolean(allowanceError || allowance.availability !== 'available' || allowance.availableMicrocredits <= 0);
+  const showConnectionNotice = Boolean(unavailable && unavailable !== 'Open Learn could not connect. You can keep writing your draft.');
   let usageNotice = '';
-  if (!allowance || !allowancePercent) {
-    if (allowanceError) usageNotice = 'AI work is paused while usage is checked. Your draft stays here.';
-  } else if (allowance.reasonCode === 'usage_window_exhausted' || allowance.availableMicrocredits <= 0) {
+  if (allowance?.reasonCode === 'usage_window_exhausted' || (allowance && allowance.availableMicrocredits <= 0)) {
     const reset = allowance.resetsAt ? new Date(allowance.resetsAt * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
     usageNotice = allowance.heldMicrocredits > 0 ? 'Remaining allowance is reserved for ongoing work.' : reset ? `Your allowance refreshes at ${reset}. Your draft stays here.` : 'Your AI allowance is used for this window.';
-  } else if (allowance.availability !== 'available') {
+  } else if (allowance && allowance.availability !== 'available') {
     usageNotice = 'AI work is temporarily unavailable while usage is checked. Your draft stays here.';
-  } else if (!allowance.testUnlimited && allowancePercent.used >= 95) {
+  } else if (allowance && allowancePercent && !allowance.testUnlimited && allowancePercent.used >= 95) {
     usageNotice = 'You are close to your AI allowance limit.';
-  } else if (!allowance.testUnlimited && allowancePercent.used >= 80) {
+  } else if (allowance && allowancePercent && !allowance.testUnlimited && allowancePercent.used >= 80) {
     usageNotice = 'Most of your AI allowance has been used.';
   }
   const reduceMotion = useAppReducedMotion();
@@ -170,18 +171,18 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     const mobile = window.innerWidth <= 1023;
     const maxHeight = mobile ? 112 : 196;
     element.style.height = '0px';
-    const height = Math.min(Math.max(element.scrollHeight, mobile ? 28 : 44), maxHeight);
+    const height = Math.min(Math.max(element.scrollHeight, 32), maxHeight);
     element.style.height = `${height}px`;
     element.style.overflowY = element.scrollHeight > maxHeight ? 'auto' : 'hidden';
-  }, []);
+  }, [variant]);
   useLayoutEffect(() => { resizeTextarea(); }, [resizeTextarea, value]);
   useEffect(() => {
     window.addEventListener('resize', resizeTextarea);
     return () => window.removeEventListener('resize', resizeTextarea);
   }, [resizeTextarea]);
   useEffect(() => { if (!busy) void refreshAllowance(); }, [busy]);
-  return <><div className={styles.connectionStrip}>{unavailable ? <p className={styles.connectionNotice} role="status"><span>{unavailable}</span>{onRetry ? <button type="button" aria-label="Retry connection" onClick={onRetry}>Retry</button> : null}</p> : null}{usageNotice ? <p className={styles.usageNotice} role="status">{usageNotice}</p> : null}</div><form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? styles.compactComposer : styles.mainComposer} ${dragging ? styles.dragging : ''}`}
-    onSubmit={event => { event.preventDefault(); if (!busy && !unavailable && !allowanceBlocked && !dictationLocked) onSubmit(); }}
+  return <>{showConnectionNotice || usageNotice ? <div className={styles.connectionStrip}>{showConnectionNotice ? <p className={styles.connectionNotice} role="status"><span>{unavailable}</span>{onRetry ? <button type="button" aria-label="Retry connection" onClick={onRetry}>Retry</button> : null}</p> : null}{usageNotice ? <p className={styles.usageNotice} role="status">{usageNotice}</p> : null}</div> : null}<form className={`${followup ? styles.followupComposer : styles.composer} ${styles.chatComposer} ${variant === 'compact' ? `${styles.compactComposer} ${styles.mainComposer}` : styles.mainComposer} ${dragging ? styles.dragging : ''}`}
+    onSubmit={event => { event.preventDefault(); if ((!busy || allowSendWhileBusy) && !unavailable && !allowanceBlocked && !dictationLocked) onSubmit(); }}
     onDragEnter={event => { if (!busy && event.dataTransfer.types.includes('Files')) { event.preventDefault(); dragDepth.current++; setDragging(true); } }}
     onDragOver={event => { if (event.dataTransfer.types.some(type => ['Files', 'text/uri-list'].includes(type))) { event.preventDefault(); event.dataTransfer.dropEffect = busy ? 'none' : 'copy'; } }}
     onDragLeave={event => { event.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
@@ -190,23 +191,23 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
     {attachments.length > 0 && <div className={styles.attachments} aria-label="Chat attachments"><AnimatePresence initial={false}>{attachments.map(item => <motion.div className={styles.attachment} key={item.id} layout={!reduceMotion} initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }} transition={{ duration: 0.16 }}><FileText size={21} /><div><strong title={item.name}>{item.name}</strong><span>{item.versionId ? 'In this conversation' : `${item.name.split('.').at(-1)?.toUpperCase()} · ${(item.file.size / 1024 / 1024).toFixed(1)} MB`}</span></div><button type="button" disabled={busy || dictationLocked} aria-label={`Remove ${item.name} from this conversation`} onClick={() => onAttachmentsChange(attachments.filter(other => other.id !== item.id))}><X size={14} /></button></motion.div>)}</AnimatePresence></div>}
     {contextConcept ? <div className={styles.contextRow}><span>Asking about: {contextConcept.title}<button type="button" aria-label={`Remove ${contextConcept.title} context`} onClick={onRemoveContext}><X size={13}/></button></span></div> : null}
     {noteMentions.length > 0 ? <div className={styles.noteReceipt} aria-label="Learner note context"><AnimatePresence initial={false}>{noteMentions.map(note => <motion.span key={note.noteId} layout={!reduceMotion} initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }} transition={{ duration: 0.16 }}><button type="button" onClick={() => onOpenNoteMention?.(note.noteId)} title="Open note in workspace">Using: {note.title}</button><details><summary>{note.endOffset - note.startOffset} characters</summary><pre>{note.excerpt}</pre></details><button type="button" aria-label={`Remove ${note.title} from context`} onClick={() => onRemoveNoteMention?.(note.noteId)}><X size={12} /></button></motion.span>)}</AnimatePresence><p>Learner-provided context only. It is not a verified source.</p></div> : null}
-    <label htmlFor="chat-message" className="sr-only">Message your tutor</label>
+    <label htmlFor={messageId} className="sr-only">Message your tutor</label>
     <button type="button" className={styles.mobileOptionsButton} aria-label="Chat options and attachments" onClick={() => setOptionsOpen(true)} disabled={busy || dictationLocked}><Plus size={22}/></button>
     {variant === 'compact' && (mode !== 'ask' || gear !== 'Quick') ? <button type="button" className={styles.mobileModeBadge} onClick={() => setOptionsOpen(true)}>{CHAT_MODES.find(option => option.value === mode)?.label} · {gear}</button> : null}
-    <textarea ref={textarea} readOnly={dictationLocked} id="chat-message" value={value} maxLength={4000}
+    <textarea ref={textarea} readOnly={dictationLocked} id={messageId} value={value} maxLength={4000}
       placeholder={
         mode === 'quiz'
           ? (followup ? 'Answer the question, or ask for a hint…' : 'Quiz a topic, or ask for practice questions…')
           : mode === 'learn'
           ? (followup ? 'Ask a follow-up about this lesson…' : 'What would you like to learn today?')
-          : (followup ? 'Ask a follow-up…' : variant === 'main' ? 'Ask anything…' : 'Ask anything, or drop in a book…')
+          : (followup ? 'Ask a follow-up…' : 'Message your Buddy…')
       }
       rows={1} onChange={event => onChange(event.target.value)}
       onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); add(Array.from(event.clipboardData.files)); } }}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && !busy && !unavailable && !allowanceBlocked && !dictationLocked) { event.preventDefault(); onSubmit(); } }} />
+      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && (!busy || allowSendWhileBusy) && !unavailable && !allowanceBlocked && !dictationLocked) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />
-    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy || dictationLocked} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button>{variant === 'compact' ? <><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy || dictationLocked} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy || dictationLocked}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></> : null}</div><div className="flex items-center gap-2"><Button type="button" size="icon" variant="ghost" disabled={busy || Boolean(voice?.active) || dictationLocked || Boolean(unavailable) || allowanceBlocked} onClick={beginDictation} aria-label="Dictate message" title="Dictate message"><Mic size={19}/></Button>{onVoice && voice ? <Button type="button" size="icon" variant="ghost" disabled={busy || voice.active || dictationLocked || Boolean(unavailable) || allowanceBlocked} onClick={onVoice} aria-label="Talk to Buddy" title="Talk to Buddy"><AudioLines size={20}/></Button> : null}{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : <Button size="icon" type="submit" disabled={busy || dictationLocked || Boolean(unavailable) || allowanceBlocked || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button>}</div></div>
+    <div className={styles.composerBottom}><div className={styles.composerTools}><Button type="button" variant="ghost" size="icon" disabled={busy || dictationLocked} aria-label={attachments.length ? `Attach files (${attachments.length} attached)` : 'Attach files'} title="Attach PDF, text, Markdown, or images" onClick={() => input.current?.click()} className={styles.attachButton}><Plus size={19} />{attachments.length > 0 ? <span className={styles.attachCount}>{attachments.length}</span> : null}</Button>{variant === 'compact' ? <><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy || dictationLocked} /><Select value={gear} onValueChange={value => onGearChange(value as Gear)} disabled={busy || dictationLocked}><SelectTrigger size="sm" aria-label="Explanation depth" title="Explanation depth" className={styles.gearSelect}><span>Explain</span><SelectValue /></SelectTrigger><SelectContent align="start">{(['Quick', 'Guided', 'Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></> : null}</div><div className="flex items-center gap-2"><Button type="button" size="icon" variant="ghost" disabled={busy || Boolean(voice?.active) || dictationLocked || Boolean(unavailable) || allowanceBlocked} onClick={beginDictation} aria-label="Dictate message" title="Dictate message"><Mic size={19}/></Button>{onVoice && voice ? <Button type="button" size="icon" variant="ghost" disabled={busy || voice.active || dictationLocked || Boolean(unavailable) || allowanceBlocked} onClick={onVoice} aria-label="Talk to Buddy" title="Talk to Buddy"><AudioLines size={20}/></Button> : null}{onCancel ? <Button size="icon" type="button" variant="outline" onClick={onCancel} aria-label="Stop generating" title="Stop generating"><Square size={16} fill="currentColor" /></Button> : null}{(!onCancel || allowSendWhileBusy) ? <Button size="icon" type="submit" disabled={(busy && !allowSendWhileBusy) || dictationLocked || Boolean(unavailable) || allowanceBlocked || (!value.trim() && !attachments.length)} aria-label="Send message" title="Send message"><ArrowUp size={20} /></Button> : null}</div></div>
     <AnimatePresence initial={false}>{dictation.active ? <motion.div className={styles.dictationStrip} initial={reduceMotion ? false : { opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={reduceMotion ? undefined : { opacity: 0, height: 0 }} transition={{ duration: .2 }}>
       <button type="button" onClick={dictation.cancel} aria-label="Cancel dictation"><X size={17}/></button>
       <div className={styles.dictationWave} aria-hidden="true">{[.4,.7,1,.6,.9,.5,.8].map((scale,index)=><motion.span key={index} animate={{ scaleY: reduceMotion ? 1 : .2 + dictation.level * scale * 2.8 }} transition={{ duration: .1 }}/>)}</div>

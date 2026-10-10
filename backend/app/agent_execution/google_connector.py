@@ -22,6 +22,7 @@ SCOPES={
  'gmail_send':'https://www.googleapis.com/auth/gmail.send',
  'calendar_read':'https://www.googleapis.com/auth/calendar.events.readonly',
  'calendar_write':'https://www.googleapis.com/auth/calendar.events',
+ 'calendar_list':'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
 }
 
 def enabled():return os.getenv('OPENLEARN_CONNECTORS_ENABLED','false').lower()=='true'
@@ -94,6 +95,7 @@ class GoogleConnections:
             self.row(conn,owner,identifier)
             conn.execute(text("UPDATE agent_app_connections SET status='revoked',revision=revision+1,secret='' WHERE id=:id AND owner_id=:owner"),{'id':identifier,'owner':owner})
             conn.execute(text("UPDATE agent_action_drafts SET status='invalidated' WHERE connection_id=:id AND owner_id=:owner AND status IN ('draft','approved')"),{'id':identifier,'owner':owner})
+            conn.execute(text("UPDATE calendar_calendars SET status='revoked',revision=revision+1 WHERE parent_id=:id AND owner_id=:owner"),{'id':identifier,'owner':owner})
             # Results derived from this account are private artifacts too. Tombstone
             # them in the same transaction as revocation so the normal worker
             # cleanup removes their object-store copies and future downloads fail.

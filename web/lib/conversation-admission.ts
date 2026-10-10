@@ -6,7 +6,7 @@ import { routeFlashcardRequest } from './flashcards-client';
 
 type AdmissionReply = Awaited<ReturnType<typeof sendMessage>> & {
   question?: string; directive?: { kind: string; taskId?: string; action?: string };
-  runtimeOwner?: string; status?: string; message?: string;
+  runtimeOwner?: string; status?: string; message?: string; calendarReceipt?: {message:string};
 };
 type Pending = { key: string; body: Record<string, unknown> };
 export type ConversationReplyTarget = {

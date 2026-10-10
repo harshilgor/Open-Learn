@@ -62,7 +62,7 @@ class Decision(Strict):
     actionHash:str=Field(min_length=64,max_length=64)
 
 class OAuthStart(Strict):
-    capabilities:list[Literal['drive_read','gmail_read','gmail_send','calendar_read','calendar_write']]=Field(min_length=1,max_length=5)
+    capabilities:list[Literal['drive_read','gmail_read','gmail_send','calendar_read','calendar_write','calendar_list']]=Field(min_length=1,max_length=6)
 
 class ChildRequest(Strict):
     expectedRevision:int=Field(ge=1)

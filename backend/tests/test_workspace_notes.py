@@ -25,6 +25,21 @@ def note_api(tmp_path, monkeypatch):
 def headers(learner_id="local"):
     return {"X-Dev-Learner-Id": learner_id}
 
+def test_saved_versions_are_owned_and_restore_without_overwriting_new_revision(note_api):
+    client, _, _ = note_api
+    base='/v1/learners/local/workspace-notes'
+    note=client.post(base,headers=headers(),json={'title':'History','body':'Original'}).json()
+    updated=client.patch(f"{base}/{note['id']}",headers=headers(),json={'expectedRevision':1,'body':'Updated'}).json()
+    response=client.get(f"{base}/{note['id']}/versions",headers=headers())
+    assert response.status_code==200
+    version=response.json()['versions'][0]
+    assert version['body']=='Original' and version['noteRevision']==1
+    assert client.get(f"/v1/learners/other/workspace-notes/{note['id']}/versions",headers=headers('other')).status_code==404
+    stale=client.patch(f"{base}/{note['id']}",headers=headers(),json={'expectedRevision':1,'body':version['body']})
+    assert stale.status_code==409
+    restored=client.patch(f"{base}/{note['id']}",headers=headers(),json={'expectedRevision':updated['revision'],'body':version['body']}).json()
+    assert restored['revision']==3 and restored['body']=='Original'
+
 
 def test_legacy_title_repair_is_idempotent_and_preserves_user_names(note_api):
     client, _, _ = note_api

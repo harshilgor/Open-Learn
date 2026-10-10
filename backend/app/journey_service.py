@@ -65,10 +65,15 @@ class JourneyService:
         return {"id": jid, "sessionId": sid, "mode": "ask", "gear": session.gear.value, "goal": session.goal,
                 "status": "new", "steps": [], "position": 0, "turns": [], "revision": 1, "modeRevision": 1, "persisted": False}
 
-    def submit_stream_turn(self, conn, owner, sid, command: JourneyCommand, generation_id: str) -> int:
+    def submit_stream_turn(self, conn, owner, sid, command: JourneyCommand, generation_id: str,
+                           submission: dict | None = None) -> dict:
         """Commit the learner's submitted turn in the generation creation transaction."""
         jid = f"journey_{sid}"
         from sqlalchemy import text
+        # Serialize concurrent append-only submissions on the Journey row.
+        # This does not hold a lock during provider work.
+        conn.execute(text("UPDATE practice_records SET revision=revision WHERE id=:id AND owner_id=:owner"),
+                     {"id": jid, "owner": owner})
         exists = conn.execute(text("SELECT 1 FROM practice_records WHERE id=:id AND owner_id=:owner"),
                               {"id": jid, "owner": owner}).first()
         if exists:
@@ -79,7 +84,10 @@ class JourneyService:
                        "goal": session.goal, "status": "new", "steps": [], "position": 0,
                        "turns": [], "revision": 1, "modeRevision": 1, "persisted": False}
         journey.setdefault("modeRevision", 1)
-        if journey["revision"] != command.expected_revision:
+        if command.expected_revision > journey["revision"] or (
+            journey["revision"] != command.expected_revision
+            and not (command.action == "message" and journey.get("mode", "ask") == command.mode)
+        ):
             problem("revision_conflict", "The conversation changed. Reload and try again.", 409)
         question = command.message or ("Start learning" if command.action == "start" else "Continue")
         if command.task_id:
@@ -89,11 +97,22 @@ class JourneyService:
             if command.canonical_concept_ids:
                 journey["canonicalConceptIds"] = list(dict.fromkeys(command.canonical_concept_ids))
         submitted_revision = journey["revision"] + (1 if journey.get("persisted") else 0)
-        journey["turns"].append({"question": question, "sessionId": sid, "mode": command.mode, "generationId": generation_id,
-                                 "status": "pending", "submittedAt": time.time(), "submittedRevision": submitted_revision})
+        turn = {"question": question, "sessionId": sid, "mode": command.mode, "generationId": generation_id,
+                "status": "pending", "submittedAt": time.time(), "submittedRevision": submitted_revision}
+        if submission:
+            turn.update({
+                "clientMessageId": submission.get("messageId"),
+                "conversationSeq": submission.get("conversationSeq"),
+                "contextRevision": submission.get("contextRevision"),
+                "branchId": submission.get("branchId"),
+                "relation": submission.get("relation"),
+            })
+        journey["turns"].append(turn)
         self._set_mode(journey, command.mode, command.gear.value)
+        snapshot = json.loads(json.dumps(journey, ensure_ascii=False))
+        snapshot["revision"] = submitted_revision
         self.commit(conn, owner, journey)
-        return submitted_revision
+        return {"journeyRevision": submitted_revision, "contextSnapshot": snapshot}
 
     def finish_stream_turn(self, owner, sid, generation_id: str, status: str, error_code: str | None = None, connection=None) -> None:
         """Keep an unsuccessful submission visible after provider failure or cancellation."""
@@ -223,7 +242,7 @@ class JourneyService:
         )
         from .context_engine import ContextBlock, ContextEngine
         from .buddy_service import BuddyService
-        prompt_instructions += BuddyService(self.store).instructions(owner,sid)
+        prompt_instructions += BuddyService(self.store).instructions(owner,sid,command.message)
         candidates = [
             ContextBlock("controlDecision", LearningControlPlane.prompt_constraints(control), "control_plane", 0, bool(control)),
             ContextBlock("sharedContext", (control or {}).get("context", {}).get("text"), "shared_context_compiler", 0, bool(control)),
@@ -265,16 +284,18 @@ class JourneyService:
         journey["status"] = "teaching" if command.mode == "learn" else journey["status"]
         return journey
 
-    def commit(self, conn, owner, journey):
+    def commit(self, conn, owner, journey, *, side_effect_generation_id: str | None = None,
+               apply_authority: bool = True):
         control = journey.pop("_controlPlane", None)
-        if control:
+        if control and apply_authority:
             from .learning_control_plane import LearningControlPlane
             LearningControlPlane(self.store).validate_commit(conn, owner, control)
             journey["lastDecision"] = control["decision"]
         turns = journey.get("turns") or []
-        latest = turns[-1] if turns else None
+        latest = next((turn for turn in reversed(turns)
+                       if turn.get("generationId") == side_effect_generation_id), None) if side_effect_generation_id else (turns[-1] if turns else None)
         lesson = (latest or {}).get("lesson") or {}
-        if journey.get("taskId") and latest and latest.get("mode") == "learn" and lesson.get("conceptId"):
+        if apply_authority and journey.get("taskId") and latest and latest.get("mode") == "learn" and lesson.get("conceptId"):
             session = MaterialService(self.store).session(owner, journey["sessionId"])
             graph = self.store.get_graph(session.graph_id)
             from .stable_concept_service import StableConceptService
@@ -286,16 +307,17 @@ class JourneyService:
                          expected=journey["revision"] if journey.get("persisted", True) else None)
         first_question = turns[0].get("question") if turns else None
         self.store.touch_session_in(conn, journey["sessionId"], owner, first_question=first_question)
-        if control:
+        if control and apply_authority:
             LearningControlPlane(self.store).record_delivery(conn, owner, control, lesson.get("id"), lesson.get("conceptId"))
-        SessionSnapshotService.advance_authority(
-            conn,
-            session_id=journey["sessionId"],
-            owner=owner,
-            concept_id=lesson.get("conceptId"),
-            lesson_id=lesson.get("id"),
-        )
-        if latest and latest.get("mode") == "learn" and lesson.get("id"):
+        if apply_authority:
+            SessionSnapshotService.advance_authority(
+                conn,
+                session_id=journey["sessionId"],
+                owner=owner,
+                concept_id=lesson.get("conceptId"),
+                lesson_id=lesson.get("id"),
+            )
+        if apply_authority and latest and latest.get("mode") == "learn" and lesson.get("id"):
             LearnerStateService(self.store).append_event(
                 owner,
                 StateEventCreate(
@@ -311,7 +333,8 @@ class JourneyService:
             )
         return {"sessionId": journey["sessionId"]}
 
-    def prepare_stream(self, owner, sid, command: JourneyCommand, cancel_check=None, on_event=None, generation_id=None):
+    def prepare_stream(self, owner, sid, command: JourneyCommand, cancel_check=None, on_event=None,
+                       generation_id=None, journey_snapshot: dict | None = None):
         """Build the shared Ask/Learn context without invoking a provider.
 
         The legacy `prepare` method retains its synchronous JSON contract for
@@ -322,14 +345,13 @@ class JourneyService:
         evidence tool loop so generation disconnect can stop retrieval early.
         Optional ``on_event`` is a callable (event_type, data) for live tool progress.
         """
-        journey = self.get(owner, sid)
+        journey = json.loads(json.dumps(journey_snapshot)) if journey_snapshot is not None else self.get(owner, sid)
         pending_turn = next((turn for turn in reversed(journey["turns"]) if turn.get("status") == "pending" and (generation_id is None or turn.get("generationId") == generation_id)), None)
         if generation_id is not None and pending_turn is None:
             problem("revision_conflict", "This submitted turn is no longer pending.", 409)
         expected = pending_turn["submittedRevision"] if pending_turn else command.expected_revision
-        if journey["revision"] != expected:
+        if journey_snapshot is None and journey["revision"] != expected:
             problem("revision_conflict", "The conversation changed. Reload and try again.", 409)
-        completed_turns = [turn for turn in journey["turns"] if turn.get("lesson")]
         if not self.provider:
             raise ModelProviderError("Connect a model provider to start a guided learning journey. Your session is saved.")
         session = MaterialService(self.store).session(owner, sid)
@@ -337,6 +359,35 @@ class JourneyService:
         from .buddy_service import BuddyService
         presentation = BuddyService(self.store).presentation(owner, sid)
         is_conversation = command.mode == "ask" and presentation == "conversation"
+        context_turns_source = journey["turns"]
+        if is_conversation and generation_id:
+            from sqlalchemy import text
+            from .conversation_branching import visible_context_turns
+            with self.store.engine.connect() as connection:
+                branch_row = connection.execute(text("""
+                    SELECT branch_id FROM generation_records
+                    WHERE id=:id AND owner_id=:owner AND session_id=:session
+                """), {"id": generation_id, "owner": owner, "session": sid}).first()
+                parent_rows = connection.execute(text("""
+                    SELECT id,parent_branch_id FROM response_branches
+                    WHERE owner_id=:owner AND session_id=:session
+                """), {"owner": owner, "session": sid}).all()
+            if branch_row and branch_row[0]:
+                context_turns_source = visible_context_turns(
+                    journey["turns"], branch_row[0], {row[0]: row[1] for row in parent_rows})
+        completed_turns = [turn for turn in context_turns_source if turn.get("lesson")]
+        pending_context_turns = []
+        if is_conversation:
+            context_turns = []
+            for turn in context_turns_source:
+                if turn.get("lesson"):
+                    context_turns.append(turn)
+                elif turn.get("status") == "pending" and turn.get("generationId") != generation_id:
+                    pending = {**turn, "assistantDraft": turn.get("partialOutput", "")}
+                    context_turns.append(pending)
+                    pending_context_turns.append(pending)
+        else:
+            context_turns = completed_turns
         if command.mode == "ask" and presentation == "conversation" and command.action == "message":
             reply = None
             if not command.selected_text and not command.selected_span_ids and not command.note_context:
@@ -504,7 +555,7 @@ class JourneyService:
                 selected_passage=bool(selection), evidence_instruction=evidence_section["instruction"],
             )
         from .buddy_service import BuddyService
-        prompt_instructions += BuddyService(self.store).instructions(owner,sid)
+        prompt_instructions += BuddyService(self.store).instructions(owner,sid,command.message)
         if is_conversation:
             safe_sources = [{key: source.get(key) for key in ("title", "pageLabel", "text") if source.get(key)}
                             for source in sources]
@@ -591,7 +642,7 @@ class JourneyService:
         try:
             generation_context = engine.build_generation_context(
                 instructions=prompt_instructions, current_user_message=current_message,
-                candidates=candidates, turns=completed_turns, image_count=len(images),
+                candidates=candidates, turns=context_turns, image_count=len(images),
                 image_token_reserve=image_reserve,
             )
         except ValueError as exc:
@@ -600,7 +651,8 @@ class JourneyService:
         state_service = ConversationStateService(self.store, self.provider)
         previous_state = state_service.get(owner, sid)
         conversation_state = previous_state
-        compacted_through = len(completed_turns) - generation_context.included_turn_count
+        included_completed = max(0, generation_context.included_turn_count - len(pending_context_turns))
+        compacted_through = len(completed_turns) - included_completed
         if compacted_through > conversation_state["compactedTurns"]:
             conversation_state = state_service.advance(owner, sid, completed_turns, compacted_through)
             if conversation_state["compactedTurns"] < compacted_through:
@@ -610,7 +662,8 @@ class JourneyService:
         # displaced additional complete turns. A failed compaction fails this
         # generation instead of silently omitting older conversation.
         for _ in range(len(completed_turns) + 1):
-            remaining_turns = completed_turns[conversation_state["compactedTurns"]:]
+            remaining_completed = completed_turns[conversation_state["compactedTurns"]:]
+            remaining_turns = remaining_completed + pending_context_turns
             planned_candidates = list(candidates)
             if conversation_state["compactedTurns"]:
                 if not conversation_state["state"]:
@@ -624,7 +677,8 @@ class JourneyService:
                 )
             except ValueError as exc:
                 raise ModelProviderError("The teaching context exceeds this model's input budget. Narrow the request or selected notes.") from exc
-            additional = len(remaining_turns) - generation_context.included_turn_count
+            included_completed = max(0, generation_context.included_turn_count - len(pending_context_turns))
+            additional = len(remaining_completed) - included_completed
             if additional == 0:
                 break
             target = conversation_state["compactedTurns"] + additional
@@ -669,9 +723,28 @@ class JourneyService:
     def commit_stream(self, conn, owner, prepared, command: JourneyCommand, body: str, visualizations=None):
         """Persist the authoritative artifact and Journey within the caller transaction."""
         from sqlalchemy import text
-        if prepared["journey"].get("_controlPlane"):
-            from .learning_control_plane import LearningControlPlane
-            LearningControlPlane(self.store).validate_commit(conn, owner, prepared["journey"]["_controlPlane"])
+        generation_id = prepared.get("generationId")
+        branch_selected = True
+        if generation_id:
+            # Serialize result merges against other generations completing for
+            # the same conversation. The conditional Journey write below then
+            # starts from the latest committed revision.
+            conn.execute(text("UPDATE practice_records SET revision=revision WHERE id=:id AND owner_id=:owner"),
+                         {"id": f"journey_{prepared['journey']['sessionId']}", "owner": owner})
+            journey = self.records.read(owner, f"journey_{prepared['journey']['sessionId']}", "journey", conn)
+            pending = next((turn for turn in reversed(journey.get("turns", []))
+                            if turn.get("generationId") == generation_id and turn.get("status") == "pending"), None)
+            if pending is None:
+                problem("generation_turn_missing", "This response is no longer attached to an active conversation turn.", 409)
+            from .conversation_branching import ConversationBranchStore
+            branch_row = conn.execute(text("SELECT branch_id FROM generation_records WHERE id=:id"),
+                                      {"id": generation_id}).first()
+            # Pre-branch records remain authoritative. For branch-aware records,
+            # commit side effects only while this branch is still selected.
+            branch_selected = not branch_row or not branch_row[0] or ConversationBranchStore(self.store).is_selected(
+                conn, owner, prepared["journey"]["sessionId"], branch_row[0])
+        else:
+            journey = prepared["journey"]
         from .streaming_lesson import semantic_blocks
         from .visualization_parts import make_visual_parts
         from .visualization_service import VisualizationService, replace_in_journey
@@ -695,20 +768,25 @@ class JourneyService:
             blocks=lesson_blocks)
         conn.execute(text("INSERT INTO lesson_artifacts(id,session_id,payload) VALUES(:id,:session,:payload)"), {
             "id": artifact.id, "session": artifact.session_id, "payload": artifact.model_dump_json()})
-        journey = prepared["journey"]
         completed = {"question": prepared["question"], "lesson": artifact.model_dump(mode="json", by_alias=True),
             "sessionId": journey["sessionId"], "sources": prepared["sources"], "contextId": prepared["contextId"],
             "mode": command.mode, "noteContext": prepared["noteReceipt"], "actionId": prepared["actionId"],
+            "selectedPassage": command.selected_text,
+            "selectedSource": {"lessonId":command.selected_lesson_id,"blockId":command.selected_block_id,"spanIds":command.selected_span_ids},
             "transitionSuggestion": prepared.get("transitionSuggestion"), "status": "completed"}
         if prepared.get("responseKind"):
             completed["responseKind"] = prepared["responseKind"]
-        pending = next((turn for turn in reversed(journey["turns"]) if turn.get("status") == "pending" and turn.get("generationId") == prepared.get("generationId")), None)
-        if prepared.get("generationId") and pending is None:
+        pending = next((turn for turn in reversed(journey["turns"]) if turn.get("status") == "pending" and turn.get("generationId") == generation_id), None)
+        if generation_id and pending is None:
             problem("revision_conflict", "This submitted turn is no longer pending.", 409)
         if pending:
             pending.update(completed)
         else:
             journey["turns"].append(completed)
         journey["status"] = "teaching" if command.mode == "learn" else journey["status"]
-        self.commit(conn, owner, journey)
+        if generation_id and prepared["journey"].get("_controlPlane") and branch_selected and prepared.get("responseKind") != "conversation":
+            journey["_controlPlane"] = prepared["journey"]["_controlPlane"]
+        self.commit(conn, owner, journey,
+                    side_effect_generation_id=generation_id,
+                    apply_authority=branch_selected)
         return artifact, journey

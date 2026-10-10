@@ -12,6 +12,8 @@ from backend.app.models import TopicScope, utc_now
 from backend.app.session_models import LearningSession
 from backend.app.learning_routes import build_learning_router
 from backend.app.generation_routes import build_generation_router
+from backend.app.generation_store import GenerationStore
+from backend.app.conversation_branching import ConversationBranchStore
 from backend.app.material_service import MaterialService
 from backend.app.material_models import UploadRequest
 from backend.app.learner_graph import LearnerGraphRepository
@@ -185,7 +187,7 @@ def test_journey_sends_only_explicit_note_context_as_untrusted_data(env, monkeyp
 def test_nonstreaming_journey_passes_structured_context_to_capable_provider(env):
     from backend.app.context_engine import GenerationContext
 
-    client, _, provider, session = env
+    client, store, provider, session = env
     captured = []
     provider.supports_generation_context = True
 
@@ -374,10 +376,10 @@ def test_twenty_five_turn_compaction_preserves_provider_payload_and_reconnect_st
     assert saved["turns"][0]["question"] == cue
 
 
-def test_two_tabs_racing_one_session_cannot_start_a_second_generation(env):
+def test_second_tab_is_durably_queued_while_first_generation_runs(env):
     import threading
 
-    client, _, provider, session = env
+    client, store, provider, session = env
     entered = threading.Event()
     release = threading.Event()
 
@@ -395,11 +397,98 @@ def test_two_tabs_racing_one_session_cannot_start_a_second_generation(env):
     second = client.post(f"/v1/sessions/{session.id}/generations", json={
         "mode": "ask", "message": "Second tab races with a question.", "gear": "Guided", "expectedRevision": 1,
     }, headers={"Idempotency-Key": "tab-race-second"})
-    assert second.status_code == 409
-    assert second.json()["detail"]["code"] == "generation_in_progress"
+    assert second.status_code == 202
+    assert second.json()["status"] == "queued"
+    assert second.json()["accepted"] is True
+    second_generation_id = second.json()["id"]
+    assert second_generation_id
+    duplicate = client.post(f"/v1/sessions/{session.id}/generations", json={
+        "mode": "ask", "message": "Second tab races with a question.", "gear": "Guided", "expectedRevision": 1,
+        "clientMessageId": "tab-race-second",
+    }, headers={"Idempotency-Key": "tab-race-second"})
+    assert duplicate.status_code == 202 and duplicate.json()["id"] == second_generation_id
+    assert len(client.get(f"/v1/sessions/{session.id}/branches").json()["branches"]) == 2
+    with store.engine.connect() as connection:
+        snapshots = connection.execute(text("""
+            SELECT generation_id,snapshot_json FROM generation_context_snapshots
+            WHERE generation_id IN (:first,:second)
+        """), {"first": first.json()["id"], "second": second_generation_id}).all()
+    snapshots = {generation_id: json.loads(snapshot) for generation_id, snapshot in snapshots}
+    assert len(snapshots[first.json()["id"]]["turns"]) == 1
+    assert len(snapshots[second_generation_id]["turns"]) == 2
     release.set()
     completed = client.get(f"/v1/generations/{first.json()['id']}/events")
     assert "event: generation.completed" in completed.text
+    assert client.get(f"/v1/sessions/{session.id}/branches").json()["selectedBranchId"] == second.json()["branchId"]
+    next_response = client.get(f"/v1/generations/{second_generation_id}/events")
+    assert "event: generation.completed" in next_response.text
+
+
+def test_message_event_deduplication_and_branch_head_are_independent_of_completion(env):
+    _, store, _, session = env
+    records = GenerationStore(store)
+    first_request = {"mode": "ask", "message": "Explain photosynthesis.", "clientMessageId": "branch-first"}
+    first = records.create("local", session.id, first_request, "branch-first", "test", "test-model")
+    duplicate = records.create("local", session.id, first_request, "branch-first", "test", "test-model")
+    second_request = {"mode": "ask", "message": "Also explain chlorophyll.", "clientMessageId": "branch-second"}
+    second = records.create("local", session.id, second_request, "branch-second", "test", "test-model", reject_if_active=False)
+    assert duplicate["id"] == first["id"]
+    with store.engine.connect() as connection:
+        user_events = connection.execute(text("""
+            SELECT COUNT(*) FROM conversation_events
+            WHERE owner_id='local' AND session_id=:session AND event_type='user_message'
+        """), {"session": session.id}).scalar_one()
+    assert user_events == 2
+
+    branches = ConversationBranchStore(store)
+    state = branches.list_branches("local", session.id)
+    assert state["selectedBranchId"] == second["branchId"]
+    selected = branches.select_branch("local", session.id, first["branchId"], state["revision"])
+    assert selected["selectedBranchId"] == first["branchId"]
+    # A later generation lifecycle transition cannot implicitly move the head.
+    records.claim_capacity(second["id"], conversation_limit=2, global_limit=4)
+    assert branches.list_branches("local", session.id)["selectedBranchId"] == first["branchId"]
+
+
+def test_expired_owner_keeps_checkpoint_and_fences_late_writes(env):
+    _, store, _, session = env
+    records = GenerationStore(store)
+    request = {"mode": "ask", "message": "Explain a food web.", "clientMessageId": "lease-message"}
+    created = records.create("local", session.id, request, "lease-message", "test", "test-model")
+    claimed = records.claim_capacity(created["id"], conversation_limit=1, global_limit=4, lease_seconds=30)
+    assert claimed and claimed["ownerToken"]
+    records.transition(created["id"], "streaming", owner_token=claimed["ownerToken"])
+    records.append_event(created["id"], "text.delta", {"text": "A food web "}, owner_token=claimed["ownerToken"])
+    interrupted = records.interrupt_expired_leases(claimed["leaseExpiresAt"] + 1)
+    assert interrupted == [created["id"]]
+    saved = records.get("local", created["id"])
+    assert saved["status"] == "interrupted" and saved["partialOutput"] == "A food web "
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        records.append_event(created["id"], "text.delta", {"text": "late"}, owner_token=claimed["ownerToken"])
+
+
+def test_explicit_stop_is_durable_and_does_not_select_a_response_branch(env):
+    _, store, _, session = env
+    records = GenerationStore(store)
+    original = records.create("local", session.id,
+        {"mode": "ask", "message": "Explain gravity.", "clientMessageId": "gravity-message"},
+        "gravity-message", "test", "test-model")
+    claimed = records.claim_capacity(original["id"], conversation_limit=2, global_limit=4)
+    assert claimed
+    records.transition(original["id"], "streaming", owner_token=claimed["ownerToken"])
+    branches = ConversationBranchStore(store)
+    before = branches.list_branches("local", session.id)
+    with store.transaction() as connection:
+        stopped = branches.accept_cancel_message(connection, "local", session.id, "stop-message",
+                                                  "Please stop generating.", "ask")
+    assert stopped["targetGenerationId"] == original["id"]
+    assert stopped["targetStatus"] == "cancel_requested"
+    after = branches.list_branches("local", session.id)
+    assert after["selectedBranchId"] == before["selectedBranchId"]
+    assert any(branch["relation"] == "cancel" and branch["message"] == "Please stop generating."
+               for branch in after["branches"])
+    with pytest.raises(RuntimeError, match="no longer owns"):
+        records.append_event(original["id"], "text.delta", {"text": "late"}, owner_token=claimed["ownerToken"])
 
 
 def test_semantic_embedding_api_failure_falls_back_to_lexical_retrieval(env, monkeypatch):

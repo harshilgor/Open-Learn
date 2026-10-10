@@ -98,3 +98,10 @@
   }
 }
 
+
+.floatingMain { position:fixed; right:24px; bottom:24px; width:min(380px,calc(100vw - 32px)); height:min(480px,65dvh); z-index:40; border:1px solid var(--border); border-radius:16px; overflow:hidden; background:var(--background); box-shadow:0 12px 40px #0003; }
+@media(max-width:1220px){.floatingMain{display:none}}
+
+.pendingResult{position:fixed;right:24px;top:76px;z-index:45;background:var(--background);border:1px solid var(--border);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px;font-size:13px}.pendingResult button{text-decoration:underline}.pendingResult button:disabled{opacity:.5}
+
+.focusChatToggle{position:fixed;right:24px;bottom:12px;z-index:65;border:1px solid var(--border);border-radius:22px;background:var(--background);padding:10px 16px;font-size:13px}.floatingMain[hidden]{display:none}

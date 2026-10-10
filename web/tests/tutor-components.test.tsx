@@ -22,6 +22,16 @@ function button(label: string) { const result = [...container.querySelectorAll('
 function click(element: HTMLElement) { act(() => element.click()); }
 function typeInto(input: HTMLInputElement, value: string) { act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
 
+it('allows text sends during a response while retaining a separate stop control', () => {
+  const send=vi.fn(),stop=vi.fn();
+  render(<ChatComposer value="One more detail" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={send} onCancel={stop} busy allowSendWhileBusy followup gear="Quick" onGearChange={vi.fn()}/>);
+  expect(button('Send message').disabled).toBe(false);
+  click(button('Send message'));expect(send).toHaveBeenCalledOnce();
+  click(button('Stop generating'));expect(stop).toHaveBeenCalledOnce();
+  expect(button('Dictate message').disabled).toBe(true);
+  expect(button('Chat options and attachments').disabled).toBe(true);
+});
+
 describe('composer preferences', () => {
   it('keeps preferences outside the writing surface and changes all explanation depths', () => {
     function Preferences() {
@@ -129,6 +139,21 @@ describe('composer and message actions', () => {
     click(button('Retry connection'));expect(retry).toHaveBeenCalledOnce();
     render(composer('My retained draft',true));
     expect(container.querySelector('textarea')!.disabled).toBe(false);
+  });
+
+  it('hides the generic connection and usage-check notices while preserving the draft and send safeguards', () => {
+    render(<ChatComposer value="My retained draft" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={vi.fn()} busy={false} followup={false} gear="Quick" onGearChange={vi.fn()} unavailable="Open Learn could not connect. You can keep writing your draft." onRetry={vi.fn()}/>);
+    expect(container.textContent).not.toContain('Open Learn could not connect. You can keep writing your draft.');
+    expect(container.querySelector('[aria-label="Retry connection"]')).toBeNull();
+    expect(container.querySelector('textarea')?.value).toBe('My retained draft');
+    expect(button('Send message').disabled).toBe(true);
+
+    allowanceState.snapshot = null;
+    allowanceState.error = 'Usage could not be checked';
+    render(composer('My retained draft'));
+    expect(container.textContent).not.toContain('AI work is paused while usage is checked. Your draft stays here.');
+    expect(container.querySelector('textarea')?.value).toBe('My retained draft');
+    expect(button('Send message').disabled).toBe(true);
   });
 
   it('keeps a draft editable but blocks new work until allowance is loaded', () => {
