@@ -1,0 +1,22 @@
+import {act} from 'react';
+import {createRoot} from 'react-dom/client';
+import {expect,it,vi} from 'vitest';
+import {WorkspaceSideChats,openSideChat} from '@/components/workspace-side-chats';
+vi.mock('@/lib/api',()=>({request:async()=>({ownerId:'alice'})}));
+vi.mock('@/components/compact-tutor-chat',()=>({CompactTutorChat:({context}:{context:{id:string;excerpt:string}})=><textarea aria-label={context.excerpt} defaultValue=""/>}));
+it('keeps three independent drafts mounted through minimize and restore',async()=>{
+  (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+  localStorage.clear();const container=document.createElement('div');document.body.appendChild(container);const root=createRoot(container);
+  await act(async()=>{root.render(<WorkspaceSideChats/>);});
+  await act(async()=>{await new Promise(resolve=>setTimeout(resolve,10));});
+  act(()=>{for(const excerpt of ['First','Second','Third'])openSideChat({id:excerpt,title:excerpt,excerpt});});
+  expect(container.querySelectorAll('textarea')).toHaveLength(3);
+  const first=container.querySelector<HTMLTextAreaElement>('[aria-label="First"]')!;first.value='My unfinished question';
+  act(()=>container.querySelector<HTMLButtonElement>('[aria-label="Minimize First"]')!.click());
+  expect(first.closest('section')?.hidden).toBe(true);
+  act(()=>Array.from(container.querySelectorAll('button')).find(button=>button.textContent==='First')!.click());
+  expect(first.closest('section')?.hidden).toBe(false);expect(first.value).toBe('My unfinished question');
+  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Second"]')!.value).toBe('');
+  expect(JSON.parse(localStorage.getItem('workspace-side-chats:alice')!)).toHaveLength(3);
+  act(()=>root.unmount());container.remove();
+});

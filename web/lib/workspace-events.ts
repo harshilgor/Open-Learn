@@ -8,6 +8,8 @@ export type WorkspaceNoteSeed = {
 export const WORKSPACE_NOTE_SEED_EVENT = 'forma:workspace-note-seed';
 export const WORKSPACE_NOTE_OPEN_EVENT = 'forma:workspace-note-open';
 export const WORKSPACE_NOTE_MENTION_EVENT = 'forma:workspace-note-mention';
+export const WORKSPACE_PASSAGE_MENTION_EVENT = 'openlearn:workspace-passage-mention';
+export type WorkspacePassageMention = {title:string;excerpt:string;spanId?:string;versionId?:string;submit?:boolean};
 export const WORKSPACE_NOTE_REPLACE_DRAFT_EVENT = 'forma:workspace-note-replace-draft';
 export const WORKSPACE_SOURCE_OPEN_EVENT = 'forma:workspace-source-open';
 export const WORKSPACE_QUIZ_OPEN_EVENT = 'forma:workspace-quiz-open';
@@ -16,7 +18,7 @@ export const CHAT_SESSION_OPEN_EVENT = 'forma:chat-session-open';
 export const WORKSPACE_PANEL_TOGGLE_EVENT = 'forma:workspace-panel-toggle';
 export const WORKSPACE_PANEL_SET_COLLAPSED_EVENT = 'forma:workspace-panel-set-collapsed';
 
-export type WorkspaceNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string; prompt?: string };
+export type WorkspaceNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string; prompt?: string; submit?: boolean };
 export const WORKSPACE_CAPTURE_EVENT = 'forma:workspace-capture';
 export const WORKSPACE_CANVAS_EVENT = 'forma:workspace-canvas';
 export const WORKSPACE_ASK_EVENT = 'forma:workspace-ask';
@@ -72,8 +74,8 @@ export function openWorkspaceNoteDraft(input: Omit<WorkspaceNoteSeed, 'id'>): vo
 }
 
 /** Focus an existing note from a chat-context receipt without copying it. */
-export function openWorkspaceNote(noteId: string): void {
-  window.dispatchEvent(new CustomEvent<string>(WORKSPACE_NOTE_OPEN_EVENT, { detail: noteId }));
+export function openWorkspaceNote(noteId: string, manual=false): void {
+  window.dispatchEvent(Object.assign(new CustomEvent<string>(WORKSPACE_NOTE_OPEN_EVENT, { detail: noteId }),{workspaceManual:manual}));
 }
 
 /** Add an explicit selected note excerpt to the current chat context. */

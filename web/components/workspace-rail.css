@@ -1,0 +1,19 @@
+.workspace-rail{width:76px;flex:0 0 76px;height:100dvh;display:flex;align-items:center;flex-direction:column;gap:10px;padding:16px 8px;border-right:1px solid var(--border);background:var(--background);z-index:31}
+.workspace-rail button{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;border-radius:14px;cursor:pointer;position:relative;flex-shrink:0}
+.workspace-rail button:hover{background:var(--muted)}
+.workspace-rail button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+.workspace-rail button[aria-pressed=true]{background:var(--accent);outline:2px solid var(--ring);outline-offset:2px}
+.rail-buddies{flex:1;min-height:0;width:100%;overflow-y:auto;display:flex;flex-direction:column;align-items:center;gap:16px;padding:14px 3px;border-top:1px solid var(--border)}
+.rail-buddy{position:relative;padding-right:8px}
+.workspace-rail .rail-history-toggle{position:absolute;right:-3px;bottom:-6px;min-width:24px;min-height:24px;border:1px solid var(--border);background:var(--background);border-radius:8px;z-index:1}
+.rail-unread{position:absolute;right:2px;top:2px;width:8px;height:8px;border-radius:50%;background:var(--ring)}
+.rail-account{max-width:48px;overflow:hidden}.rail-account>span:not(.avatar){display:none}.rail-account .avatar{flex-shrink:0}
+.chat-history-flyout{width:360px;max-width:calc(100vw - 96px);max-height:min(680px,85dvh);overflow-y:auto;padding:16px;border-radius:18px}
+.chat-history-flyout h2{font-weight:600;font-size:16px}.history-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-heading button{padding:8px;border-radius:8px;background:var(--muted)}
+.mobile-history-trigger{display:none}.mobile-history-sheet{max-height:85dvh}.mobile-history-body{overflow-y:auto;padding:0 16px 24px}.history-scope{font-size:13px;padding:10px 0;text-decoration:underline}
+.notes-view>.notes-navigation-host{width:260px;flex:0 0 260px;overflow:auto;border-right:1px solid var(--border)}
+.notes-view:not([hidden]){display:flex!important;min-height:0}.notes-view>.notes-navigation-host+*{flex:1;min-width:0}
+@media(max-width:1023px){.workspace-rail{display:none}.mobile-history-trigger{display:grid;place-items:center;min-width:44px;min-height:44px}.notes-navigation-host{display:none}.chat-history-flyout{max-width:calc(100vw - 32px)}}
+
+.rail-account>div{display:none}
+@media(max-width:1023px){.forma-app-shell .mobile-chat-header .buddy-header{padding:0;gap:0}.forma-app-shell .mobile-chat-header .buddy-header>button:not(.buddy-mobile-switch){display:none}.forma-app-shell .mobile-chat-header .buddy-mobile-switch{min-height:32px}.forma-app-shell .mobile-chat-header .buddy-mobile-switch strong{max-width:100px;font-size:13px}.forma-app-shell .mobile-chat-header .buddy-avatar{width:24px;height:24px;font-size:16px}.forma-app-shell .mobile-chat-header .mobile-header-title{flex:1}.forma-app-shell .mobile-chat-header .mobile-header-title>strong{font-size:11px;max-width:140px}.forma-app-shell .mobile-chat-header{gap:2px}}

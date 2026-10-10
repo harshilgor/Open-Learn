@@ -5,6 +5,17 @@ from .contracts import Contract
 from ..identity import fail
 from ..material_service import MaterialService
 from ..workflow_store import WorkflowStore
+from ..calendar.contracts import Availability as CalendarAvailability, Proposal as CalendarProposal
+
+
+class CalendarRange(Contract):
+    start: str
+    end: str
+    calendarIds: list[str] = Field(default_factory=list, max_length=30)
+
+
+class CalendarApply(Contract):
+    proposalId: str = Field(min_length=1, max_length=160)
 
 
 class Explain(Contract):
@@ -15,6 +26,10 @@ class Quiz(Contract):
     topic: str = Field(min_length=1, max_length=500)
     count: int = Field(default=5, ge=1, le=10)
 
+class ReviseQuestion(Contract):
+    question_number:int=Field(ge=1,le=10)
+    difficulty:Literal['foundational','standard','stretch']
+
 
 class Answer(Contract):
     response: str = Field(min_length=1, max_length=4000)
@@ -23,6 +38,9 @@ class Answer(Contract):
 
 class Empty(Contract):
     pass
+
+class WorkspaceFocus(Contract):
+    focused: bool = True
 
 
 class Reminder(Contract):
@@ -52,11 +70,19 @@ class Open(Contract):
 
 
 class VisualUpdate(Contract):
-    parameter_id: str = Field(min_length=1, max_length=40)
+    parameter_id: str = Field(min_length=1, max_length=64)
     value: float = Field(ge=-10000, le=10000, allow_inf_nan=False)
 
 
 REGISTRY = {
+    'calendar_read': (CalendarRange, 'Read a bounded schedule only from calendars the learner allowed Buddy to read. Busy-only content is redacted.'),
+    'calendar_availability': (CalendarAvailability, 'Find available study time; incomplete calendars cannot establish availability. This never creates events.'),
+    'calendar_propose': (CalendarProposal, 'Propose exact calendar changes for a visible approval card. The model cannot grant permission. Ask if scope or dates are unclear.'),
+    'calendar_apply': (CalendarApply, 'Apply a known proposal only using saved calendar edit permission; otherwise the learner must approve on screen.'),
+    'note_propose_edit': (Explain, 'Propose a reviewable edit to the selected saved note passage; never overwrite it automatically.'),
+    'quiz_revise_question': (ReviseQuestion, 'Change the difficulty of a specific upcoming or unanswered question in the focused quiz; preserve answered questions.'),
+    'workspace_focus': (WorkspaceFocus, 'Expand the current study workspace for focus, or restore the split view.'),
+    'side_chat_open': (Empty, 'Open a separate side conversation about the selected note passage. Do not answer until the learner asks.'),
     'tutor_explain': (Explain, 'Teach or explain using the existing grounded tutor. Use for factual answers.'),
     'quiz_create': (Quiz, 'Create a quiz on the stated topic and show it.'),
     'quiz_answer': (Answer, 'Submit the final answer to the current quiz question; only when a quiz is focused.'),
@@ -88,6 +114,8 @@ class Tools:
 
     def validate_focus(self, owner, focus):
         from ..workspace_note_service import WorkspaceNoteService
+        if focus.get('source_span_id'):
+            MaterialService(self.store).source(owner,focus['source_span_id'])
         if focus.get('note_id'):
             WorkspaceNoteService(self.store).get(owner, focus['note_id'])
         if focus.get('quiz_id'):
@@ -104,6 +132,27 @@ class Tools:
             fail('voice_focus_required', 'Open a quiz first.', 422)
         return QuizService(self.store, self.provider).public(owner, focus['quiz_id'])
 
+    def visual_context(self, owner, focus):
+        if not focus.get('lesson_id') or not focus.get('visualization_id'):
+            return None
+        artifact = self.store.get_artifact(focus['lesson_id'])
+        if not artifact:
+            return None
+        MaterialService(self.store).session(owner, artifact.session_id)
+        value = next((value for block in artifact.blocks for value in block.visualizations
+                      if value.get('id') == focus['visualization_id']), None)
+        if not value:
+            fail('not_found', 'The focused visual is unavailable.', 404)
+        if value.get('type') == 'generated_ui_ref':
+            record = WorkflowStore(self.store).read(owner, value['id'], 'generated_visual')
+            value = record['spec']
+            controls = [{**control, 'current':value.get('controlValues', {}).get(control['id'], control['initial'])}
+                        for control in value.get('controls', [])]
+        else:
+            controls = value.get('parameters', [])
+        return {'id': value['id'], 'title': value['title'], 'revision': value.get('revision', 1), 'controls': controls,
+                'editable': bool(controls)}
+
     def execute(self, owner, session, name, raw, key):
         if name not in REGISTRY:
             fail('voice_tool_denied', 'That tool is unavailable.', 422)
@@ -113,10 +162,56 @@ class Tools:
         MaterialService(self.store).session(owner, sid)
         self.validate_focus(owner, focus)
         records = WorkflowStore(self.store)
+        if name.startswith('calendar_'):
+            from ..calendar.service import CalendarService
+            from ..calendar.contracts import Decision
+            from fastapi import HTTPException
+            service = CalendarService(self.store)
+            if name == 'calendar_read':
+                result = service.occurrences(owner, args.start, args.end, context['timezone'], args.calendarIds or None, agent=True)
+                return {'status':'succeeded','result':result,'userMessage':'Schedule checked using your calendar permissions.','uiIntent':{'action':'open_calendar'}}
+            if name == 'calendar_availability':
+                return {'status':'succeeded','result':service.availability(owner,args,agent=True),'userMessage':'Availability checked. Only complete schedule data can confirm free time.','uiIntent':{'action':'open_calendar'}}
+            if name == 'calendar_propose':
+                result = service.propose(owner, args.model_copy(update={'sessionId':sid}), key)
+                return {'status':'succeeded','result':result,'userMessage':'Review the proposed calendar change on screen. You can allow this change once or save permission for future ordinary edits.'}
+            with service.transaction(owner) as conn:
+                proposal = service.read(conn,owner,'proposals',args.proposalId)
+                if proposal.get('sessionId') != sid: fail('not_found','Calendar proposal unavailable in this conversation.',404)
+            try:
+                result = service.decide(owner,args.proposalId,Decision(expectedRevision=proposal['revision'],proposalHash=proposal['proposalHash'],decision='allow'),key,unattended=True)
+                return {'status':'succeeded','result':result,'userMessage':'Calendar change applied.' if result['status']=='applied' else 'Calendar change is waiting for Google confirmation.','uiIntent':{'action':'open_calendar'}}
+            except HTTPException as cause:
+                if cause.detail.get('code') != 'approval_required': raise
+                return {'status':'succeeded','result':proposal,'userMessage':'Please approve this calendar change on the visible calendar card.'}
+        if name=='quiz_revise_question':
+            from ..quiz_service import QuizService
+            quiz=self.quiz(owner,focus)
+            result=QuizService(self.store,self.provider).revise_question(owner,quiz['id'],args.question_number,args.difficulty,focus.get('expected_revision'),key)
+            return {'status':'queued' if result.get('jobId') else 'succeeded','jobId':result.get('jobId'),'jobKind':'next','result':result,'userMessage':'Question difficulty updated in this quiz.','uiIntent':{'action':'refresh_quiz','targetId':quiz['id']}}
+        if name == 'workspace_focus':
+            return {'status':'succeeded','userMessage':'Workspace view updated.','uiIntent':{'action':'focus_workspace' if args.focused else 'restore_workspace'}}
+        if name == 'side_chat_open':
+            from ..workspace_note_service import WorkspaceNoteService
+            if not focus.get('note_id') or focus.get('selection_start') is None or focus.get('selection_end') is None:
+                fail('selection_required','Select a note passage to discuss separately.',422)
+            note = WorkspaceNoteService(self.store).get(owner,focus['note_id'])
+            start,end = focus['selection_start'],focus['selection_end']
+            if note.revision != focus.get('expected_revision') or not 0 <= start < end <= len(note.body) or end-start > 6000:
+                fail('selection_changed','The selected note changed. Select it again.',409)
+            return {'status':'succeeded','userMessage':'Side conversation opened.','result':{'title':note.title,'excerpt':note.body[start:end],'note':{'noteId':note.id,'expectedRevision':note.revision,'startOffset':start,'endOffset':end}},'uiIntent':{'action':'open_side_chat'}}
 
         def enqueue(target, kind, payload, message):
             job = records.enqueue(owner, target, kind, payload, key)
             return {'status': 'queued', 'jobId': job['id'], 'jobKind': kind, 'userMessage': message}
+
+        if name=='note_propose_edit':
+            from ..note_draft_models import CreateNoteDraft
+            if not focus.get('note_id') or focus.get('selection_start') is None or focus.get('selection_end') is None:
+                fail('selection_required','Select the note passage you want to revise.',422)
+            selection={'noteId':focus['note_id'],'expectedRevision':focus.get('expected_revision'),'startOffset':focus['selection_start'],'endOffset':focus['selection_end']}
+            command=CreateNoteDraft(origin_kind='mentioned_notes',note_context={'notes':[selection]},replacement=selection,edit_request=args.request[:1000])
+            return enqueue(sid,'note_draft',command.model_dump(mode='json'),'Preparing suggested changes for your review.')
 
         if name == 'quiz_create':
             from ..assessment_models import QuizCreate
@@ -155,7 +250,12 @@ class Tools:
             from ..journey_service import JourneyService
             journey = JourneyService(self.store, self.provider).get(owner, sid)
             request = args.request if name == 'tutor_explain' else 'Create an educational diagram and explain it: ' + args.request
-            command = JourneyCommand(mode='ask', message=request, expected_revision=journey.get('revision', 1))
+            note_context = None
+            if focus.get('note_id') and focus.get('selection_start') is not None and focus.get('selection_end') is not None:
+                if focus['selection_start'] >= focus['selection_end'] or not focus.get('expected_revision'):
+                    fail('invalid_selection', 'Select the passage again before asking.', 422)
+                note_context = {'notes':[{'noteId':focus['note_id'],'expectedRevision':focus['expected_revision'],'startOffset':focus['selection_start'],'endOffset':focus['selection_end']}]}
+            command = JourneyCommand(mode='ask', message=request, expected_revision=journey.get('revision', 1), note_context=note_context, selected_text=focus.get('selected_text'), selected_span_ids=[focus['source_span_id']] if focus.get('source_span_id') else [])
             return enqueue(sid, 'voice_teach', {'command': command.model_dump(mode='json'), 'visual': name == 'visual_create'}, 'Preparing an explanation.' if name == 'tutor_explain' else 'Preparing your diagram.')
         if name == 'visual_update':
             from ..visualization_service import VisualChange, VisualizationService

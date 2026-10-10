@@ -80,17 +80,17 @@ describe('unified sidebar and notes',()=>{
     expect(container.querySelector('[aria-current="page"]')).not.toBeNull();
   });
   it('renders mutually exclusive empty and blank editor states and hides empty formatting tools',async()=>{
-    act(()=>root.render(<Harness/>));await settle();expect(container.textContent).toContain('Capture what matters');
+    act(()=>root.render(<Harness/>));await settle();expect(container.textContent).toContain('Your notes');
     expect(container.querySelector('[aria-label="Note title"]')).toBeNull();
-    click('Test new note');expect(container.textContent).not.toContain('Capture what matters');
+    click('Test new note');await settle();expect(container.textContent).not.toContain('Start writing, or save something from your conversation.');
     expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();expect(container.querySelector('[data-note-toolbar]')).toBeNull();
     const editor=container.querySelector<HTMLElement>('[contenteditable="true"]')!;
     act(()=>{editor.textContent='My first sentence.';editor.dispatchEvent(new Event('input',{bubbles:true}));});await settle(800);
     expect(mocks.create).toHaveBeenCalled();expect(mocks.create.mock.calls[0][0].body).toContain('My first sentence.');
-    expect(container.querySelector('[data-note-toolbar]')).not.toBeNull();
+    expect(container.querySelector('[data-note-toolbar]')).toBeNull();
   });
   it('creates a folder through the shared Notes command',async()=>{
-    act(()=>root.render(<Harness/>));await settle();click('Test new folder');
+    act(()=>root.render(<Harness/>));await settle();click('Test new folder');await settle();
     const input=container.querySelector<HTMLInputElement>('[aria-label="Folder name"]')!;
     act(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'Lab notes');input.dispatchEvent(new Event('input',{bubbles:true}));});
     act(()=>input.closest('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));

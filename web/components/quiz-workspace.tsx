@@ -43,7 +43,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
     return () => { active = false; };
   }, []);
   useEffect(() => {
-    if (quiz) reportVoiceFocus({ quiz_id: quiz.id, presentation_id: quiz.current?.id || null, expected_revision: quiz.revision });
+    if (quiz) reportVoiceFocus({ note_id:null,selection_start:null,selection_end:null,selected_text:null,source_span_id:null,quiz_id: quiz.id, presentation_id: quiz.current?.id || null, expected_revision: quiz.revision });
   }, [quiz]);
   useEffect(() => {
     const refresh = () => { if (quiz?.id) void getQuiz(quiz.id).then(setQuiz).catch(() => undefined); };

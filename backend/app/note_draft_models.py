@@ -37,6 +37,7 @@ class CreateNoteDraft(ApiModel):
     quiz_attempt_id: str | None = Field(default=None, max_length=160)
     note_context: NoteContextInput | None = None
     replacement: NoteDraftReplacement | None = None
+    edit_request: str | None = Field(default=None,max_length=1000)
 
     @model_validator(mode="after")
     def authorized_origin(self):

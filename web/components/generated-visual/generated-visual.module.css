@@ -1,0 +1,14 @@
+.card { margin: 12px 0; padding: 12px; border: 1px solid var(--border, #353535); border-radius: 16px; overflow: hidden; background: var(--background, #191919); }
+.caption { margin-bottom: 10px; font-size: 14px; font-weight: 600; }
+.actions { display:inline-flex;float:right;gap:8px; }
+.actions button { background:transparent;color:inherit;border:1px solid var(--border,#444);border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer; }
+.tableScroll { overflow-x: auto; }
+.tableScroll table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.tableScroll caption { text-align: left; padding-bottom: 8px; }
+.tableScroll th,.tableScroll td { padding: 10px; border-bottom: 1px solid var(--border, #353535); text-align: left; }
+.followup { display:flex; gap:8px; flex-wrap:wrap; padding:12px 0 0; align-items:center; }
+.followup label { width:100%; font-size:13px; }
+.followup textarea { width:100%; min-height:65px; margin-top:6px; padding:10px; background:transparent; color:inherit; border:1px solid var(--border,#444); border-radius:10px; }
+.followup button { border:1px solid var(--border,#444); border-radius:999px; background:transparent; color:inherit; padding:7px 12px; cursor:pointer; }
+.followup a { color:inherit; }
+@media(prefers-reduced-motion:reduce){.card * { transition:none!important; animation:none!important; }}

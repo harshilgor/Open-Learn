@@ -26,6 +26,7 @@ OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_waterm
 _profile_locks = defaultdict(RLock)
 OMIT.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions','agent_action_drafts','agent_action_operations','agent_delegation_budgets','agent_delegated_children','agent_delegation_charges'})
 OMIT.add('agent_connector_intakes')
+OMIT.update({'calendar_permissions','calendar_proposals','calendar_operations','calendar_sync'})
 OMIT.add('class_material_intakes')
 # In-progress resource selections are not resumed when class sessions are
 # copied. NeedInfo is reconstructed lazily from the copied class snapshot.

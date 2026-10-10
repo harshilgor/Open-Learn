@@ -15,7 +15,7 @@ from .workflow_store import WorkflowStore
 class VisualChange(ApiModel):
     operation: Literal["change_parameter", "annotate", "set_domain"]
     expected_revision: int = Field(ge=1)
-    parameter_id: str | None = Field(default=None, max_length=40)
+    parameter_id: str | None = Field(default=None, max_length=64)
     value: float | None = Field(default=None, ge=-10000, le=10000, allow_inf_nan=False)
     annotation: VisualAnnotation | None = None
     x_domain: tuple[float, float] | None = None
@@ -101,10 +101,13 @@ class VisualizationService:
         if artifact is None:
             problem("not_found", "This lesson is unavailable.", 404)
         MaterialService(self.store).session(owner, artifact.session_id)
-        current = next((VisualizationSpec.model_validate(value) for block in artifact.blocks
-                        for value in block.visualizations if value.get("id") == visualization_id), None)
-        if current is None:
+        raw = next((value for block in artifact.blocks for value in block.visualizations if value.get('id') == visualization_id), None)
+        if raw is None:
             problem("not_found", "This visualization is unavailable.", 404)
+        if raw.get('type') == 'generated_ui_ref':
+            from .visual_runs import VisualRuns
+            return VisualRuns(self.store).change(owner, lesson_id, visualization_id, change)
+        current = VisualizationSpec.model_validate(raw)
         updated = changed_spec(current, change)
         with self.store.transaction() as conn:
             self.replace_in_artifact(conn, owner, lesson_id, updated)

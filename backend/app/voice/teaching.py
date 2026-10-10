@@ -35,8 +35,10 @@ def prepare(store, provider, owner, chat_id, payload):
     body = asyncio.run(asyncio.wait_for(collect(), timeout=90))
     if not body.strip():
         fail('voice_empty_lesson', 'Buddy returned no explanation.', 503)
-    visuals = plan_visualizations(provider, prepared, command.message) if payload.get('visual') else []
-    if payload.get('visual') and not visuals:
+    from ..openintelligentui import enabled
+    prepared['_visualRequested'] = bool(payload.get('visual')) and enabled()
+    visuals = plan_visualizations(provider, prepared, command.message) if payload.get('visual') and not enabled() else []
+    if payload.get('visual') and not enabled() and not visuals:
         fail('voice_visual_unavailable', 'Buddy could not produce a valid diagram. Please try a more specific request.', 422)
     return service, prepared, command, body, visuals
 
@@ -44,4 +46,10 @@ def prepare(store, provider, owner, chat_id, payload):
 def commit(conn, owner, prepared):
     service, context, command, body, visuals = prepared
     artifact, _ = service.commit_stream(conn, owner, context, command, body, visuals)
+    if context.get('_visualRequested'):
+        from ..visual_runs import VisualRuns
+        from ..execution import active_job
+        job = active_job.get()
+        VisualRuns(service.store).admit(conn, owner, artifact.session_id, artifact.id, context, command.message,
+                                      (job['id'] if job else artifact.id) + ':visual')
     return {'sessionId': artifact.session_id, 'lessonId': artifact.id}

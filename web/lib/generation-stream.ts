@@ -3,11 +3,11 @@ import { apiBaseUrl, request, type Gear } from './api';
 import type { VisualType } from './visualization-spec';
 
 export type GenerationMode = 'ask' | 'learn';
-export type GenerationRequest = { mode: GenerationMode; message: string; gear: Gear; expectedRevision: number; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
+export type GenerationRequest = { mode: GenerationMode; message: string; gear: Gear; expectedRevision: number; clientMessageId?: string; replyToGenerationId?: string; parentGenerationId?: string; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
 export type GenerationEvent = { generationId: string; sequence: number; type: string; data: Record<string, unknown> };
 export type GenerationUsage = { totalTokens: number; promptTokens?: number | null; completionTokens?: number | null; usageSource: 'exact' | 'estimated'; provider?: string | null; model?: string | null };
-export type GenerationDescriptor = { id: string; sessionId: string; mode: GenerationMode; status: string; sequence: number; provider: string; model: string; journeyRevision?: number | null; finalRevision?: number | null; errorCode?: string | null; metrics?: Record<string, number | string | boolean | null> | null };
-export type GenerationCallbacks = { onEvent: (event: GenerationEvent) => void; onReconnect?: () => void; onDescriptor?: (descriptor: GenerationDescriptor) => void; onSequence?: (sequence: number) => void };
+export type GenerationDescriptor = { id: string | null; sessionId: string; mode: GenerationMode; status: string; sequence: number; provider: string; model: string; journeyRevision?: number | null; finalRevision?: number | null; errorCode?: string | null; messageId?: string | null; conversationSeq?: number | null; contextRevision?: number | null; parentGenerationId?: string | null; branchId?: string | null; relation?: string | null; branchRevision?: number | null; selectedBranchId?: string | null; cancelTargetGenerationId?: string | null; cancelTargetStatus?: string | null; accepted?: boolean; scheduledGenerationIds?: string[]; activeGenerationIds?: string[]; metrics?: Record<string, number | string | boolean | null> | null };
+export type GenerationCallbacks = { onEvent: (event: GenerationEvent) => void; onReconnect?: () => void; onDescriptor?: (descriptor: GenerationDescriptor) => void; onAccepted?: (descriptor: GenerationDescriptor) => void; onSequence?: (sequence: number) => void };
 
 function headers(extra: HeadersInit = {}): Headers {
   const value = new Headers(extra);
@@ -26,38 +26,59 @@ export class GenerationStream {
   descriptor: GenerationDescriptor | null = null;
 
   async start(sessionId: string, body: GenerationRequest, callbacks: GenerationCallbacks): Promise<GenerationDescriptor> {
-    const key = crypto.randomUUID();
+    const key = body.clientMessageId || crypto.randomUUID();
+    const requestBody = body.clientMessageId ? body : { ...body, clientMessageId: key };
     const descriptor = await request<GenerationDescriptor>(`/v1/sessions/${encodeURIComponent(sessionId)}/generations`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(requestBody),
     });
     this.descriptor = descriptor;
     this.sequence = descriptor.sequence || 0;
-    callbacks.onDescriptor?.(descriptor);
-    await this.observe(callbacks);
+    if (descriptor.id) callbacks.onDescriptor?.(descriptor);
+    callbacks.onAccepted?.(descriptor);
+    if (!descriptor.id) return descriptor;
+    this.terminal = ['completed','cancelled','failed','interrupted'].includes(descriptor.status);
+    if (!this.terminal) await this.observe(callbacks);
     return descriptor;
   }
 
-  async resume(descriptor: GenerationDescriptor, callbacks: GenerationCallbacks): Promise<void> {
+  async retry(sourceGenerationId: string, idempotencyKey: string, callbacks: GenerationCallbacks): Promise<GenerationDescriptor> {
+    const descriptor = await request<GenerationDescriptor>(
+      `/v1/generations/${encodeURIComponent(sourceGenerationId)}/retry`,
+      { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } },
+    );
     this.descriptor = descriptor;
     this.sequence = descriptor.sequence || 0;
-    callbacks.onDescriptor?.(descriptor);
-    await this.observe(callbacks);
+    if (descriptor.id) callbacks.onDescriptor?.(descriptor);
+    callbacks.onAccepted?.(descriptor);
+    if (!descriptor.id) return descriptor;
+    this.terminal = ['completed','cancelled','failed','interrupted'].includes(descriptor.status);
+    if (!this.terminal) await this.observe(callbacks);
+    return descriptor;
+  }
+
+  async resume(descriptor: GenerationDescriptor, callbacks: GenerationCallbacks, afterSequence = descriptor.sequence || 0): Promise<void> {
+    this.descriptor = descriptor;
+    this.sequence = afterSequence;
+    if (descriptor.id) callbacks.onDescriptor?.(descriptor);
+    this.terminal = ['completed','cancelled','failed','interrupted'].includes(descriptor.status);
+    if (!this.terminal) await this.observe(callbacks);
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     this.wasCancelled = true;
     this.controller?.abort();
-    if (this.descriptor) await request(`/v1/generations/${encodeURIComponent(this.descriptor.id)}/cancel`, { method: 'POST' });
+    if (this.descriptor?.id) await request(`/v1/generations/${encodeURIComponent(this.descriptor.id)}/cancel`, { method: 'POST' });
   }
 
   private async observe(callbacks: GenerationCallbacks): Promise<void> {
-    if (!this.descriptor) return;
+    const generationId = this.descriptor?.id;
+    if (!generationId) return;
     let retries = 0;
     while (!this.stopped) {
       this.controller = new AbortController();
       try {
-        const response = await authenticatedFetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(this.descriptor.id)}/events?after=${this.sequence}`, {
+        const response = await authenticatedFetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(generationId)}/events?after=${this.sequence}`, {
           headers: headers(this.sequence ? { 'Last-Event-ID': String(this.sequence) } : {}), signal: this.controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`Could not reconnect to generation (${response.status}).`);
@@ -92,6 +113,6 @@ export class GenerationStream {
     this.sequence = event.sequence;
     callbacks.onSequence?.(this.sequence);
     callbacks.onEvent(event);
-    if (['generation.completed', 'generation.cancelled', 'generation.error'].includes(event.type)) this.terminal = true;
+    if (['generation.completed', 'generation.cancelled', 'generation.interrupted', 'generation.error'].includes(event.type)) this.terminal = true;
   }
 }

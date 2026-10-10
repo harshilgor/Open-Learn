@@ -1,0 +1,1 @@
+"""Shared student calendar domain."""

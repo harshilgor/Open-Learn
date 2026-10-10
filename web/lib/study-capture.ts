@@ -1,4 +1,4 @@
-import { parseVisualization } from './visualization-spec';
+import { parseVisualArtifact as parseVisualization } from './generated-visual';
 
 /** Keep durable visual references alongside editable explanation text. */
 export function captureReadingBlocks(blocks: Array<{heading?: string | null; body?: string | null; visualizations?: unknown[]}>, lessonId?: string): string {

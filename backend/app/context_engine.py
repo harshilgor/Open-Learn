@@ -94,6 +94,9 @@ class ContextEngine:
             turn = turns[turn_index]
             lesson = turn.get("lesson") or {}
             answer = "\n".join(str(block.get("body", "")) for block in lesson.get("blocks", []))
+            draft = turn.get("assistantDraft")
+            if isinstance(draft, str) and draft:
+                answer = "[Earlier response draft; it may be incomplete and can be corrected or replaced]\n" + draft
             pair = [
                 {"role": "user", "content": str(turn.get("question", ""))},
                 {"role": "assistant", "content": answer},

@@ -710,3 +710,11 @@
 /* Compact note picker overlays the editor instead of consuming a second column. */
 .notes:not(.notesHome) { position: relative; grid-template-columns: minmax(0, 1fr); }
 .notes:not(.notesHome) > .noteList { position: absolute; inset: 0 auto 0 0; z-index: 10; width: min(320px, 92%); max-height: none; background: var(--background); box-shadow: 8px 0 24px #0003; }
+
+/* The workspace shares the quiet surface of the conversation. */
+.header { background:var(--background); height:48px; flex-shrink:0; }
+.header .launcher { display:none; }
+
+.quietEmpty{padding:28px 24px}.quietEmpty h2{font-size:16px;font-weight:600}.quietEmpty p{font-size:13px;color:var(--muted-foreground);margin:8px 0 18px}.excerptFloat{display:flex;max-width:calc(100% - 16px);padding:3px;gap:0;flex-wrap:wrap}.excerptFloat button{padding:7px 9px;font-size:12px;border-radius:6px;white-space:nowrap}.excerptFloat button:hover{background:var(--accent)}
+
+.recovery{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;font-size:12px;background:var(--muted);border-radius:8px;margin:8px 12px}.recovery>button{padding:5px 8px;border-radius:6px}.recovery p{color:var(--muted-foreground)}

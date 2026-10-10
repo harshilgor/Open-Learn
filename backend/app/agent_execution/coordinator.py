@@ -155,7 +155,7 @@ class Coordinator:
                         response.update(status='requires_action',handled=True,directive={'kind':'browser_control','taskId':rows[0]['id'],'action':plan.action},references=[{'kind':'task','id':rows[0]['id']}],runtimeOwner='browser_legacy')
                 else:
                     response.update(status='needs_input',handled=True,question='Which task should I '+plan.action+'?' if rows else 'There is no active task in this conversation to '+plan.action+'.',references=[{'kind':'task','id':row['id']} for row in rows])
-            elif plan and plan.kind in {'flashcards','reminder','analysis','connected_action','memory','responsibility'} and capability is None:
+            elif plan and plan.kind in {'flashcards','reminder','analysis','connected_action','memory','responsibility','calendar'} and capability is None:
                 response.update(status='requires_action',handled=True,directive={'kind':plan.kind},references=[])
                 if plan.kind == 'analysis':
                     response.update(status='needs_input',question='Attach the dataset as a CSV and tell me what you want to learn from it. Open Learn can profile columns, missing values, and numeric summaries; Daytona lab analysis supports the trial, distance, and time workflow.')

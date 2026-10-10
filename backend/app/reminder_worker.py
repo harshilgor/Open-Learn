@@ -13,6 +13,12 @@ from .reminder_actions import ReminderActionRunner
 class NotificationsWorker:
     def __init__(self,store,provider_getter=lambda:None):self.store=store;self.provider_getter=provider_getter
     def tick(self):
+        from .calendar.google_writes import tick_google_writes
+        tick_google_writes(self.store)
+        from .calendar.google import tick_google_calendars
+        tick_google_calendars(self.store)
+        from .calendar.reminders import prepare_calendar_reminders
+        prepare_calendar_reminders(self.store)
         from .browser_assistant.reminders import tick_reminders
         tick_reminders(self.store)
         counts=ReminderService(self.store).tick()

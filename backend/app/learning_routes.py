@@ -3,7 +3,7 @@ from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 import logging
 import time
-from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, QuizUsefulnessFeedback, RevisionCommand
+from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, QuizUsefulnessFeedback, RevisionCommand, QuizQuestionRevision
 from .material_routes import material_owner
 from .material_service import MaterialService, problem
 from .model_provider import ModelProviderError
@@ -28,6 +28,9 @@ def run_job(store, provider, job_id):
     if kind in {'voice_turn', 'voice_action'}:
         from .voice.worker import run_voice_job
         return run_voice_job(store, provider, job_id)
+    if kind == 'visual_generate':
+        from .visual_runs import run_visual_job
+        return run_visual_job(store, provider, job_id)
     records = WorkflowStore(store)
     job = records.claim(job_id)
     if not job:
@@ -278,6 +281,12 @@ def build_learning_router(store_provider, provider_getter):
     def next_question(qid: str, command: RevisionCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
         WorkflowStore(db).read(owner, qid, "quiz")
         return enqueue(tasks, db, owner, qid, "next", command.model_dump(), key)
+
+    @router.post('/quizzes/{qid}/question-difficulty')
+    def revise_question(qid:str,command:QuizQuestionRevision,tasks:BackgroundTasks,owner=Depends(material_owner),db=Depends(store_provider),key:str=Header(alias='Idempotency-Key',min_length=1,max_length=200)):
+        result=QuizService(db,provider_getter()).revise_question(owner,qid,command.question_number,command.difficulty,command.expected_revision,key)
+        if result.get('jobId'):schedule_local(tasks,run_job,db,provider_getter(),result['jobId'])
+        return result
 
     @router.post("/quizzes/{qid}/attempts", status_code=202)
     def answer(qid: str, command: AnswerCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):

@@ -8,6 +8,11 @@ class QuizUsefulnessFeedback(ApiModel):
     useful: bool
 
 
+class QuizQuestionRevision(ApiModel):
+    question_number: int = Field(ge=1, le=10)
+    difficulty: Literal['foundational','standard','stretch']
+    expected_revision: int = Field(ge=1)
+
 class QuizCreate(ApiModel):
     session_id: str
     task_id: str | None = Field(default=None, max_length=160)

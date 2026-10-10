@@ -47,7 +47,14 @@
 .readerTop { display: flex; align-items: center; justify-content: space-between; color: #77796f; font-size: 13px; margin-bottom: 16px; }
 .title { font-size: clamp(24px, 3vw, 30px); line-height: 1.3; letter-spacing: -0.8px; font-weight: 500; overflow-wrap: anywhere; }
 .hint { color: #72756b; font-size: 13px; line-height: 1.6; margin: 10px 0 20px; }
-.turnStatus { color: #72756b; font-size: 13px; line-height: 1.6; }
+.turnStatus { display:flex; align-items:center; flex-wrap:wrap; gap:8px; color: #72756b; font-size: 13px; line-height: 1.6; }
+.turnStatus button { color:var(--foreground); text-decoration:underline; text-underline-offset:3px; }
+.branchStatus { display:flex; align-items:center; gap:10px; margin:4px 0 10px; color:var(--muted-foreground); font-size:12px; line-height:1.4; }
+.branchStatus button { color:var(--foreground); text-decoration:underline; text-underline-offset:3px; }
+.stopAllResponses { display:block; margin:0 0 8px auto; padding:5px 10px; border:1px solid var(--border); border-radius:999px; background:var(--muted); color:var(--foreground); font-size:12px; }
+.partialOutput { margin:10px 0; padding:12px 14px; border:1px solid var(--border); border-radius:12px; background:color-mix(in srgb,var(--muted) 35%,transparent); }
+.partialOutput span { display:block; margin-bottom:6px; color:var(--muted-foreground); font-size:12px; }
+.partialOutput p { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .reading article { font-size: 15px; line-height: 1.65; color: #33372f; }
 .reading article section { margin: 22px 0; }
 .reading article p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -355,9 +362,9 @@ does not read as a solid white empty slab. */
 .turn.groupedWithPrevious{margin-top:-14px}
 .turn.groupedWithPrevious .lessonArticle{border-top-left-radius:6px}
 .turn.groupedWithNext .lessonArticle{border-bottom-left-radius:6px}
-.lessonArticle{width:fit-content;max-width:min(86%,720px);padding:12px 16px;border-radius:20px;background:var(--muted);line-height:1.6}
+.lessonArticle{width:fit-content;max-width:min(80%,620px);padding:9px 13px;border-radius:18px;background:var(--muted);font-size:15px;line-height:1.5}
 :global(.dark) .lessonArticle{background:#262626}
-.userPrompt{max-width:85%;padding:9px 15px;border-radius:22px;background:var(--secondary);color:var(--foreground)}
+.userPrompt{width:fit-content;max-width:80%;padding:8px 13px;border-radius:18px;background:var(--secondary);color:var(--foreground);font-size:15px;line-height:1.5}
 :global(.dark) .userPrompt{background:#424242;color:var(--foreground)}
 .lessonArticle section[data-reading-block]{margin:0 0 14px!important}
 .lessonArticle section[data-reading-block]:last-child{margin-bottom:0!important}
@@ -369,8 +376,9 @@ does not read as a solid white empty slab. */
 .lessonArticle section[data-reading-block] li p{margin-block:0!important}
 @media(max-width:620px){.turn{gap:12px;margin-bottom:18px}.turn.groupedWithPrevious{margin-top:-10px}.turn.groupedWithPrevious .lessonArticle{border-top-left-radius:5px}.turn.groupedWithNext .lessonArticle{border-bottom-left-radius:5px}.lessonArticle{max-width:94%;padding:10px 13px;border-radius:18px}.userPrompt{max-width:90%;padding:8px 13px}}
 /* Main composer: writing surface above, preferences below. */
-.mainComposer{display:grid;grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:4px;padding:8px 10px;border-radius:24px;min-height:60px;box-shadow:0 4px 18px #0000000a}
-.mainComposer textarea{grid-column:2;grid-row:1;align-self:center;min-height:28px;padding:8px 3px;line-height:24px;font-size:16px}
+.mainComposer{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:4px;padding:4px 6px;border-radius:26px;min-height:48px;box-shadow:none}
+.mainComposer textarea{grid-column:2;grid-row:1;align-self:center;min-height:32px;padding:5px 3px;line-height:22px;font-size:15px}
+.mainComposer textarea::placeholder{font-size:15px}
 .mainComposer .mobileOptionsButton{display:grid;place-items:center;grid-column:1;grid-row:1;width:36px;height:40px;border-radius:50%;color:var(--muted-foreground);transition:background .18s,color .18s}
 .mainComposer .mobileOptionsButton:hover{background:var(--accent);color:var(--foreground)}
 .mainComposer .composerBottom{display:contents}
@@ -387,7 +395,7 @@ does not read as a solid white empty slab. */
 .composerFooter .modeChevron{width:12px;color:var(--muted-foreground)}
 :global(.dark) .mainComposer{background:#222;box-shadow:none;border-color:#ffffff26}
 :global(.dark) .mainComposer:focus-within{border-color:#ffffff45;box-shadow:0 0 0 2px #ffffff08}
-@media(max-width:620px){.mainComposer{padding:6px;border-radius:22px;grid-template-columns:36px minmax(0,1fr) auto;min-height:54px}.mainComposer textarea{padding-block:6px}.mainComposer .composerBottom>div:last-child{gap:2px}.composerFooter{padding-inline:3px;gap:6px}}
+@media(max-width:620px){.mainComposer{padding:4px;border-radius:24px;grid-template-columns:36px minmax(0,1fr) auto;min-height:48px}.mainComposer textarea{padding-block:5px;font-size:16px}.mainComposer textarea::placeholder{font-size:16px}.mainComposer .composerBottom>div:last-child{gap:2px}.composerFooter{padding-inline:3px;gap:6px}}
 @media(prefers-reduced-motion:reduce){.mainComposer .mobileOptionsButton,.mainComposer .composerBottom>div:last-child button{transition:none}}
 .dictationStrip{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin:8px 5px 2px;padding:12px;border:1px solid var(--border);border-radius:16px;background:var(--background);overflow:hidden;font-size:12px}
 .dictationStrip>button{display:grid;place-items:center;min-height:32px;padding:4px 9px;border-radius:9px;color:var(--foreground)}
@@ -402,3 +410,14 @@ does not read as a solid white empty slab. */
 .dictationReview textarea{display:block;width:100%;max-height:140px!important;min-height:70px!important;margin:8px 0;overflow:auto!important;font-size:14px!important}
 .dictationReview button{padding:7px 10px;border-radius:8px;background:var(--accent);margin-right:8px}
 .dictationStrip button:focus-visible,.dictationReview button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+
+/* Instant, ordered outgoing text messages. */
+.outbox{display:flex;flex-direction:column;align-items:flex-end;gap:6px;width:100%}
+.outgoingMessage{display:flex;flex-direction:column;align-items:flex-end;max-width:100%;gap:3px}
+.outgoingMessage .userPrompt{max-width:min(85vw,600px);margin:0;align-self:flex-end;overflow-wrap:anywhere;white-space:pre-wrap}
+.deliveryStatus{font-size:11px;line-height:1.4;color:var(--muted-foreground);max-width:290px;text-align:right;padding-right:6px}
+.deliveryStatus button{margin-left:10px;text-decoration:underline;min-height:28px}
+.consecutivePrompt{border-radius:20px}
+.userPrompt p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.lessonArticle{overflow-wrap:anywhere}
+@media(prefers-reduced-motion:reduce){.outgoingMessage{animation:none}}

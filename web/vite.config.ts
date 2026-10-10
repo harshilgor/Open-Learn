@@ -1,5 +1,5 @@
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, type ViteDevServer } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { sites } from "./build/sites-vite-plugin";
@@ -56,6 +56,17 @@ export default defineConfig(async () => {
       ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
     },
     plugins: [
+      {
+        name: 'openlearn-visual-asset-cors',
+        configureServer(server: ViteDevServer) {
+          server.middlewares.use((req, res, next) => {
+            if (req.url?.split('?')[0].startsWith('/visual-assets/')) {
+              res.setHeader('Access-Control-Allow-Origin', '*');
+            }
+            next();
+          });
+        },
+      },
       vinext(),
       sites({ mockAuth: !managedLinux }),
       cloudflare({

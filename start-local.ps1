@@ -20,7 +20,7 @@ function Test-LocalService([string]$Address) {
     try {
         $request = [System.Net.WebRequest]::Create($Address)
         $request.Proxy = $null
-        $request.Timeout = 3000
+        $request.Timeout = 15000
         $response = $request.GetResponse()
         try { return [int]$response.StatusCode -eq 200 }
         finally { $response.Close() }

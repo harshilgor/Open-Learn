@@ -137,6 +137,8 @@ app.include_router(build_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
+from .openintelligentui import build_router as build_visual_pipeline_router
+app.include_router(build_visual_pipeline_router(get_store))
 from .voice.routes import build_voice_router
 app.include_router(build_voice_router(get_store, lambda: lesson_provider))
 app.include_router(build_privacy_router(get_store))
@@ -171,6 +173,8 @@ from .buddy_routes import build_buddy_router
 app.include_router(build_buddy_router(get_store))
 from .reminder_routes import build_reminder_router
 app.include_router(build_reminder_router(get_store,lambda:lesson_provider))
+from .calendar.routes import build_calendar_router
+app.include_router(build_calendar_router(get_store,lambda:lesson_provider))
 from .agent_execution.research_routes import build_research_router
 app.include_router(build_research_router(get_store))
 from .agent_execution.connected_routes import build_connected_router
@@ -405,6 +409,9 @@ def create_learning_session(
 ) -> LearningSession:
     """Pin a learning session to a graph revision for resumable actions."""
     graph_id = request.graph_id
+    if request.parent_session_id:
+        from .material_service import MaterialService
+        MaterialService(db).session(owner,request.parent_session_id)
     from .buddy_service import BuddyService
     with db.transaction() as buddy_connection:
         resolved_buddy = BuddyService(db).resolve(buddy_connection, owner, request.course_id, request.buddy_id)
@@ -440,6 +447,7 @@ def create_learning_session(
     session = LearningSession(
         id=f"session_{uuid4().hex}",
         buddy_id=resolved_buddy,
+        parent_session_id=request.parent_session_id,
         learner_id=effective_learner_id,
         course_id=request.course_id,
         graph_id=graph.id,
@@ -495,7 +503,7 @@ def list_chat_sessions(
     owner: str = Depends(material_owner),
     db: Store = Depends(get_store),
 ) -> dict:
-    """Newest-first conversation history. Metadata only; messages load on open."""
+    """Newest-first history with bounded learner previews; full chats load on open."""
     sessions, total = db.list_sessions(owner, limit, offset)
     return {
         "sessions": [
@@ -505,7 +513,7 @@ def list_chat_sessions(
                 goal=item.goal,
                 course_id=item.course_id,
                 updated_at=item.updated_at,
-                turn_count=db.journey_turn_count(owner, item.id),
+                **db.journey_history_metadata(owner, item.id),
             ).to_summary_dict()
             for item in sessions
         ],

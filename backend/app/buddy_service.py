@@ -1,5 +1,6 @@
 """Companion identity is account scoped; learning resources remain shared."""
 import json
+import re
 from uuid import uuid4, uuid5, NAMESPACE_URL
 from sqlalchemy import text
 from pydantic import Field
@@ -123,14 +124,41 @@ class BuddyService:
             conn.execute(text('UPDATE buddy_responsibilities SET buddy_id=:replacement WHERE owner_id=:owner AND buddy_id=:id'), {'replacement':replacement,'owner':owner,'id':buddy})
         return self.snapshot(owner)
 
-    def instructions(self, owner, session):
+    def learn_preferences(self, owner, session, message):
+        """Remember explicit communication requests, scoped to this owner/Buddy.
+
+        Never store free-form instructions, quoted passages, or inferred traits.
+        """
+        rules = {
+            'concise': [(r'(?:keep (?:your |the )?(?:answers|responses|explanations) short|be concise)', True),
+                        (r'(?:give (?:me )?detailed explanations|explain in detail)', False)],
+            'examples': [(r'(?:use (?:more )?examples|include examples)', True),
+                         (r'(?:stop using examples|no examples|skip examples)', False)],
+            'style': [(r'(?:be more direct|use a direct tone)', 'direct'),
+                      (r'(?:be more encouraging|use an encouraging tone)', 'encouraging'),
+                      (r'(?:use a calm tone)', 'calm'), (r'(?:be more playful|use a playful tone)', 'playful')],
+        }
+        # Only standalone user requests qualify; surrounding source text is ignored.
+        request = (message or '').strip().lower().rstrip('.!')
+        updates = {key: value for key, patterns in rules.items() for pattern, value in patterns
+                   if re.fullmatch(r'(?:please )?' + pattern + r'(?: from now on)?', request)}
+        if not updates: return
+        with self.store.transaction() as conn:
+            identifier = conn.execute(text('SELECT buddy_id FROM buddy_chats WHERE id=:id AND owner_id=:owner'), {'id':session,'owner':owner}).scalar_one_or_none()
+            if not identifier: return
+            profile = self.profile(conn, owner, identifier, True)
+            payload = BuddyInput.model_validate({**profile, **updates}).model_dump(by_alias=True)
+            conn.execute(text('UPDATE buddy_profiles SET payload=:payload,revision=revision+1 WHERE id=:id AND owner_id=:owner AND revision=:revision AND archived=false'), {'payload':json.dumps(payload),'id':identifier,'owner':owner,'revision':profile['revision']})
+
+    def instructions(self, owner, session, message=None):
+        if message: self.learn_preferences(owner, session, message)
         with self.store.engine.connect() as conn:
             identifier=conn.execute(text('SELECT buddy_id FROM buddy_chats WHERE id=:id AND owner_id=:owner'), {'id':session,'owner':owner}).scalar_one_or_none()
             if not identifier:return ''
             profile=self.profile(conn,owner,identifier)
             presentation=conn.execute(text('SELECT presentation FROM buddy_chats WHERE id=:id AND owner_id=:owner'), {'id':session,'owner':owner}).scalar_one()
         # Only validated finite preference values enter model instructions; names stay presentation data.
-        return '\nCommunication preferences only (retain all teaching, evidence, and permission rules): use a '+profile['style']+' tone. '+('Prefer concise explanations. ' if profile['concise'] else 'Allow developed explanations. ')+('Use relevant examples. ' if profile['examples'] else '')+('For ordinary answers, converse naturally and prioritize useful next steps; provide detail when requested.' if presentation=='conversation' else 'For Ask, provide developed, structured responses when useful.' if presentation=='ask' else '')
+        return '\nCommunication preferences only (retain all teaching, evidence, and permission rules): adapt to the learner’s current request and demonstrated understanding; ask a brief clarifying question when uncertain. Do not infer personal traits. Current requests override saved defaults. Use a '+profile['style']+' tone. '+('Prefer concise explanations. ' if profile['concise'] else 'Allow developed explanations. ')+('Use relevant examples. ' if profile['examples'] else 'Avoid examples unless requested. ')+('For ordinary answers, converse naturally and prioritize useful next steps; provide detail when requested.' if presentation=='conversation' else 'For Ask, provide developed, structured responses when useful.' if presentation=='ask' else '')
 
     def presentation(self, owner, session):
         """Return the saved, owner-scoped presentation for response routing."""

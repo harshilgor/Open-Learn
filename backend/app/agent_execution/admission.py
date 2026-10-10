@@ -21,7 +21,7 @@ URL = re.compile(r'https://[^\s<>"\)]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s<>"\)
 class AdmissionPlan(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: Literal['conversation-admission-v1'] = 'conversation-admission-v1'
-    kind: Literal['direct', 'browser', 'research', 'analysis', 'flashcards', 'reminder', 'control', 'connected_action', 'calendar_read', 'memory', 'responsibility']
+    kind: Literal['direct', 'browser', 'research', 'analysis', 'flashcards', 'reminder', 'control', 'connected_action', 'calendar_read', 'calendar', 'memory', 'responsibility']
     source_url: str | None = None
     source_alias: str | None = None
     action: Literal['pause', 'resume', 'cancel'] | None = None
@@ -44,6 +44,8 @@ def plan_message(message: str) -> AdmissionPlan:
         lower,
     )
     calendar_write = re.search(r'\b(?:create|add|update|delete|remove|cancel|move|reschedule)\b|\bschedule\s+(?:(?:a|an|the|my)\s+)?(?:meetings?|events?|appointments?|classes?)\b', lower)
+    if re.search(r'\b(?:calendar|schedule|study blocks?|revision sessions?)\b', lower) and (calendar_read or calendar_write or re.search(r'\b(?:plan|fit|free|available|schedule)\b', lower)) and 'google' not in lower:
+        return AdmissionPlan(kind='calendar')
     if calendar_subject and calendar_read and not calendar_write:
         return AdmissionPlan(kind='calendar_read')
     if re.match(r'^(?:explain|teach me|tell me how|show me how|what is|what are|how (?:do|does))\b', lower):
@@ -87,7 +89,7 @@ def classify_message(message: str, *, context: dict | None = None) -> AdmissionP
     existing capability, but never grants authority to execute it.
     """
     fallback = plan_message(message)
-    if fallback.kind in {'control', 'calendar_read'}:
+    if fallback.kind in {'control', 'calendar_read', 'calendar'}:
         return fallback
     mode = rollout_mode('turn_route')
     if mode == 'off' or mode == 'shadow' and not should_sample_shadow('turn_route', message):

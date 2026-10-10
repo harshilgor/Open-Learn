@@ -35,6 +35,12 @@ def build_agent_router(store_getter, provider_getter=lambda: None):
             if re.match(r'^(?:please\s+)?remember that\s+', body.text, re.I) and re.search(r'(?:password|api[ _-]?key|access[ _-]?token|private key)\s*(?:is\b|=|:)|(?:my|our)\s+secret\b', body.text, re.I):
                 fail('sensitive_memory_denied','Credentials cannot be saved as companion memories.',422)
             result = Coordinator(store_getter()).admit(learner,body,idempotency_key)
+            if result.get('status') == 'requires_action' and result.get('directive', {}).get('kind') == 'calendar':
+                from ..calendar.chat import CalendarCommand, execute_calendar_chat
+                receipt = execute_calendar_chat(store_getter(), learner, CalendarCommand(message=body.text, sessionId=body.session_id, timezone=body.timezone), result['messageId'], provider_getter())
+                result = {**result, 'status':'accepted', 'message':receipt['message'], 'directive':None, 'calendarReceipt':receipt}
+                with Repository(store_getter()).transaction() as conn:
+                    conn.execute(text('UPDATE agent_messages SET response=:response WHERE id=:id AND owner_id=:owner'), {'id':result['messageId'],'owner':learner,'response':json.dumps(result)})
             if result.get('status') == 'requires_action' and result.get('directive', {}).get('kind') == 'reminder':
                 from ..reminder_routes import execute_chat_command, ChatCommand
                 from ..reminder_service import ReminderService

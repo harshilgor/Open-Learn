@@ -94,6 +94,7 @@ class Coordinator:
             'artifact': a['data'].get('result', {}).get('artifactRef'),
             'message': a['data'].get('result', {}).get('userMessage', '')[:600]} for a in self.records.records(owner, sid, 'actions')[-8:]]
         self.tools.validate_focus(owner, context['focus'])
+        context['visual'] = self.tools.visual_context(owner, context['focus'])
         if turn['data'].get('plan'):
             message, model = turn['data']['plan'], turn['data']['model']
         else:
@@ -225,7 +226,7 @@ class Coordinator:
                     result['speechReview'] = reviewed.model_dump()
                     result['userMessage'] = reviewed.spoken_text if reviewed.approved else 'Your explanation is ready on screen, but I could not verify a spoken version.'
                 elif result['status'] == 'succeeded' and kind == 'note_draft':
-                    result['uiIntent'] = {'action': 'refresh_chat'}
+                    result['uiIntent'] = {'action': 'open_note_draft','targetId':data.get('noteDraftId')}
                     result['userMessage'] = 'Your note draft is ready. Review and save it in the conversation.'
             with self.store.transaction() as conn:
                 row = conn.execute(text('SELECT status FROM voice_actions WHERE id=:id'), {'id': action['id']}).scalar_one()
