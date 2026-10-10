@@ -1,4 +1,5 @@
 """ASGI identity context survives streaming; no client header establishes ownership."""
+from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout
 from urllib.parse import unquote
 import re
 from fastapi import HTTPException
@@ -16,6 +17,11 @@ class IdentityMiddleware:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in scope.get('headers', [])}
         token = None
+        response_started = False
+        async def tracked_send(message):
+            nonlocal response_started
+            if message['type'] == 'http.response.start': response_started = True
+            await send(message)
         from .usage.context import current_store
         store_token = current_store.set(self.store_provider())
         try:
@@ -45,7 +51,10 @@ class IdentityMiddleware:
             # Old header arguments remain API-compatible but receive trusted identity.
             scope['headers'] = [(k, v) for k, v in scope.get('headers', []) if k.lower() != b'x-dev-learner-id'] + [(b'x-dev-learner-id', principal.owner_id.encode())]
             token = principal_context.set(principal)
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, tracked_send)
+        except DatabasePoolTimeout:
+            if response_started: raise
+            await JSONResponse(status_code=503, headers={'Retry-After':'3','Cache-Control':'no-store'}, content={'detail':{'code':'database_busy','message':'The tutor service is busy. Your draft is saved. Please retry in a moment.'}})(scope, receive, send)
         except HTTPException as exc:
             await JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})(scope, receive, send)
         finally:
