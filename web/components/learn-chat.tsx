@@ -1035,8 +1035,8 @@ export function LearnChat({
             updateTurnActivity(event.generationId, () => null);
           }
           if (event.type === 'generation.interrupted') {
-            finalError = 'This response was interrupted. Its saved partial answer is still available.';
             setTurns(current => current.map(turn => turn.generationId === event.generationId ? { ...turn, generationStatus: 'interrupted', status: 'interrupted' } : turn));
+            updateTurnActivity(event.generationId, () => null);
           }
           if (event.type === 'generation.completed') {
             setTurns(current => current.map(turn => turn.generationId === event.generationId ? { ...turn, generationStatus: 'completed' } : turn));
@@ -1383,7 +1383,7 @@ export function LearnChat({
       const groupedWithNext = Boolean(nextTurn && nextTurn.sessionId === turn.sessionId && SYNTHETIC_QUESTIONS.has(nextTurn.question));
       return <motion.div key={turn.generationId || turn.messageId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`} className={`${styles.turn} ${groupedWithPrevious ? styles.groupedWithPrevious : ''} ${groupedWithNext ? styles.groupedWithNext : ''}`} initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
       {!repeatsExistingMessage && !SYNTHETIC_QUESTIONS.has(turn.question) ? <div className={styles.userPrompt}><span>You</span><div><p>{turn.question}</p>{turn.selectedPassage ? <details className={styles.originalResponse}><summary>Selected passage</summary><p>{turn.selectedPassage}</p>{turn.selectedSource?.spanIds?.[0] ? <button onClick={()=>openWorkspaceSource({spanId:turn.selectedSource!.spanIds![0]})}>Open source</button>:null}</details>:null}{turn.files?.map(name => <div className={styles.sentFile} key={name}><FileText size={15} />{name}</div>)}</div></div> : null}
-      {!turn.control ? <article id={`message-${turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}`} aria-label="Assistant response" className={styles.lessonArticle}>
+      {!turn.control && (turn.status !== 'interrupted' || turn.lesson || turn.answer || hasVisibleStreamText || turn.partialOutput) ? <article id={`message-${turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}`} aria-label="Assistant response" className={styles.lessonArticle}>
         {showLiveStatus && turn.generationId ? <button type="button" className={styles.branchStatus} onClick={() => stopResponse(turn.generationId!)} aria-label="Stop generating this reply">Stop generating</button> : null}
         {turn.connectionLost ? <div className={styles.turnStatus} role="status"><span>Connection lost. Your message is saved; Buddy may still be answering.</span><button type="button" onClick={() => window.location.reload()}>Reconnect</button></div> : null}
         {!turn.lesson && !turn.stream && !turn.answer && turn.status === 'pending' && showLiveStatus
@@ -1395,10 +1395,10 @@ export function LearnChat({
         {!turn.lesson && !turn.answer && turn.stream && showLiveStatus && !turn.activity && !hasVisibleStreamText
           ? null
           : null}
-        {turn.partialOutput && !turn.stream ? <div className={styles.partialOutput}><span>Saved partial response</span><p>{turn.partialOutput}</p></div> : null}
-        {!turn.connectionLost && !turn.lesson && !turn.answer && ['failed','cancelled','interrupted'].includes(turn.status || '') ? <div className={styles.turnStatus} role="status">
-          <span>{turn.status === 'cancelled' ? 'Response stopped.' : turn.status === 'interrupted' ? 'Response interrupted. Your saved draft is still here.' : 'Response failed. Your message is still here.'}</span>
-          {(turn.status === 'interrupted' || turn.status === 'failed') && !hasLaterAttempt
+        {turn.partialOutput && !turn.stream ? <div className={styles.partialOutput}><p>{turn.partialOutput}</p></div> : null}
+        {!turn.connectionLost && !turn.lesson && !turn.answer && ['failed','cancelled'].includes(turn.status || '') ? <div className={styles.turnStatus} role="status">
+          <span>{turn.status === 'cancelled' ? 'Response stopped.' : 'Response failed. Your message is still here.'}</span>
+          {turn.status === 'failed' && !hasLaterAttempt
             ? <button type="button" disabled={Boolean(turn.generationId && retryingResponses.has(turn.generationId))} onClick={() => askAgain(turn)}>{turn.generationId && retryingResponses.has(turn.generationId) ? 'Retrying…' : 'Ask again'}</button>
             : null}
         </div> : null}
