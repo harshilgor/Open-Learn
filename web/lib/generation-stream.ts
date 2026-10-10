@@ -17,6 +17,10 @@ function headers(extra: HeadersInit = {}): Headers {
   return value;
 }
 
+export class GenerationConnectionError extends Error {
+  constructor(){super('Connection lost. Your message is saved; the response status could not be confirmed.');this.name='GenerationConnectionError';}
+}
+
 /** Shared Ask/Learn observer. Delivery is at-least-once, so sequence filtering is mandatory. */
 export class GenerationStream {
   private controller: AbortController | null = null;
@@ -82,20 +86,21 @@ export class GenerationStream {
           headers: headers(this.sequence ? { 'Last-Event-ID': String(this.sequence) } : {}), signal: this.controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`Could not reconnect to generation (${response.status}).`);
-        retries = 0;
         const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
         while (!this.stopped) {
           const { done, value } = await reader.read();
           if (done) break;
+          retries = 0;
           buffer += decoder.decode(value, { stream: true });
           const frames = buffer.split('\n\n'); buffer = frames.pop() || '';
           for (const frame of frames) this.apply(frame, callbacks);
           if (this.isTerminal()) return;
         }
+        if (!this.stopped && !this.isTerminal()) throw new Error('The response stream ended before completion.');
       } catch (cause) {
         if (this.stopped || (cause instanceof DOMException && cause.name === 'AbortError')) return;
         retries += 1;
-        if (retries > 5) throw new Error('The live response connection was lost. Reload to recover the saved conversation.');
+        if (retries > 5) throw new GenerationConnectionError();
         callbacks.onReconnect?.();
         await new Promise(resolve => window.setTimeout(resolve, Math.min(1000 * 2 ** retries, 8000)));
       }

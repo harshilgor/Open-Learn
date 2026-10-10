@@ -20,7 +20,7 @@ import { parseVisualArtifact as parseVisualization, VISUAL_PROMPT_DRAFT } from '
 import { RichContent } from './rich-content';
 import { materialRequest, materialCommand, prepareAttachment, type MaterialAnswer } from '@/lib/chat-materials';
 import { getJourney, workflow, waitForJob, rememberSessionHint, navigateToSession, restoreSessionAuthority, isStaleSessionConflict, type ChatMode, type Journey } from '@/lib/learning-workflows';
-import { GenerationStream, type GenerationCallbacks, type GenerationEvent, type GenerationMode } from '@/lib/generation-stream';
+import { GenerationConnectionError, GenerationStream, type GenerationCallbacks, type GenerationEvent, type GenerationMode } from '@/lib/generation-stream';
 import { QuizWorkspace } from './quiz-workspace';
 import { NoteDraftCard } from './note-draft-card';
 import panelStyles from './study-note-panel.module.css';
@@ -49,7 +49,7 @@ type NoteContextReceipt = { label: string; notes: { noteId: string; title: strin
 type ReplacementTarget = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number };
 type StreamedBlock = { id: string; kind: string; heading: string; body: string; status: 'streaming' | 'completed'; visualizations?: unknown[] };
 type StreamedLesson = { id: string; blocks: StreamedBlock[]; status: 'streaming' | 'completed'; visualizations?: unknown[]; visualPending?: boolean; visualRequested?: boolean };
-type Turn = { visualError?: string; question: string; mode?: ChatMode; selectedPassage?:string|null; selectedSource?:{lessonId?:string|null;blockId?:string|null;spanIds?:string[]}; lesson?: LessonArtifact; answer?: MaterialAnswer; stream?: StreamedLesson; files?: string[]; sessionId?: string; generationId?: string; messageId?: string; branchId?: string; relation?: string; generationStatus?: string; progress?: string; activity?: AgentActivity; partialOutput?: string; control?: boolean; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; noteContext?: NoteContextReceipt; transitionSuggestion?: ModeTransitionSuggestion | null; verification?: MessageVerification | null };
+type Turn = { connectionLost?: boolean; visualError?: string; question: string; mode?: ChatMode; selectedPassage?:string|null; selectedSource?:{lessonId?:string|null;blockId?:string|null;spanIds?:string[]}; lesson?: LessonArtifact; answer?: MaterialAnswer; stream?: StreamedLesson; files?: string[]; sessionId?: string; generationId?: string; messageId?: string; branchId?: string; relation?: string; generationStatus?: string; progress?: string; activity?: AgentActivity; partialOutput?: string; control?: boolean; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; noteContext?: NoteContextReceipt; transitionSuggestion?: ModeTransitionSuggestion | null; verification?: MessageVerification | null };
 type SelectedPassage = { blockId: string; selectedText: string; lessonId?: string; sessionId?: string };
 type SelectionPanel = { selection: SelectedPassage; blocks: StreamedBlock[]; status: 'preparing' | 'streaming' | 'completed' | 'error'; error?: string };
 type GenerationRecovery = { generationId: string; sessionId: string; mode: GenerationMode; lastAppliedSequence: number; status: string };
@@ -154,7 +154,7 @@ export function LearnChat({
   const [selectedConcept, setSelectedConcept] = useState<{ id: string; title: string } | null>(null);
   const [gear, setGear] = useState<Gear>('Quick');
   const [turns, setTurns] = useState<Turn[]>([]);
-  const [branchState, setBranchState] = useState<{ revision: number; selectedBranchId: string | null }>({ revision: 0, selectedBranchId: null });
+  const [, setBranchState] = useState<{ revision: number; selectedBranchId: string | null }>({ revision: 0, selectedBranchId: null });
   const [sessionId, setSessionId] = useState<string | null>(null);
   useEffect(() => {
     const draft = (event: Event) => {
@@ -573,20 +573,6 @@ export function LearnChat({
     } catch { /* The legacy Journey remains readable if branch hydration is unavailable. */ }
   }
   useEffect(() => { if (sessionId) void refreshBranchState(sessionId); }, [sessionId]);
-  async function selectResponseBranch(turn: Turn) {
-    if (!sessionId || !turn.branchId) return;
-    try {
-      const result = await request<{ revision: number; selectedBranchId: string | null }>(
-        `/v1/sessions/${encodeURIComponent(sessionId)}/branches/${encodeURIComponent(turn.branchId)}/select`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ expectedBranchRevision: branchState.revision }) },
-      );
-      setBranchState({ revision: result.revision, selectedBranchId: result.selectedBranchId });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not switch to that response.');
-      await refreshBranchState(sessionId);
-    }
-  }
   function stopResponse(generationId: string) {
     const stream = activeGenerationStreams.current.get(generationId);
     if (stream) void stream.stop();
@@ -1113,8 +1099,9 @@ export function LearnChat({
         catch { setError('This tab is out of date. Reload to continue.'); }
       } else {
         try { applyJourney(await getJourney(sid)); }
-        catch { setTurns(current => current.map(turn => turn.generationId === streamId ? { ...turn, stream: undefined, status: 'failed' } : turn)); }
-        setError(cause instanceof Error ? cause.message : 'The lesson could not be completed.');
+        catch { setTurns(current => current.map(turn => turn.generationId === streamId ? { ...turn, connectionLost: true, activity: undefined, progress: undefined } : turn)); }
+        if (cause instanceof GenerationConnectionError) setTurns(current => current.map(turn => turn.generationId === streamId && !turn.lesson && !turn.answer && !['completed','failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? { ...turn, connectionLost: true, activity: undefined, progress: undefined } : turn));
+        setError(cause instanceof GenerationConnectionError ? '' : cause instanceof Error ? cause.message : 'The lesson could not be completed.');
       }
       if(outboxProcessing.current)throw cause;
     } finally {
@@ -1333,7 +1320,7 @@ export function LearnChat({
   const latestTurnHasResponse = Boolean(latestTurn?.lesson || latestTurn?.answer || latestTurn?.stream?.status === 'completed');
   const waitingTurn = [...turns].reverse().find(turn => {
     const live = turn.generationStatus ? ['queued','preparing','streaming','finalizing','cancel_requested'].includes(turn.generationStatus) : turn.status === 'pending';
-    return live && !turn.lesson && !turn.answer && !turn.stream?.blocks.some(block => block.body.trim()) && !turn.activity;
+    return !turn.connectionLost && live && !turn.lesson && !turn.answer && !turn.stream?.blocks.some(block => block.body.trim()) && !turn.activity;
   });
   const replyStatus = !streaming && !activity && (busy || waitingTurn)
     ? waitingTurn?.progress || progress || (turns.length ? 'Working on your study request…' : 'Getting your answer ready…')
@@ -1383,26 +1370,18 @@ export function LearnChat({
       const previousTurn = turns[turnIndex - 1];
       const nextTurn = turns[turnIndex + 1];
       const repeatsExistingMessage = Boolean(turn.messageId && turns.slice(0, turnIndex).some(item => item.messageId === turn.messageId));
-      const hasRetrySibling = Boolean(turn.messageId && turns.some(item => item.messageId === turn.messageId && item.generationId !== turn.generationId));
       const hasLaterAttempt = Boolean(turn.messageId && turns.slice(turnIndex + 1).some(item => item.messageId === turn.messageId));
       const hasVisibleStreamText = Boolean(turn.stream?.blocks.some(block => block.body.trim()));
-      const showLiveStatus = turn.generationStatus
+      const showLiveStatus = !turn.connectionLost && !['failed','cancelled','interrupted','completed'].includes(turn.status || '') && (turn.generationStatus
         ? ['queued','preparing','streaming','finalizing','cancel_requested'].includes(turn.generationStatus)
-        : turn.status === 'pending';
+        : turn.status === 'pending');
       const groupedWithPrevious = Boolean(previousTurn && previousTurn.sessionId === turn.sessionId && SYNTHETIC_QUESTIONS.has(turn.question));
       const groupedWithNext = Boolean(nextTurn && nextTurn.sessionId === turn.sessionId && SYNTHETIC_QUESTIONS.has(nextTurn.question));
       return <motion.div key={turn.generationId || turn.messageId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`} className={`${styles.turn} ${groupedWithPrevious ? styles.groupedWithPrevious : ''} ${groupedWithNext ? styles.groupedWithNext : ''}`} initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
       {!repeatsExistingMessage && !SYNTHETIC_QUESTIONS.has(turn.question) ? <div className={styles.userPrompt}><span>You</span><div><p>{turn.question}</p>{turn.selectedPassage ? <details className={styles.originalResponse}><summary>Selected passage</summary><p>{turn.selectedPassage}</p>{turn.selectedSource?.spanIds?.[0] ? <button onClick={()=>openWorkspaceSource({spanId:turn.selectedSource!.spanIds![0]})}>Open source</button>:null}</details>:null}{turn.files?.map(name => <div className={styles.sentFile} key={name}><FileText size={15} />{name}</div>)}</div></div> : null}
       {!turn.control ? <article id={`message-${turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}`} aria-label="Assistant response" className={styles.lessonArticle}>
-        {turn.branchId ? <div className={styles.branchStatus} role="status">
-          <span>{hasRetrySibling && (turn.status === 'failed' || turn.status === 'interrupted') ? 'Previous attempt' : branchState.selectedBranchId === turn.branchId ? 'Current response' : turn.relation === 'add' ? 'Additional response' : 'Earlier response'}</span>
-          {branchState.selectedBranchId !== turn.branchId && turn.generationStatus === 'completed'
-            ? <button type="button" onClick={() => void selectResponseBranch(turn)}>Show this response</button>
-            : null}
-          {showLiveStatus && turn.generationId
-            ? <button type="button" onClick={() => stopResponse(turn.generationId!)} aria-label="Stop this response">Stop</button>
-            : null}
-        </div> : null}
+        {showLiveStatus && turn.generationId ? <button type="button" className={styles.branchStatus} onClick={() => stopResponse(turn.generationId!)} aria-label="Stop generating this reply">Stop generating</button> : null}
+        {turn.connectionLost ? <div className={styles.turnStatus} role="status"><span>Connection lost. Your message is saved; Buddy may still be answering.</span><button type="button" onClick={() => window.location.reload()}>Reconnect</button></div> : null}
         {!turn.lesson && !turn.stream && !turn.answer && turn.status === 'pending' && showLiveStatus
           ? turn.activity ? <WebResearchActivity activity={turn.activity} /> : null
           : null}
@@ -1413,7 +1392,7 @@ export function LearnChat({
           ? null
           : null}
         {turn.partialOutput && !turn.stream ? <div className={styles.partialOutput}><span>Saved partial response</span><p>{turn.partialOutput}</p></div> : null}
-        {!turn.lesson && !turn.answer && turn.status && turn.status !== 'pending' ? <div className={styles.turnStatus} role="status">
+        {!turn.connectionLost && !turn.lesson && !turn.answer && turn.status && turn.status !== 'pending' ? <div className={styles.turnStatus} role="status">
           <span>{turn.status === 'cancelled' ? 'Response stopped.' : turn.status === 'interrupted' ? 'Response interrupted. Your saved draft is still here.' : 'Response failed. Your message is still here.'}</span>
           {(turn.status === 'interrupted' || turn.status === 'failed') && !hasLaterAttempt
             ? <button type="button" disabled={Boolean(turn.generationId && retryingResponses.has(turn.generationId))} onClick={() => askAgain(turn)}>{turn.generationId && retryingResponses.has(turn.generationId) ? 'Retrying…' : 'Ask again'}</button>
