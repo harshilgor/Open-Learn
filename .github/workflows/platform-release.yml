@@ -66,6 +66,8 @@ jobs:
           else
             vercel pull --yes --environment=preview --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
+      - name: Verify protected frontend access before changing production
+        run: vercel curl / --yes --fail --silent --show-error --max-time 30 --output "$RUNNER_TEMP/frontend-access-preflight.html"
       - name: Run the single release migration
         run: python -m backend.scripts.release_migrate
       - name: Deploy the compatible backend commit
@@ -91,7 +93,9 @@ jobs:
           fi
           echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
       - name: Verify staged frontend/backend pair
-        run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
+        run: |
+          vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --yes --fail --silent --show-error --max-time 30 > "$RUNNER_TEMP/frontend-release.json"
+          python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
       - name: Promote validated production candidate
         if: inputs.environment == 'production'
         run: vercel promote "$FRONTEND_CANDIDATE" --yes --token="$VERCEL_TOKEN"
