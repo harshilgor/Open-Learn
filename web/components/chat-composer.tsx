@@ -126,7 +126,11 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
   const allowanceBlocked = !allowance || Boolean(allowanceError || allowance.availability !== 'available' || allowance.availableMicrocredits <= 0);
   const showConnectionNotice = Boolean(unavailable && unavailable !== 'Open Learn could not connect. You can keep writing your draft.');
   let usageNotice = '';
-  if (allowance?.reasonCode === 'usage_window_exhausted' || (allowance && allowance.availableMicrocredits <= 0)) {
+  if (allowanceError) {
+    usageNotice = 'Reconnecting to Open Learn… Your draft is saved.';
+  } else if (!allowance) {
+    usageNotice = 'Checking your connection…';
+  } else if (allowance?.reasonCode === 'usage_window_exhausted' || (allowance && allowance.availableMicrocredits <= 0)) {
     const reset = allowance.resetsAt ? new Date(allowance.resetsAt * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
     usageNotice = allowance.heldMicrocredits > 0 ? 'Remaining allowance is reserved for ongoing work.' : reset ? `Your allowance refreshes at ${reset}. Your draft stays here.` : 'Your AI allowance is used for this window.';
   } else if (allowance && allowance.availability !== 'available') {
