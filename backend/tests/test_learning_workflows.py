@@ -104,6 +104,19 @@ def test_transaction_reads_reuse_connection_without_another_checkout(env, monkey
         assert graph.id == session.graph_id
 
 
+def test_first_turn_submission_uses_its_existing_transaction(env, monkeypatch):
+    from backend.app.generation_models import GenerationRequest
+    from backend.app.journey_service import JourneyService
+    _, store, provider, session = env
+    with store.transaction() as connection:
+        def unexpected_checkout():
+            raise AssertionError('First-message admission must not acquire a second connection')
+        monkeypatch.setattr(store.engine, 'connect', unexpected_checkout)
+        receipt = JourneyService(store, provider).submit_stream_turn(
+            connection, 'local', session.id, GenerationRequest(mode='ask', message='Hi'), 'generation-test')
+        assert receipt['contextSnapshot']['turns'][0]['question'] == 'Hi'
+
+
 def quiz_ready(client, session):
     job = command(client, '/quizzes', {"sessionId": session.id, "count": 1})
     assert job["status"] == "completed", job
