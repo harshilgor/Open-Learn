@@ -56,12 +56,10 @@ jobs:
       - name: Install deployment CLI
         run: npm install --global vercel@59.11.2
       - name: Link frontend project for CI
-        working-directory: web
         run: |
           mkdir -p .vercel
           printf '{"projectId":"%s","orgId":"%s"}\n' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" > .vercel/project.json
       - name: Verify Vercel access and pull matching environment
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel pull --yes --environment=production --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
@@ -78,7 +76,6 @@ jobs:
         env:
           OPENLEARN_ENFORCE_RELEASE_GATE: '1'
           OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel build --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
@@ -86,7 +83,6 @@ jobs:
             vercel build --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
       - name: Stage frontend without production alias promotion
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             candidate=$(vercel deploy --prebuilt --prod --skip-domain --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
@@ -95,7 +91,6 @@ jobs:
           fi
           echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
       - name: Verify staged frontend/backend pair
-        working-directory: web
         run: |
           vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/frontend-release.json"
           python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
