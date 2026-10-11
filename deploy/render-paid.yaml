@@ -37,7 +37,7 @@ services:
     name: openlearn-api-virginia
     region: virginia
     runtime: docker
-    plan: starter
+    plan: standard
     dockerfilePath: deploy/Dockerfile
     dockerContext: .
     dockerCommand: python -m backend.app.hosted_runtime api

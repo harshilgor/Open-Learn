@@ -23,6 +23,7 @@ import { materialRequest, materialCommand, prepareAttachment, type MaterialAnswe
 import { getJourney, workflow, waitForJob, rememberSessionHint, navigateToSession, restoreSessionAuthority, isStaleSessionConflict, type ChatMode, type Journey } from '@/lib/learning-workflows';
 import { GenerationConnectionError, GenerationStream, type GenerationCallbacks, type GenerationEvent, type GenerationMode } from '@/lib/generation-stream';
 import { hasPendingGenerationCommit, recordGenerationTiming } from '@/lib/api-performance';
+import { PerformanceDiagnostics } from './performance-diagnostics';
 import { QuizWorkspace } from './quiz-workspace';
 import { NoteDraftCard } from './note-draft-card';
 import panelStyles from './study-note-panel.module.css';
@@ -1470,6 +1471,7 @@ export function LearnChat({
       )}
     </AnimatePresence>
     <div className={styles.composerDock}><div className={styles.composerInner}>
+      <PerformanceDiagnostics />
       {replyStatus ? <BuddyReplyStatus buddy={buddies.active} label={replyStatus}/> : null}
       {new Set(activeGenerationStreams.current.values()).size > 1
         ? <button type="button" className={styles.stopAllResponses} onClick={stopAllResponses}>Stop all responses</button>
