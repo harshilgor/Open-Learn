@@ -13,12 +13,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: platform-quality-${{ github.ref }}
+  group: platform-quality-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       AI_TUTOR_PROVIDER: deterministic_baseline
@@ -33,10 +33,12 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
       - run: python -m backend.scripts.check_release_contract
+      - run: python -m backend.scripts.release_workflow_policy
+      - run: python -m backend.scripts.actionlint_check
       - run: python -m backend.scripts.check_connection_budget
       - name: Backend feature and persistence regressions
         run: >-
-          python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_performance.py backend/tests/test_release_gates.py
+          python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_performance.py backend/tests/test_release_gates.py backend/tests/test_release_preflight.py
           backend/tests/test_migrations.py backend/tests/test_hosted_free_runtime.py
           backend/tests/test_generation_infrastructure.py backend/tests/test_durable_generation_replay.py
           backend/tests/test_live_branching.py backend/tests/test_conversation_admission.py
@@ -49,7 +51,7 @@ jobs:
           name: backend-performance-baseline
           path: outputs/performance/ci-baseline.json
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
@@ -67,5 +69,5 @@ jobs:
           tests/account-transport.test.tsx tests/api-loading.test.tsx tests/chat-outbox.test.tsx
           tests/generation-connection.test.tsx tests/generation-activity.test.tsx
           tests/conversation-admission.test.tsx tests/notes-sidebar.test.tsx
-          tests/workspace-side-chats.test.tsx tests/compact-tutor-chat.test.tsx
+          tests/workspace-side-chats.test.tsx tests/compact-tutor-chat.test.tsx tests/release-metadata.test.tsx
       - run: npm run build:production

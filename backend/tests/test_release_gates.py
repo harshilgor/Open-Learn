@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from backend.app.release import build_release_router, code_schema_heads, release_contract, release_status, queue_health
 from backend.app.storage import Store
-from backend.scripts.release_gate import check_backend, validate_report
+from backend.scripts.release_gate import check_backend, validate_report, validate_frontend_report
 from backend.scripts.render_release import deploy
 from backend.scripts import release_gate
 import hashlib
@@ -37,6 +37,12 @@ def test_network_gate_requires_readiness_and_metadata():
         assert check_backend(client, 'https://api.example', release_contract(), 'a' * 40) == []
     with httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(404))) as client:
         assert check_backend(client, 'https://api.example', release_contract()) == ['backend_not_ready']
+
+
+def test_malformed_metadata_returns_explicit_errors_instead_of_crashing():
+    assert validate_report([], release_contract()) == ['backend_metadata_invalid']
+    assert 'backend_capability_metadata_invalid' in validate_report({**compatible(), 'capabilities': [[]]}, release_contract())
+    assert validate_frontend_report([], release_contract(), 'https://api.example') == ['frontend_metadata_invalid']
 
 
 def test_contract_heads_match_migrations_and_gate_detects_schema_drift(tmp_path, monkeypatch):

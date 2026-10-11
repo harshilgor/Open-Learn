@@ -1,11 +1,13 @@
 # Coordinated platform release and rollback
 
+The [11 October release audit](Open_Learn_Release_Failure_Audit.md) records the recent failures and controls prepared locally. The revised workflow defaults to `operation=preflight`; production writes require `operation=release`. The new hosted preflight has not yet been dispatched. Always reconcile current main before selecting a release candidate.
+
 P04 implements the pipeline, contract, and probes. This document distinguishes repository implementation from activating hosted CI/secrets or deploying to production. No live settings were changed during P01–P04 implementation.
 
 ## Release components
 
 - platform-quality.yml: offline backend feature regressions, fixture baseline artifact, frontend regression checks, and production Next.js/webpack build with locally bundled visual assets. Local development retains its existing vinext workflow.
-- platform-release.yml: explicitly dispatched staging/production release; quality gates -> one serialized PostgreSQL migration -> immutable Render API commit -> backend compatibility gate -> matching Vercel build -> staged frontend -> pair compatibility gate -> production promotion.
+- platform-release.yml: explicitly dispatched staging/production preflight or release; fresh-main gate -> quality -> configuration/authentication/current-state probes -> matching frontend compiler -> one serialized PostgreSQL migration -> immutable Render API commit -> backend compatibility gate -> upload prebuilt frontend -> pair compatibility gate -> production promotion -> actual public alias gate.
 - platform-release-validation.yml: read-only verification of an already deployed backend/frontend pair.
 - deploy/release-contract.json: protocol/capabilities, required schema heads, explicitly approved compatible head sets, and migration ownership.
 - /release: backend commit, supported capabilities, actual schema, migration ownership, and current execution topology. This is an explicit diagnostic call, not the routine health path.
