@@ -162,9 +162,11 @@ class DurableReplayEventStore:
             if terminal:
                 return
             # Observe status changes from another worker or a process restart.
-            with self.records.store.engine.connect() as conn:
-                from sqlalchemy import text
-                row = conn.execute(text("SELECT status FROM generation_records WHERE id=:id"), {"id": generation_id}).first()
+            def read_status():
+                with self.records.store.engine.connect() as conn:
+                    from sqlalchemy import text
+                    return conn.execute(text("SELECT status FROM generation_records WHERE id=:id"), {"id": generation_id}).first()
+            row = await asyncio.to_thread(read_status)
             if row and row[0] in TERMINAL:
                 terminal = True
                 continue
@@ -458,43 +460,45 @@ class GenerationManager:
                 event = await self.buffer.append(generation_id, "lesson.block_completed", {"blockId": block_id})
                 sequence = event.sequence
                 self.records.transition(generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
-                with self.store.transaction() as connection:
-                    from sqlalchemy import text
-                    self.records.validate_owner(connection, generation_id, owner_token)
-                    cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
-                    if cancelled:
-                        raise asyncio.CancelledError()
-                    artifact, journey = JourneyService(self.store, provider).commit_stream(
-                        connection, owner, prepared, request, prepared["directReply"], [],
-                    )
-                    result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
-                    completed_at = time.time()
-                    final_metrics = {
-                        "completedAt": completed_at,
-                        "completionSeconds": completed_at - started_at,
-                        "outputCharacters": len(prepared["directReply"]),
-                        "estimatedOutputTokens": 0,
-                        "totalTokens": 0,
-                        "promptTokens": 0,
-                        "completionTokens": 0,
-                        "usageSource": "estimated",
-                        "responseRoute": "social",
-                        "modelInvoked": False,
-                    }
-                    self.records.update_metrics(generation_id, final_metrics, connection, owner_token)
-                    self.records.transition(generation_id, "completed", sequence=sequence, result=result,
-                                            owner_token=owner_token, connection=connection)
-                    self.records.append_event(generation_id, "generation.completed", {
-                        "result": result,
-                        "usage": {
+                def finalize_social_reply():
+                    with self.store.transaction() as connection:
+                        from sqlalchemy import text
+                        self.records.validate_owner(connection, generation_id, owner_token)
+                        cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
+                        if cancelled:
+                            raise asyncio.CancelledError()
+                        artifact, journey = JourneyService(self.store, provider).commit_stream(
+                            connection, owner, prepared, request, prepared["directReply"], [],
+                        )
+                        result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
+                        completed_at = time.time()
+                        final_metrics = {
+                            "completedAt": completed_at,
+                            "completionSeconds": completed_at - started_at,
+                            "outputCharacters": len(prepared["directReply"]),
+                            "estimatedOutputTokens": 0,
                             "totalTokens": 0,
                             "promptTokens": 0,
                             "completionTokens": 0,
                             "usageSource": "estimated",
-                            "provider": getattr(provider, "provider_name", "unknown"),
-                            "model": getattr(provider, "model", "unknown"),
-                        },
-                    }, connection, owner_token)
+                            "responseRoute": "social",
+                            "modelInvoked": False,
+                        }
+                        self.records.update_metrics(generation_id, final_metrics, connection, owner_token)
+                        self.records.transition(generation_id, "completed", sequence=sequence, result=result,
+                                                owner_token=owner_token, connection=connection)
+                        self.records.append_event(generation_id, "generation.completed", {
+                            "result": result,
+                            "usage": {
+                                "totalTokens": 0,
+                                "promptTokens": 0,
+                                "completionTokens": 0,
+                                "usageSource": "estimated",
+                                "provider": getattr(provider, "provider_name", "unknown"),
+                                "model": getattr(provider, "model", "unknown"),
+                            },
+                        }, connection, owner_token)
+                await asyncio.to_thread(finalize_social_reply)
                 return
             context_ready_at = time.time()
             self.records.update_metrics(generation_id, {"contextReadyAt": context_ready_at, "contextBuildSeconds": context_ready_at - started_at}, owner_token=owner_token)
@@ -607,44 +611,46 @@ class GenerationManager:
                     sequence = event.sequence
                 if visual_reserved and not visualizations:
                     await self.buffer.append(generation_id, "visualization.skipped")
-            with self.store.transaction() as connection:
-                from sqlalchemy import text
-                self.records.validate_owner(connection, generation_id, owner_token)
-                cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
-                if cancelled:
-                    raise asyncio.CancelledError()
-                artifact, journey = JourneyService(self.store, provider).commit_stream(connection, owner, prepared, request, body, visualizations)
-                if use_generated_visuals:
-                    from .visual_runs import VisualRuns
-                    visual_run = VisualRuns(self.store).admit(connection, owner, artifact.session_id, artifact.id,
-                        prepared, visual_question, generation_id + ':visual')
-                    self.records.append_event(generation_id, 'visualization.queued', {'runId': visual_run['id'], 'lessonId': artifact.id}, connection, owner_token)
-                result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
-                completed_at = time.time(); elapsed = max(completed_at - (first_delta_at or provider_started_at), .001)
-                exact_usage = getattr(provider, "last_usage", None)
-                provider_label = str(getattr(provider, "provider_name", "unknown") or "unknown").split("/")[0].lower()
-                if provider_label not in {"openrouter", "openai"}:
-                    provider_label = "openrouter" if not bool(getattr(provider, "is_openai", False)) else "openai"
-                final_metrics: dict = {"completedAt": completed_at, "completionSeconds": completed_at - started_at,
-                    "outputCharacters": len(body), "estimatedOutputTokens": max(1, len(body) // 4), "estimatedTokensPerSecond": (len(body) / 4) / elapsed}
-                exact_fragment = usage_metrics(exact_usage, provider=provider_label) if exact_usage is not None else {}
-                if exact_fragment:
-                    final_metrics.update(exact_fragment)
-                else:
-                    final_metrics["usageSource"] = "estimated"
-                    final_metrics["usageProvider"] = provider_label
-                self.records.update_metrics(generation_id, final_metrics, connection, owner_token)
-                self.records.transition(generation_id, "completed", sequence=sequence, result=result,
-                                        owner_token=owner_token, connection=connection)
-                usage_event = {"result": result, "usage": {
-                    "totalTokens": final_metrics.get("totalTokens", final_metrics.get("estimatedOutputTokens", 0)),
-                    "promptTokens": final_metrics.get("promptTokens"),
-                    "completionTokens": final_metrics.get("completionTokens"),
-                    "usageSource": final_metrics.get("usageSource", "estimated"),
-                    "provider": getattr(provider, "provider_name", "unknown"),
-                    "model": getattr(provider, "model", "unknown"),
-                }}
-                self.records.append_event(generation_id, "generation.completed", usage_event, connection, owner_token)
+            def finalize_reply():
+                with self.store.transaction() as connection:
+                    from sqlalchemy import text
+                    self.records.validate_owner(connection, generation_id, owner_token)
+                    cancelled = connection.execute(text("SELECT cancellation_requested FROM generation_records WHERE id=:id AND owner_id=:owner"), {"id": generation_id, "owner": owner}).scalar_one()
+                    if cancelled:
+                        raise asyncio.CancelledError()
+                    artifact, journey = JourneyService(self.store, provider).commit_stream(connection, owner, prepared, request, body, visualizations)
+                    if use_generated_visuals:
+                        from .visual_runs import VisualRuns
+                        visual_run = VisualRuns(self.store).admit(connection, owner, artifact.session_id, artifact.id,
+                            prepared, visual_question, generation_id + ':visual')
+                        self.records.append_event(generation_id, 'visualization.queued', {'runId': visual_run['id'], 'lessonId': artifact.id}, connection, owner_token)
+                    result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
+                    completed_at = time.time(); elapsed = max(completed_at - (first_delta_at or provider_started_at), .001)
+                    exact_usage = getattr(provider, "last_usage", None)
+                    provider_label = str(getattr(provider, "provider_name", "unknown") or "unknown").split("/")[0].lower()
+                    if provider_label not in {"openrouter", "openai"}:
+                        provider_label = "openrouter" if not bool(getattr(provider, "is_openai", False)) else "openai"
+                    final_metrics: dict = {"completedAt": completed_at, "completionSeconds": completed_at - started_at,
+                        "outputCharacters": len(body), "estimatedOutputTokens": max(1, len(body) // 4), "estimatedTokensPerSecond": (len(body) / 4) / elapsed}
+                    exact_fragment = usage_metrics(exact_usage, provider=provider_label) if exact_usage is not None else {}
+                    if exact_fragment:
+                        final_metrics.update(exact_fragment)
+                    else:
+                        final_metrics["usageSource"] = "estimated"
+                        final_metrics["usageProvider"] = provider_label
+                    self.records.update_metrics(generation_id, final_metrics, connection, owner_token)
+                    self.records.transition(generation_id, "completed", sequence=sequence, result=result,
+                                            owner_token=owner_token, connection=connection)
+                    usage_event = {"result": result, "usage": {
+                        "totalTokens": final_metrics.get("totalTokens", final_metrics.get("estimatedOutputTokens", 0)),
+                        "promptTokens": final_metrics.get("promptTokens"),
+                        "completionTokens": final_metrics.get("completionTokens"),
+                        "usageSource": final_metrics.get("usageSource", "estimated"),
+                        "provider": getattr(provider, "provider_name", "unknown"),
+                        "model": getattr(provider, "model", "unknown"),
+                    }}
+                    self.records.append_event(generation_id, "generation.completed", usage_event, connection, owner_token)
+            await asyncio.to_thread(finalize_reply)
         except asyncio.CancelledError:
             try:
                 if self.records.cancelled(generation_id):

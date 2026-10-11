@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -109,8 +109,8 @@ class Store:
             grant_resource(connection, "graph_versions", graph.id)
             self._put(connection, "graph_versions", "id", graph.id, {"scope_id": graph.scope_id, "payload": graph.model_dump_json()})
 
-    def get_graph(self, graph_id: str) -> GraphVersion | None:
-        with self.engine.connect() as connection:
+    def get_graph(self, graph_id: str, connection: Connection | None = None) -> GraphVersion | None:
+        with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
             from .identity import authorize_resource
             authorize_resource(connection, "graph_versions", graph_id)
             row = connection.execute(text("SELECT payload FROM graph_versions WHERE id = :id"), {"id": graph_id}).mappings().first()
@@ -140,8 +140,8 @@ class Store:
             })
             connection.execute(text('INSERT INTO buddy_chats(id,owner_id,buddy_id) VALUES(:id,:owner,:buddy) ON CONFLICT(id) DO NOTHING'), {'id':session.id,'owner':session.learner_id,'buddy':buddy})
 
-    def get_session(self, session_id: str) -> LearningSession | None:
-        with self.engine.connect() as connection:
+    def get_session(self, session_id: str, connection: Connection | None = None) -> LearningSession | None:
+        with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
             row = connection.execute(text("SELECT payload FROM learning_sessions WHERE id = :id"), {"id": session_id}).mappings().first()
         from .identity import principal_context, fail
         principal = principal_context.get()

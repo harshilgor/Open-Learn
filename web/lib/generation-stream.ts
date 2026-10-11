@@ -116,6 +116,8 @@ export class GenerationStream {
     try { event = JSON.parse(data) as GenerationEvent; } catch { return; }
     if (event.sequence <= this.sequence) return;
     this.sequence = event.sequence;
+    const terminalStatus = {'generation.completed':'completed','generation.cancelled':'cancelled','generation.interrupted':'interrupted','generation.error':'failed'}[event.type];
+    if (this.descriptor) this.descriptor = {...this.descriptor, sequence: this.sequence, ...(terminalStatus ? {status: terminalStatus} : {})};
     callbacks.onSequence?.(this.sequence);
     callbacks.onEvent(event);
     if (['generation.completed', 'generation.cancelled', 'generation.interrupted', 'generation.error'].includes(event.type)) this.terminal = true;

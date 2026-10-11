@@ -4,6 +4,15 @@ const {fetch,request}=vi.hoisted(()=>({fetch:vi.fn(),request:vi.fn()}));
 vi.mock('@/lib/account-session',()=>({authenticatedFetch:fetch}));
 vi.mock('@/lib/api',()=>({apiBaseUrl:()=>'',request}));
 afterEach(()=>{vi.useRealTimers();vi.resetAllMocks();});
+it('retains terminal completion and sequence when the stream closes', async()=>{
+  const descriptor={id:'g',sessionId:'s',mode:'ask' as const,status:'streaming',sequence:0,provider:'test',model:'test'};
+  fetch.mockResolvedValue(new Response('data: '+JSON.stringify({generationId:'g',sequence:1,type:'generation.completed',data:{}})+'\n\n'));
+  const stream=new GenerationStream();
+  await stream.resume(descriptor,{onEvent:vi.fn()});
+  expect(stream.descriptor?.status).toBe('completed');
+  expect(stream.descriptor?.sequence).toBe(1);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
 it.each(['disconnected','empty-stream'])('bounds reconnection for %s without claiming generation failure',async mode=>{
   vi.useFakeTimers();
   const descriptor={id:'g',sessionId:'s',mode:'ask' as const,status:'streaming',sequence:0,provider:'test',model:'test'};

@@ -92,6 +92,18 @@ def command(client, path, payload, key=None):
     return client.get('/v1/learning-jobs/' + response.json()["id"]).json()
 
 
+def test_transaction_reads_reuse_connection_without_another_checkout(env, monkeypatch):
+    _, store, _, session = env
+    with store.transaction() as connection:
+        def unexpected_checkout():
+            raise AssertionError('An active transaction must not acquire a second connection')
+        monkeypatch.setattr(store.engine, 'connect', unexpected_checkout)
+        saved = MaterialService(store).session('local', session.id, connection=connection)
+        graph = store.get_graph(saved.graph_id, connection=connection)
+        assert saved.id == session.id
+        assert graph.id == session.graph_id
+
+
 def quiz_ready(client, session):
     job = command(client, '/quizzes', {"sessionId": session.id, "count": 1})
     assert job["status"] == "completed", job

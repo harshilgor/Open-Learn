@@ -1,3 +1,8 @@
 .status{display:flex;align-items:center;gap:9px;min-height:30px;margin:0 0 8px;padding:0 8px;color:var(--muted-foreground);font-size:13px;line-height:1.35}
 .status :global(.buddy-avatar){width:26px;height:26px;flex:0 0 26px;border-radius:50%;font-size:13px}
 .fallback{display:grid;width:26px;height:26px;flex:0 0 26px;place-items:center;border-radius:50%;background:var(--muted);color:var(--foreground);font-size:14px}
+.wave{display:flex;align-items:center;gap:3px;height:18px;color:var(--foreground);opacity:.7}
+.wave i{width:3px;height:14px;border-radius:3px;background:currentColor;animation:requestWave 1.2s ease-in-out infinite;transform:scaleY(.3)}
+.still i{animation:none;transform:scaleY(.55)}
+@keyframes requestWave{0%,100%{transform:scaleY(.3);opacity:.45}45%{transform:scaleY(1);opacity:1}}
+@media(prefers-reduced-motion:reduce){.wave i{animation:none;transform:scaleY(.55)}}

@@ -1039,7 +1039,9 @@ export function LearnChat({
             updateTurnActivity(event.generationId, () => null);
           }
           if (event.type === 'generation.completed') {
-            setTurns(current => current.map(turn => turn.generationId === event.generationId ? { ...turn, generationStatus: 'completed' } : turn));
+            const result = event.data.result as {revision?: number} | undefined;
+            if (typeof result?.revision === 'number') setJourney(current => current ? {...current, revision: Math.max(current.revision, result.revision!)} : current);
+            setTurns(current => current.map(turn => turn.generationId === event.generationId ? { ...turn, generationStatus: 'completed', status: 'completed', connectionLost: false, progress: undefined, stream: turn.stream ? {...turn.stream, status: 'completed'} : undefined } : turn));
             updateTurnActivity(event.generationId, () => null);
           }
         },
@@ -1089,7 +1091,12 @@ export function LearnChat({
       if (stream.wasCancelled) throw new Error('Generation stopped. Your previous lessons are still saved.');
       if (finalError) throw new Error(finalError);
       if (replayExpired) applyJourney((await restoreSessionAuthority(sid)).journey);
-      else applyJourney(await getJourney(sid));
+      else {
+        // A saved-history refresh is ancillary once the stream confirms completion.
+        // Keep the completed reply usable if this separate read is unavailable.
+        try { applyJourney(await getJourney(sid)); }
+        catch (cause) { if (stream.descriptor?.status !== 'completed') throw cause; }
+      }
       if (stream.descriptor?.id) forgetGeneration(stream.descriptor.id);
       if(!outboxProcessing.current)setPrompt(current => current === submittedDraft ? '' : current); setNoteMentions([]);
       if (requestMode === 'learn') void evolveLessonFromNewest(sid);
@@ -1101,7 +1108,7 @@ export function LearnChat({
         try { applyJourney(await getJourney(sid)); }
         catch { setTurns(current => current.map(turn => {
           if (turn.generationId !== streamId) return turn;
-          const confirmed = ['failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? turn.generationStatus as 'failed'|'cancelled'|'interrupted' : undefined;
+          const confirmed = ['completed','failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? turn.generationStatus as 'completed'|'failed'|'cancelled'|'interrupted' : undefined;
           return { ...turn, ...(confirmed ? {status:confirmed} : {}), connectionLost: !confirmed, activity: undefined, progress: undefined };
         })); }
         if (cause instanceof GenerationConnectionError) setTurns(current => current.map(turn => turn.generationId === streamId && !turn.lesson && !turn.answer && !['completed','failed','cancelled','interrupted'].includes(turn.generationStatus || '') ? { ...turn, connectionLost: true, activity: undefined, progress: undefined } : turn));

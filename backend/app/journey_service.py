@@ -296,8 +296,8 @@ class JourneyService:
                        if turn.get("generationId") == side_effect_generation_id), None) if side_effect_generation_id else (turns[-1] if turns else None)
         lesson = (latest or {}).get("lesson") or {}
         if apply_authority and journey.get("taskId") and latest and latest.get("mode") == "learn" and lesson.get("conceptId"):
-            session = MaterialService(self.store).session(owner, journey["sessionId"])
-            graph = self.store.get_graph(session.graph_id)
+            session = MaterialService(self.store).session(owner, journey["sessionId"], connection=conn)
+            graph = self.store.get_graph(session.graph_id, connection=conn)
             from .stable_concept_service import StableConceptService
             mapping = StableConceptService(self.store).resolve_legacy(owner, graph.id, graph.version, lesson["conceptId"], connection=conn)
             canonical_id = mapping.get("concept_id") or lesson["conceptId"]
@@ -390,7 +390,7 @@ class JourneyService:
             context_turns = completed_turns
         if command.mode == "ask" and presentation == "conversation" and command.action == "message":
             reply = None
-            if not command.selected_text and not command.selected_span_ids and not command.note_context:
+            if not getattr(command, 'selected_text', None) and not getattr(command, 'selected_span_ids', []) and not command.note_context:
                 reply = social_reply(command.message)
             if reply:
                 self._set_mode(journey, command.mode, command.gear.value)
@@ -763,7 +763,7 @@ class JourneyService:
                 parts=make_visual_parts(item.body, attached),
             ))
         artifact = LessonArtifact(id=uid("lesson"), session_id=prepared["journey"]["sessionId"], concept_id=prepared["conceptId"],
-            graph_revision=MaterialService(self.store).session(owner, prepared["journey"]["sessionId"]).graph_revision,
+            graph_revision=MaterialService(self.store).session(owner, prepared["journey"]["sessionId"], connection=conn).graph_revision,
             gear=command.gear, title=prepared["title"], generated_by=prepared.get("generatedBy", self.provider.provider_name),
             blocks=lesson_blocks)
         conn.execute(text("INSERT INTO lesson_artifacts(id,session_id,payload) VALUES(:id,:session,:payload)"), {

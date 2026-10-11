@@ -609,8 +609,8 @@ class MaterialService:
             ids = c.execute(text(query), params).scalars().all()
         return [self.details(owner, mid) for mid in ids]
 
-    def session(self, owner, sid):
-        session = self.store.get_session(sid)
+    def session(self, owner, sid, connection=None):
+        session = self.store.get_session(sid, connection) if connection is not None else self.store.get_session(sid)
         if session is None or session.learner_id != owner:
             problem("session_not_found", "Session is not available", 404)
         return session
