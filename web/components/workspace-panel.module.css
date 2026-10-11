@@ -718,3 +718,37 @@
 .quietEmpty{padding:28px 24px}.quietEmpty h2{font-size:16px;font-weight:600}.quietEmpty p{font-size:13px;color:var(--muted-foreground);margin:8px 0 18px}.excerptFloat{display:flex;max-width:calc(100% - 16px);padding:3px;gap:0;flex-wrap:wrap}.excerptFloat button{padding:7px 9px;font-size:12px;border-radius:6px;white-space:nowrap}.excerptFloat button:hover{background:var(--accent)}
 
 .recovery{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 12px;font-size:12px;background:var(--muted);border-radius:8px;margin:8px 12px}.recovery>button{padding:5px 8px;border-radius:6px}.recovery p{color:var(--muted-foreground)}
+
+/* Tabbed workspace uses the existing theme and shared header rhythm. */
+.header { height:var(--workspace-header-height,72px); min-height:var(--workspace-header-height,72px); padding:0 12px; background:var(--background); }
+.tabsHeader { flex:1; overflow:visible; }
+.header .launcher { display:block; }
+.tabStrip { display:flex; flex:1; min-width:0; overflow-x:auto; gap:3px; scrollbar-width:thin; }
+.tabItem { display:flex; align-items:center; min-width:72px; max-width:180px; flex-shrink:0; border:1px solid transparent; border-radius:8px; color:var(--muted-foreground); }
+.tabItem[data-active="true"] { background:var(--accent); color:var(--foreground); border-color:var(--border); }
+.tabItem>button:first-child { padding:9px 8px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+.tabItem>button:last-child { display:grid; place-items:center; padding:7px 5px; border-radius:5px; }
+.tabItem>button:hover { background:var(--muted); }
+.tabItem button:focus-visible { outline:2px solid var(--ring); outline-offset:-2px; }
+.headerActions { flex-shrink:0; }
+.editorTop { padding:16px 20px 10px; }
+.editorTop input { font-size:20px; }
+.editorMenuTrigger,.listToggle { border:0; background:transparent; }
+.formatBar { min-height:38px; margin:0 16px; padding:2px 0; border-top:0; }
+.writingSurface { display:flex; width:100%; min-height:0; }
+.writingSurface[hidden] { display:none; }
+.notePreview { width:100%; max-width:820px; padding:20px 24px 64px; margin:0; background:transparent; }
+.notePreview img { display:block; max-width:100%; height:auto; border-radius:6px; margin:12px 0; }
+.notePreview p:has(>br:only-child):only-child:before { content:'Write your note…'; color:var(--muted-foreground); pointer-events:none; }
+.noteFind { display:flex; align-items:center; gap:8px; margin:6px 20px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; font-size:12px; }
+.noteFind input { flex:1; width:0; background:transparent; outline:none; }
+.noteFind button { min-height:28px; }
+.recovery { margin:4px 20px; padding:4px 0; background:transparent; border-radius:0; color:var(--muted-foreground); font-size:11px; }
+.status { display:flex; justify-content:space-between; gap:12px; padding:8px 20px; border-top:1px solid var(--border); font-size:11px; }
+.studyMenu { flex:none; position:relative; margin:0 20px 8px; font-size:12px; color:var(--muted-foreground); }
+.studyMenu summary { cursor:pointer; width:fit-content; padding:6px 0; }
+.studyMenu>button { padding:6px 10px; border-radius:6px; }
+.studyMenu>button:hover { background:var(--accent); color:var(--foreground); }
+.studyMenu>button:disabled { opacity:.5; }
+.studyMenu>div { margin-top:6px; }
+@media(max-width:620px) { .header { padding-inline:8px; } .tabItem { max-width:130px; } .editorTop { padding-inline:14px; } .notePreview { padding-inline:16px; } .formatBar { margin-inline:12px; } }

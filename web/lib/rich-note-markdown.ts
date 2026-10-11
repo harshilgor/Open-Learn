@@ -12,7 +12,7 @@ function inline(node: Node): string {
   const tag = node.tagName.toLowerCase();
   if (tag === 'br') return '\n';
   if (tag === 'input' && (node as HTMLInputElement).type === 'checkbox') return (node as HTMLInputElement).checked ? '[x] ' : '[ ] ';
-  if (tag === 'img') return node.getAttribute('alt') || '';
+  if (tag === 'img') return `![${(node.getAttribute('alt') || 'Image').replace(/[\[\]\\]/g, '')}](${node.getAttribute('src') || ''})`;
   const content = Array.from(node.childNodes).map(inline).join('');
   if (tag === 'strong' || tag === 'b') return `**${content}**`;
   if (tag === 'em' || tag === 'i') return `*${content}*`;

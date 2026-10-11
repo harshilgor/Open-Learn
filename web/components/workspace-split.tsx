@@ -15,7 +15,7 @@ import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
 import { request } from '@/lib/api';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
-const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes', 'sources', 'practice', 'reminders'], activeTab: 'notes' };
+const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes'], activeTab: 'notes', activeNoteKey:undefined };
 
 export type WorkspaceSplitContextValue = {
   collapsed: boolean;
@@ -79,6 +79,8 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setActiveClassContext(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
   const groupRef = useRef<HTMLDivElement | null>(null);
   const resizing = useRef(false);
+  const collapseTarget=useRef<'chat'|'workspace'|null>(null);
+  const [collapsePreview,setCollapsePreview]=useState<'chat'|'workspace'|null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -100,7 +102,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       const draft = (event as CustomEvent<WorkspaceNoteSeed>).detail;
       if (!draft?.id) return;
       setNoteSeed(draft);
-      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
+      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
     };
     window.addEventListener(WORKSPACE_NOTE_SEED_EVENT, receiveDraft);
     return () => window.removeEventListener(WORKSPACE_NOTE_SEED_EVENT, receiveDraft);
@@ -110,7 +112,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       const noteId = (event as CustomEvent<string>).detail;
       if (!noteId) return;
       setNoteToOpen(noteId);
-      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
+      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
     };
     window.addEventListener(WORKSPACE_NOTE_OPEN_EVENT, receiveOpen);
     return () => window.removeEventListener(WORKSPACE_NOTE_OPEN_EVENT, receiveOpen);
@@ -127,7 +129,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       setQuizToOpen(detail);
       if (detail.origin === 'learn' && detail.lessonNoteId) {
         setNoteToOpen(detail.lessonNoteId);
-        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
+        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
       } else {
         setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('quiz') ? current.tabs : [...current.tabs, 'quiz'], activeTab: 'quiz' }));
       }
@@ -156,7 +158,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       if(!live)return;
       try {
         const stored=JSON.parse(localStorage.getItem(`${STORAGE_KEY}:${account.ownerId}`)||'null');
-        if(validLayout(stored)){setLayout(current=>({...current,width:Math.min(70,Math.max(30,stored.width)),pinned:stored.pinned,focused:false,noteId:stored.noteId}));if(typeof stored.noteId==='string')setNoteToOpen(stored.noteId);}
+        if(validLayout(stored)){const noteTabs=Array.isArray(stored.noteTabs)?stored.noteTabs.filter(item=>item&&typeof item.key==='string'&&typeof item.title==='string'&&(item.noteId===null||typeof item.noteId==='string')):[];setLayout(current=>({...current,tabs:stored.tabs.length?stored.tabs:['notes'],activeTab:stored.activeTab,noteTabs,activeNoteKey:noteTabs.some(item=>item.key===stored.activeNoteKey)?stored.activeNoteKey:undefined,width:Math.min(80,Math.max(20,stored.width)),pinned:stored.pinned,focused:false,noteId:stored.noteId}));}
       } catch { /* Layout persistence is optional. */ }
       setLayoutOwner(account.ownerId);setReady(true);
     }).catch(()=>{});
@@ -171,12 +173,16 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       if (!resizing.current || !groupRef.current) return;
       const bounds = groupRef.current.getBoundingClientRect();
       const width = ((bounds.right - event.clientX) / bounds.width) * 100;
-      setLayout(current => ({ ...current, collapsed: false, width: Math.round(Math.min(70, Math.max(30, width))) }));
+      const target=event.clientX-bounds.left<64?'chat':bounds.right-event.clientX<64?'workspace':null;
+      collapseTarget.current=target;setCollapsePreview(target);
+      if(!target)setLayout(current => ({ ...current, collapsed: false, width: Math.round(Math.min(80, Math.max(20, width))) }));
     };
-    const stop = () => { resizing.current = false; };
+    const stop = () => { if(!resizing.current)return;resizing.current = false;const target=collapseTarget.current;if(target)setLayout(current=>({...current,collapsed:target==='workspace',focused:target==='chat'}));collapseTarget.current=null;setCollapsePreview(null); };
+    const cancel=()=>{resizing.current=false;collapseTarget.current=null;setCollapsePreview(null);};
     window.addEventListener('pointermove', resize);
     window.addEventListener('pointerup', stop);
-    return () => { window.removeEventListener('pointermove', resize); window.removeEventListener('pointerup', stop); };
+    window.addEventListener('pointercancel',cancel);
+    return () => { window.removeEventListener('pointermove', resize); window.removeEventListener('pointerup', stop);window.removeEventListener('pointercancel',cancel); };
   }, []);
 
   useEffect(() => {
@@ -197,12 +203,13 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   return <WorkspaceSplitContext.Provider value={contextValue}>
     {pendingItem ? <div className={styles.pendingResult} role="status">New workspace item ready <button onClick={()=>{if(protection.current.dirty)return;bypassProtection.current=true;try{window.dispatchEvent(new CustomEvent(pendingItem.type,{detail:pendingItem.detail}));setPendingItem(null);}finally{bypassProtection.current=false;}}} disabled={workspaceDirty}>{workspaceDirty?'Save current edits first':'Open'}</button><button aria-label="Dismiss ready item notice" onClick={()=>setPendingItem(null)}>×</button></div> : null}
     <div ref={groupRef} className={compact ? styles.compact : styles.group}>
+      {collapsePreview?<div className={styles.collapsePreview} data-side={collapsePreview} role="status">Release to close {collapsePreview==='chat'?'Buddy chat':'workspace'}</div>:null}
       {layout.focused && !layout.collapsed && !hidePanel && !compact ? <button className={styles.focusChatToggle} aria-label={focusChatOpen?'Minimize floating Buddy chat':'Open floating Buddy chat'} onClick={()=>setFocusChatOpen(value=>!value)}>{focusChatOpen?'Minimize chat':'Chat with Buddy'}</button> : null}
       <div hidden={!!layout.focused && !layout.collapsed && !hidePanel && !focusChatOpen} className={layout.focused && !layout.collapsed && !hidePanel ? styles.floatingMain : styles.main} inert={compact && !layout.collapsed && !hidePanel}>{children}</div>
       {!compact && !hidePanel && !layout.collapsed && !layout.focused && (
-        <div className={styles.handle} role="separator" aria-orientation="vertical" aria-label="Resize workspace panel" aria-valuemin={30} aria-valuemax={70} aria-valuenow={layout.width} tabIndex={0}
+        <div className={styles.handle} role="separator" aria-orientation="vertical" aria-label="Resize workspace panel" aria-valuemin={20} aria-valuemax={80} aria-valuenow={layout.width} tabIndex={0}
           onPointerDown={event => { event.preventDefault(); resizing.current = true; }}
-          onKeyDown={event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const change = event.key === 'ArrowLeft' ? 2 : -2; setLayout(current => ({ ...current, collapsed: false, width: Math.max(30, Math.min(70, current.width + change)) })); } }} />
+          onKeyDown={event => { if(event.key==='Home'||event.key==='End'){event.preventDefault();setLayout(current=>({...current,focused:event.key==='Home',collapsed:event.key==='End'}));}else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const change = event.key === 'ArrowLeft' ? 2 : -2; setLayout(current => ({ ...current, collapsed: false, width: Math.max(20, Math.min(80, current.width + change)) })); } }} />
       )}
       <motion.div
         ref={panelRef}

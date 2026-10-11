@@ -105,3 +105,9 @@
 .pendingResult{position:fixed;right:24px;top:76px;z-index:45;background:var(--background);border:1px solid var(--border);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px;font-size:13px}.pendingResult button{text-decoration:underline}.pendingResult button:disabled{opacity:.5}
 
 .focusChatToggle{position:fixed;right:24px;bottom:12px;z-index:65;border:1px solid var(--border);border-radius:22px;background:var(--background);padding:10px 16px;font-size:13px}.floatingMain[hidden]{display:none}
+
+.group { position:relative; }
+.main[hidden],.floatingMain[hidden] { display:none; }
+.collapsePreview { position:absolute; z-index:40; top:80px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--popover); color:var(--popover-foreground); font-size:12px; pointer-events:none; }
+.collapsePreview[data-side="chat"] { left:12px; }
+.collapsePreview[data-side="workspace"] { right:12px; }

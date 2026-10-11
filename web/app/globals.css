@@ -363,3 +363,8 @@
 
 .study-practice > label { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
 .study-practice select { min-height: 40px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+
+:root { --workspace-header-height:72px; }
+:root[data-density="compact"] { --workspace-header-height:60px; }
+.workspace .workspace-topbar { height:var(--workspace-header-height); min-height:var(--workspace-header-height); box-sizing:border-box; }
+@media(max-width:700px) { :root { --workspace-header-height:64px; } .workspace .workspace-topbar { height:auto; } }
