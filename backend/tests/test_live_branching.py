@@ -444,6 +444,9 @@ def test_two_full_responses_can_stream_under_bounded_concurrency(live_branching_
         pytest.skip("The restricted Windows sandbox blocks asyncio's socketpair self-pipe.")
 
     monkeypatch.setenv("LIVE_BRANCHING_ENABLED", "true")
+    # The CI job defaults the app to external workers. This test owns an
+    # in-process manager and must explicitly enable embedded execution.
+    monkeypatch.setenv("OPENLEARN_WORKER_MODE", "embedded")
     monkeypatch.setenv("GENERATION_PER_CONVERSATION_ACTIVE_LIMIT", "2")
     monkeypatch.setenv("GENERATION_GLOBAL_ACTIVE_LIMIT", "2")
     both_preparing = threading.Barrier(2)
@@ -488,13 +491,7 @@ def test_two_full_responses_can_stream_under_bounded_concurrency(live_branching_
         second = manager.create("local", session.id,
             GenerationRequest(mode="ask", message="Second question", gear="Guided", expectedRevision=1),
             "parallel-second")
-        # Admission is durable and can legitimately return `queued` if the
-        # capacity claim races with the scheduler. Give the shared scheduler
-        # one pass before checking that both bounded slots can run together.
-        assert first["status"] in {"preparing", "queued"}
-        assert second["status"] in {"preparing", "queued"}
-        manager._schedule_queued("local", session.id, manager.provider)
-        assert len(manager.tasks) == 2
+        assert first["status"] == second["status"] == "preparing"
         await asyncio.wait_for(asyncio.gather(*list(manager.tasks.values())), timeout=10)
         return first, second
 
