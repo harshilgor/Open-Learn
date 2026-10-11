@@ -59,6 +59,8 @@ jobs:
         run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --require-external-migrations
       - name: Install deployment CLI
         run: npm install --global vercel@59.11.2
+      - name: Link the checked-out repository to the Vercel project
+        run: vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
       - name: Build frontend for the matching environment
         env:
           OPENLEARN_ENFORCE_RELEASE_GATE: '1'
