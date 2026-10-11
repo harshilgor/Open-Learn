@@ -4,6 +4,7 @@ import { VoiceHistory } from "./voice/voice-history";
 import { reportVoiceFocus, VOICE_FOCUS, VOICE_REFRESH, voiceApi } from "@/lib/voice/client";
 
 import { OutgoingMessages } from './outgoing-messages';
+import { isSocialTurn } from '@/lib/social-turn';
 import { useChatOutbox } from '@/hooks/use-chat-outbox';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -1246,7 +1247,8 @@ export function LearnChat({
         await materialRequest(`/sessions/${currentSession.id}/materials`, materialCommand({ materialVersionId: version }, controller.signal));
         attachedVersions.current.push(version);
       }
-      if (await browserAssistant.tryStart(text, currentSession.id, ready.map(item=>({versionId:item.versionId!,name:item.name})),chatMode==='ask'&&conversation?'conversation':chatMode)) {
+      const directSocialTurn = chatMode === 'ask' && !ready.length && !noteMentions.length && !passageContext && !browserAssistant.replyTarget && isSocialTurn(text);
+      if (!directSocialTurn && await browserAssistant.tryStart(text, currentSession.id, ready.map(item=>({versionId:item.versionId!,name:item.name})),chatMode==='ask'&&conversation?'conversation':chatMode)) {
         clearSubmittedDraft(); setProgress(''); return;
       }
       // Learn always owns a Lesson in Notes first. Chat stays the place to go
@@ -1275,6 +1277,7 @@ export function LearnChat({
       }
       let classifiedSuggestion: ModeTransitionSuggestion | null = null;
       try {
+        if (!directSocialTurn) {
         setProgress('Understanding what you need…');
         const classification = await learningApi.classifyMode(currentSession.id, text, chatMode === 'learn' ? 'learn' : 'ask', bypassId || undefined);
         classifiedSuggestion = classification.suggestion || null;
@@ -1288,6 +1291,7 @@ export function LearnChat({
           }
         } else if (!bypassId) {
           setActiveModeSuggestion(null);
+        }
         }
       } catch {
         // Classification is advisory; failures keep the established chat path available.
