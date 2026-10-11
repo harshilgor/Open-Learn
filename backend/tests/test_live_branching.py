@@ -488,7 +488,13 @@ def test_two_full_responses_can_stream_under_bounded_concurrency(live_branching_
         second = manager.create("local", session.id,
             GenerationRequest(mode="ask", message="Second question", gear="Guided", expectedRevision=1),
             "parallel-second")
-        assert first["status"] == second["status"] == "preparing"
+        # Admission is durable and can legitimately return `queued` if the
+        # capacity claim races with the scheduler. Give the shared scheduler
+        # one pass before checking that both bounded slots can run together.
+        assert first["status"] in {"preparing", "queued"}
+        assert second["status"] in {"preparing", "queued"}
+        manager._schedule_queued("local", session.id, manager.provider)
+        assert len(manager.tasks) == 2
         await asyncio.wait_for(asyncio.gather(*list(manager.tasks.values())), timeout=10)
         return first, second
 
