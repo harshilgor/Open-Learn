@@ -32,6 +32,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
       - run: python -m backend.scripts.check_release_contract
+      - run: python -m backend.scripts.check_connection_budget
       - name: Backend feature and persistence regressions
         run: >-
           python -m pytest -q backend/tests/test_performance.py backend/tests/test_release_gates.py
