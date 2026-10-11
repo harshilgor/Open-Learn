@@ -127,11 +127,18 @@ class ContextEngine:
                 # Retrieved evidence is ranked. Preserve complete items in order
                 # so a large passage cannot suppress every smaller passage.
                 kept = []
+                # Estimate the growing JSON array incrementally. Re-serializing
+                # the entire prefix for every candidate made large retrieval
+                # results quadratic in both serialization work and bytes copied.
+                empty_array_bytes = len(json.dumps({block.kind: []}, ensure_ascii=False).encode("utf-8"))
+                kept_item_bytes = 0
                 for item in block.content:
-                    item_cost = ContextBlock(block.kind, [*kept, item], block.source, block.priority,
-                                             relevance_score=block.relevance_score).estimated_tokens
+                    encoded_item_bytes = len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+                    encoded_array_bytes = empty_array_bytes - 2 + kept_item_bytes + encoded_item_bytes + 2 * len(kept)
+                    item_cost = max(1, (encoded_array_bytes + 2) // 3) + 16
                     if item_cost <= remaining:
                         kept.append(item)
+                        kept_item_bytes += encoded_item_bytes
                 if kept:
                     partial = ContextBlock(block.kind, kept, block.source, block.priority,
                                            relevance_score=block.relevance_score)

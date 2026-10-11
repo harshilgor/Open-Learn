@@ -79,7 +79,8 @@ class JourneyService:
         if exists:
             journey = self.records.read(owner, jid, "journey", conn)
         else:
-            session = MaterialService(self.store).session(owner, sid, connection=conn)
+            session = (submission or {}).get("sessionSnapshot") or MaterialService(
+                self.store).session(owner, sid, connection=conn)
             journey = {"id": jid, "sessionId": sid, "mode": "ask", "gear": session.gear.value,
                        "goal": session.goal, "status": "new", "steps": [], "position": 0,
                        "turns": [], "revision": 1, "modeRevision": 1, "persisted": False}

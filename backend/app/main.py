@@ -278,6 +278,16 @@ def stop_execution_worker() -> None:
     if hasattr(app.state, "worker_stop"):
         app.state.worker_stop.set()
         app.state.worker_thread.join(timeout=5)
+
+
+@app.on_event("shutdown")
+async def close_model_provider_connections() -> None:
+    # Provider streaming clients are pooled per event loop and must be closed
+    # on the loop that owns them, after request tasks have stopped.
+    from .model_provider import close_provider_http_clients
+    await close_provider_http_clients()
+
+
 app.include_router(build_course_router(get_store, lambda: lesson_provider))
 
 

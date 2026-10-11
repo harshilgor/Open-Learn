@@ -743,6 +743,8 @@ export type WorkspaceNoteSummary = {
   updatedAt: string;
 };
 
+export type WorkspaceNotePage = { notes: WorkspaceNoteSummary[]; nextCursor: string | null };
+
 export type WorkspaceNote = Omit<WorkspaceNoteSummary, 'preview' | 'noteType'> & {
   learnerId: string;
   body: string;
@@ -1033,6 +1035,14 @@ export const learningApi = {
 
   listWorkspaceNotes(learnerId = 'local'): Promise<WorkspaceNoteSummary[]> {
     return request<WorkspaceNoteSummary[]>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
+  listWorkspaceNotesPage(cursor?: string | null, learnerId = 'local'): Promise<WorkspaceNotePage> {
+    const query = new URLSearchParams({ limit: '50' });
+    if (cursor) query.set('cursor', cursor);
+    return request<WorkspaceNotePage>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/page?${query}`, {
       headers: { 'X-Dev-Learner-Id': learnerId },
     });
   },

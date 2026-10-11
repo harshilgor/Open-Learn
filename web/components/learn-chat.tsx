@@ -194,9 +194,10 @@ export function LearnChat({
   useEffect(()=>{
     if(!sessionId)return;
     let live=true;
-    const load=()=>void request<{messages:{id:string;title:string;body:string;url:string}[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId)).then(result=>{if(live)setScheduledMessages(result.messages);}).catch(()=>{});
+    const load=()=>{if(document.visibilityState==='hidden')return;void request<{messages:{id:string;title:string;body:string;url:string}[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId)).then(result=>{if(live)setScheduledMessages(result.messages);}).catch(()=>{});};
     load();const timer=window.setInterval(load,15000);
-    return()=>{live=false;window.clearInterval(timer);};
+    document.addEventListener('visibilitychange',load);
+    return()=>{live=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',load);};
   },[sessionId]);
   const [selection, setSelection] = useState<SelectedPassage | null>(null);
   const [selectionPanel, setSelectionPanel] = useState<SelectionPanel | null>(null);
@@ -267,9 +268,10 @@ export function LearnChat({
     return true;
   }, [onQuiz, chatMode, journey]);
   useEffect(() => {
-    const receive = () => {
-      const sid = initialSessionId || sessionId;
-      if (sid) void requestQuiz(sid);
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent<{ requestedTopic?: string; sessionId?: string; origin?: 'ask' | 'learn' } | undefined>).detail;
+      const sid = detail?.sessionId || initialSessionId || sessionId;
+      if (sid) void requestQuiz(sid, undefined, detail?.requestedTopic, undefined, detail?.origin);
       else { setQuizClarification({ origin: 'ask' }); setChatMode('ask'); setPrompt(''); }
     };
     window.addEventListener(WORKSPACE_QUIZ_REQUEST_EVENT, receive);
@@ -897,7 +899,7 @@ export function LearnChat({
     finally { setBusy(false); }
   }
 
-  async function streamTurn(input: { action: 'message' | 'start' | 'next' | 'repair'; message: string; question: string }, sid = sessionId, bypassId?: string | null, modeOverride?: ChatMode, clientMessageId?: string, onAccepted?:()=>void, allowConcurrent = false, retryGenerationId?: string, retryMessageId?: string) {
+  async function streamTurn(input: { action: 'message' | 'start' | 'next' | 'repair'; message: string; question: string }, sid = sessionId, bypassId?: string | null, modeOverride?: ChatMode, clientMessageId?: string, onAccepted?:()=>void, allowConcurrent = false, retryGenerationId?: string, retryMessageId?: string): Promise<'choice' | void> {
     if (!sid || (busy && !allowConcurrent)) return;
     const submittedDraft = prompt;
     const requestMode = modeOverride || chatMode;
@@ -1058,6 +1060,11 @@ export function LearnChat({
           }
         },
         onReconnect: () => updateTurnProgress(stream.descriptor?.id || undefined, 'Reconnecting to your response…'),
+        onModeChoice: descriptor => {
+          if (descriptor.modeSuggestion) setActiveModeSuggestion(descriptor.modeSuggestion);
+          setWaitingForModeChoice(true);
+          setProgress('');
+        },
         onDescriptor: descriptor => {
           if (!descriptor.id) return;
           const generationId = descriptor.id;
@@ -1076,6 +1083,7 @@ export function LearnChat({
             : [...current, { question: input.question, mode: descriptor.mode, sessionId: sid, generationId, messageId: descriptor.messageId || retryMessageId, branchId: descriptor.branchId || undefined, relation: descriptor.relation || undefined, generationStatus: descriptor.status, status: 'pending', progress: descriptor.status === 'queued' ? 'Waiting to generate…' : undefined }]);
         },
         onAccepted: descriptor => {
+          if (descriptor.modeSuggestion && descriptor.modeDecision === 'suggest') setActiveModeSuggestion(descriptor.modeSuggestion);
           onAccepted?.();
           if (!descriptor.id && descriptor.relation === 'cancel') {
             setTurns(current => current.some(turn => turn.messageId === descriptor.messageId)
@@ -1093,13 +1101,17 @@ export function LearnChat({
           if (descriptor?.id) rememberGeneration({ generationId: descriptor.id, sessionId: sid, mode: descriptor.mode, lastAppliedSequence: sequence, status: 'streaming' });
         },
       };
-      const requestBody = { mode: requestMode === 'learn' ? 'learn' as const : 'ask' as const, gear, message: input.message,
+      const requestBody = { mode: requestMode === 'learn' ? 'learn' as const : 'ask' as const,
+        presentation: requestMode === 'learn' ? 'learn' as const
+          : requestMode === 'ask' && conversation ? 'conversation' as const : 'ask' as const,
+        gear, message: input.message,
         action: input.action, expectedRevision: journey?.revision || 1, clientMessageId,
         classificationBypassId: bypassId || undefined, taskId: studyTask?.taskId,
         canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext, selectedText: passageContext?.excerpt,
         selectedSpanIds: passageContext?.spanId ? [passageContext.spanId] : undefined };
       if (retryGenerationId) await stream.retry(retryGenerationId, clientMessageId || crypto.randomUUID(), callbacks);
       else await stream.start(sid, requestBody, callbacks);
+      if (stream.descriptor?.requiresModeChoice) return 'choice';
       if (stream.wasCancelled) throw new Error('Generation stopped. Your previous lessons are still saved.');
       if (finalError) throw new Error(finalError);
       if (replayExpired) applyJourney((await restoreSessionAuthority(sid)).journey);
@@ -1201,8 +1213,7 @@ export function LearnChat({
     // path; the server persists this message before provider generation starts.
     if (fromOutbox && sessionId) {
       setClassActionReply(''); setError('');
-      await streamTurn({ action: 'message', message: text, question: text }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
-      return;
+      return await streamTurn({ action: 'message', message: text, question: text }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
     }
     setClassActionReply('');
     if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}
@@ -1238,7 +1249,11 @@ export function LearnChat({
     try {
       setProgress(attachments.length === 1 ? 'Preparing your attachment…' : attachments.length ? 'Preparing your attachments…' : 'Getting your request ready…');
       const currentSession = sessionId ? { id: sessionId } : await learningApi.createSession({ topic: text.slice(0, 200), goal: text.slice(0, 1000), gear, courseId: courseId ?? undefined, buddyId:buddies.active?.id });
-      await buddyApi.mode(currentSession.id,chatMode==='ask'&&conversation?'conversation':chatMode);
+      const isInitialLearnTurn = chatMode === 'learn' && (!sessionId || turns.length === 0 || !autoOpenedSessions.current.has(currentSession.id));
+      // The first Learn turn creates a Journey through a separate endpoint, so
+      // persist its presentation here. Generation turns carry presentation in
+      // their idempotent acceptance command and avoid this extra round trip.
+      if (isInitialLearnTurn) await buddyApi.mode(currentSession.id, 'learn');
       if(!sessionId){try{if(draftKey){localStorage.removeItem(draftKey);chatDraftFiles.delete(draftKey);}}catch{/* optional draft */}onSessionCreated?.(currentSession.id);void buddies.refresh();}
       activeSubmissionSessionId.current = currentSession.id;
       if (!sessionId) setSessionId(currentSession.id);
@@ -1247,7 +1262,11 @@ export function LearnChat({
       if (!sessionId) window.dispatchEvent(new CustomEvent('forma:chat-history-changed'));
       scrollToBottom(true);
       const ready: ChatAttachment[] = [];
-      for (const item of attachments) ready.push(await prepareAttachment(item, controller.signal, uploaded => setAttachments(previous => previous.map(existing => existing.id === uploaded.id ? uploaded : existing))));
+      ready.push(...await Promise.all(attachments.map(item => prepareAttachment(
+        item,
+        controller.signal,
+        uploaded => setAttachments(previous => previous.map(existing => existing.id === uploaded.id ? uploaded : existing)),
+      ))));
       const versions = ready.map(item => item.versionId!);
       if (versions.length) setProgress(versions.length === 1 ? 'Adding your attachment to the conversation…' : 'Adding your attachments to the conversation…');
       for (const version of attachedVersions.current.filter(id => !versions.includes(id))) {
@@ -1264,7 +1283,6 @@ export function LearnChat({
       }
       // Learn always owns a Lesson in Notes first. Chat stays the place to go
       // deeper, quiz, and continue — the Lesson is the persistent study doc.
-      const isInitialLearnTurn = chatMode === 'learn' && (!sessionId || turns.length === 0 || !autoOpenedSessions.current.has(currentSession.id));
       if (chatMode === 'learn') {
         setProgress('Creating your lesson…');
         try {
@@ -1279,7 +1297,10 @@ export function LearnChat({
       }
       const urls = Array.from(new Set(text.match(/https?:\/\/[^\s<>]+/gi) || []));
       if (urls.length) setProgress(urls.length === 1 ? 'Opening the link you shared…' : 'Opening the links you shared…');
-      for (const link of urls) await materialRequest(`/sessions/${currentSession.id}/url-materials`, materialCommand({ url: link }, controller.signal));
+      await Promise.all(urls.map(link => materialRequest(
+        `/sessions/${currentSession.id}/url-materials`,
+        materialCommand({ url: link }, controller.signal),
+      )));
       if (chatMode === 'quiz') {
         const origin = quizOrigin.current;
         clearSubmittedDraft(); setNoteMentions([]);
@@ -1288,7 +1309,9 @@ export function LearnChat({
       }
       let classifiedSuggestion: ModeTransitionSuggestion | null = null;
       try {
-        if (!directSocialTurn) {
+        // Initial Learn setup still needs a Journey proposal before generation.
+        // All ordinary chat turns classify and admit in the generation command.
+        if (!directSocialTurn && isInitialLearnTurn && chatMode === 'learn') {
         setProgress('Understanding what you need…');
         const classification = await learningApi.classifyMode(currentSession.id, text, chatMode === 'learn' ? 'learn' : 'ask', bypassId || undefined);
         classifiedSuggestion = classification.suggestion || null;
@@ -1320,8 +1343,9 @@ export function LearnChat({
         }
       } else {
         setBusy(false);
-        await streamTurn({ action: 'message', message: text, question: text }, currentSession.id, classifiedSuggestion?.id || bypassId,
+        const result = await streamTurn({ action: 'message', message: text, question: text }, currentSession.id, classifiedSuggestion?.id || bypassId,
           undefined, clientMessageId, onAccepted, fromOutbox);
+        if (result === 'choice') return 'choice';
       }
       if (!sessionId) void learningApi.regenerateChatTitle(currentSession.id, true).then(() => { window.dispatchEvent(new CustomEvent('forma:chat-title-changed')); window.dispatchEvent(new CustomEvent('forma:chat-history-changed')); }).catch(() => undefined);
     } catch (cause) {

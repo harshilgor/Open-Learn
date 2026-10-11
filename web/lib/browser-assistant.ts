@@ -42,6 +42,7 @@ export function useBrowserAssistant(sessionId:string|null, courseId?:string|null
   const replyTargetRef = useRef<BrowserReplyTarget|null>(null);
   const dismissedRequests = useRef(new Set<string>());
   const refreshTimer = useRef<number|undefined>(undefined);
+  const refreshInFlight = useRef<{sessionId:string;generation:number;promise:Promise<BrowserTask[]>}|null>(null);
   const updateDismissedRequest = useCallback((requestId:string,dismiss:boolean) => {
     const next = new Set(dismissedRequests.current);
     if(dismiss)next.add(requestId);else next.delete(requestId);
@@ -54,13 +55,20 @@ export function useBrowserAssistant(sessionId:string|null, courseId?:string|null
     replyTargetRef.current=target;
     setReplyTargetState(target);
   },[updateDismissedRequest]);
-  const refresh = useCallback(async ():Promise<BrowserTask[]> => {
-    if(!sessionId) return [];
+  const refresh = useCallback(():Promise<BrowserTask[]> => {
+    if(!sessionId) return Promise.resolve([]);
     const current=generation.current;
-    const result = await request<{tasks:BrowserTask[]}>(`/v1/assistant/tasks?sessionId=${encodeURIComponent(sessionId)}`);
-    const ordered=result.tasks.slice().reverse();
-    if(alive.current && current===generation.current) setTasks(previous=>ordered.map(task=>({...task,activity:previous.find(item=>item.id===task.id)?.activity || []})));
-    return ordered;
+    const existing=refreshInFlight.current;
+    if(existing?.sessionId===sessionId && existing.generation===current)return existing.promise;
+    const promise=request<{tasks:BrowserTask[]}>(`/v1/assistant/tasks?sessionId=${encodeURIComponent(sessionId)}`).then(result=>{
+      const ordered=result.tasks.slice().reverse();
+      if(alive.current && current===generation.current) setTasks(previous=>ordered.map(task=>({...task,activity:previous.find(item=>item.id===task.id)?.activity || []})));
+      return ordered;
+    }).finally(()=>{
+      if(refreshInFlight.current?.promise===promise)refreshInFlight.current=null;
+    });
+    refreshInFlight.current={sessionId,generation:current,promise};
+    return promise;
   },[sessionId]);
   useEffect(()=>{
     alive.current=true;

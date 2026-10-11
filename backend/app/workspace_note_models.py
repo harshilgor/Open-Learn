@@ -55,6 +55,11 @@ class WorkspaceNoteSearchResponse(ApiModel):
     notes: list[WorkspaceNoteSummary] = Field(default_factory=list)
 
 
+class WorkspaceNotePage(ApiModel):
+    notes: list[WorkspaceNoteSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class WorkspaceNoteReindexResponse(ApiModel):
     indexed: int = Field(ge=0)
     skipped: int = Field(ge=0)

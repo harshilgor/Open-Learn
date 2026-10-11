@@ -6,10 +6,12 @@ does not establish source-backed correctness or learner mastery.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import base64
 import threading
+import weakref
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -24,6 +26,39 @@ from .reading_format import READING_FORMAT
 from .context_engine import GenerationContext
 from .teaching_prompts import build_teaching_instructions
 from .teaching_output_limits import teaching_output_limit
+
+
+# Async streams share keep-alive connections within their event loop. A
+# provider can also be used by embedded worker threads, so clients are never
+# shared across loops. The map is closed during API shutdown.
+_stream_clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_stream_clients_lock = threading.Lock()
+
+
+def _stream_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    with _stream_clients_lock:
+        client = _stream_clients.get(loop)
+        if client is None or client.is_closed:
+            max_connections = max(1, min(128, int(os.getenv("OPENLEARN_PROVIDER_HTTP_MAX_CONNECTIONS", "64"))))
+            keepalive = max(1, min(max_connections, int(os.getenv("OPENLEARN_PROVIDER_HTTP_KEEPALIVE_CONNECTIONS", "16"))))
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(180.0, connect=20.0),
+                limits=httpx.Limits(max_connections=max_connections,
+                                    max_keepalive_connections=keepalive,
+                                    keepalive_expiry=30.0),
+            )
+            _stream_clients[loop] = client
+        return client
+
+
+async def close_provider_http_clients() -> None:
+    """Close the current loop's pooled provider connection during shutdown."""
+    loop = asyncio.get_running_loop()
+    with _stream_clients_lock:
+        client = _stream_clients.pop(loop, None)
+    if client is not None and not client.is_closed:
+        await client.aclose()
 
 
 class ModelProviderError(RuntimeError):
@@ -434,51 +469,69 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         from .usage.transport import begin_model, finish_model
         if not is_openai and self.model != 'openrouter/free' and not self.model.endswith(':free'):
             payload['usage'] = {'include': True}
-        usage_ticket = begin_model(payload)
+        # The ledger reserve/dispatch operations are synchronous SQL. Keep
+        # their lock waits off the API event loop while preserving the active
+        # usage ContextVars through asyncio.to_thread.
+        reserve_task = asyncio.create_task(asyncio.to_thread(begin_model, payload))
+        try:
+            # Shield the offloaded reservation: cancellation cannot stop its
+            # database thread, so wait for the result and release the hold
+            # instead of orphaning a reservation for a provider call not made.
+            usage_ticket = await asyncio.shield(reserve_task)
+        except asyncio.CancelledError:
+            try:
+                abandoned_ticket = await reserve_task
+                # The HTTP call has not started yet, so this is a verified
+                # zero-use settlement rather than an uncertain provider run.
+                await asyncio.to_thread(finish_model, abandoned_ticket, {
+                    "prompt_tokens": 0, "completion_tokens": 0, "cost": 0,
+                })
+            finally:
+                raise
         raw_usage = None
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=20.0)) as client:
-                async with client.stream("POST", self.base_url, headers=headers, json=payload) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            break
-                        if not data:
-                            continue
-                        try:
-                            event = json.loads(data)
-                        except json.JSONDecodeError as exc:
-                            raise ModelProviderError("The model sent an unreadable stream event.") from exc
-                        # Capture exact usage without disturbing text flow. OpenRouter
-                        # attaches `usage` to the final chunk; OpenAI Responses nests
-                        # it under response.completed -> response.usage.
-                        try:
-                            candidate: object = None
-                            if isinstance(event, dict):
-                                if isinstance(event.get("usage"), dict):
-                                    candidate = event.get("usage")
-                                elif event.get("type") == "response.completed":
-                                    nested = event.get("response")
-                                    if isinstance(nested, dict) and isinstance(nested.get("usage"), dict):
-                                        candidate = nested.get("usage")
-                            if candidate is not None: raw_usage = candidate
-                            parsed = normalize_usage(candidate, is_openai=is_openai) if candidate is not None else None
-                            if parsed is not None:
-                                stream_usage = parsed
-                        except Exception:
-                            pass
-                        if event.get('error') or event.get("type") in {"error", "response.failed", "response.incomplete"}:
-                            raise ModelProviderError("The model stream ended before the lesson was complete.")
-                        delta = ""
-                        if event.get("type") == "response.output_text.delta":
-                            delta = event.get("delta") or ""
-                        elif isinstance(event.get("choices"), list) and event["choices"]:
-                            delta = (event["choices"][0].get("delta") or {}).get("content") or ""
-                        if isinstance(delta, str) and delta:
-                            yield delta
+            client = _stream_client()
+            async with client.stream("POST", self.base_url, headers=headers, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    if not data:
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise ModelProviderError("The model sent an unreadable stream event.") from exc
+                    # Capture exact usage without disturbing text flow. OpenRouter
+                    # attaches `usage` to the final chunk; OpenAI Responses nests
+                    # it under response.completed -> response.usage.
+                    try:
+                        candidate: object = None
+                        if isinstance(event, dict):
+                            if isinstance(event.get("usage"), dict):
+                                candidate = event.get("usage")
+                            elif event.get("type") == "response.completed":
+                                nested = event.get("response")
+                                if isinstance(nested, dict) and isinstance(nested.get("usage"), dict):
+                                    candidate = nested.get("usage")
+                        if candidate is not None: raw_usage = candidate
+                        parsed = normalize_usage(candidate, is_openai=is_openai) if candidate is not None else None
+                        if parsed is not None:
+                            stream_usage = parsed
+                    except Exception:
+                        pass
+                    if event.get('error') or event.get("type") in {"error", "response.failed", "response.incomplete"}:
+                        raise ModelProviderError("The model stream ended before the lesson was complete.")
+                    delta = ""
+                    if event.get("type") == "response.output_text.delta":
+                        delta = event.get("delta") or ""
+                    elif isinstance(event.get("choices"), list) and event["choices"]:
+                        delta = (event["choices"][0].get("delta") or {}).get("content") or ""
+                    if isinstance(delta, str) and delta:
+                        yield delta
             self.last_usage = stream_usage
         except httpx.TimeoutException as exc:
             raise ModelProviderError("PROVIDER_TIMEOUT") from exc
@@ -500,7 +553,9 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             raise ModelProviderError("PROVIDER_ERROR") from exc
 
         finally:
-            finish_model(usage_ticket, raw_usage)
+            # Settlement is also synchronous SQL. Await it before returning so
+            # a completed/cancelled stream never loses its accounting receipt.
+            await asyncio.to_thread(finish_model, usage_ticket, raw_usage)
 
     def streaming_payload(self, prompt: str | GenerationContext, max_tokens: int, images: list[ImageInput] | None = None) -> dict:
         """Build a provider-native streaming request; kept separate for contract tests."""

@@ -7,7 +7,7 @@ import { useMobileViewport } from '@/hooks/use-mobile-viewport';
 import { DeferredWorkspace } from './deferred-workspace';
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, CircleHelp, ExternalLink, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Settings, Sparkles, X } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, Bookmark, BookOpen, Check, ChevronRight, CircleHelp, ExternalLink, GitBranch, List, Maximize2, Minus, Network, PanelRight, Plus, RotateCcw, Search, Sparkles, X } from 'lucide-react';
 import { SidebarProvider, useSidebar } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { LearnChat } from '@/components/learn-chat';
@@ -18,7 +18,7 @@ import { BuddyHeader, useBuddies } from '@/components/buddies';
 import { StudyDashboard } from './study-dashboard';
 import { CourseIndex } from './course-index';
 const CalendarWorkspace = dynamic(() => import('./calendar/calendar-workspace').then(module => module.CalendarWorkspace));
-import {CLASS_OPEN_EVENT,classApi,openClassWorkspace} from '@/lib/in-class';
+import {CLASS_OPEN_EVENT,CLASS_SETUP_REQUEST_EVENT,classApi,openClassWorkspace,type ClassSetupRequestDetail} from '@/lib/in-class';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -28,7 +28,7 @@ import { learningApi, type LessonArtifact, type CourseSummary } from '@/lib/api'
 import { getJourney, navigateToSession, rememberSessionHint, resolveSessionHint, sessionIdFromPath, workflow } from '@/lib/learning-workflows';
 import { WorkspaceSplit, useWorkspacePanel } from '@/components/workspace-split';
 import { WorkspacePanel, type WorkspacePanelLayout, NotesWorkspace } from '@/components/workspace-panel';
-import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceNote, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
+import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
 import type { SettingsCategory } from '@/components/settings-page';
 import type { Task } from '@/components/course-study-planner';
 import { ClassRecorder } from '@/components/class-recorder';
@@ -130,7 +130,10 @@ function LearningWorkspaceContent({
   useEffect(() => { const open = () => setView('reminders'); window.addEventListener('openlearn-voice-reminders', open); return () => window.removeEventListener('openlearn-voice-reminders', open); }, []);
   const [courseDialogOpen,setCourseDialogOpen]=useState(false);
   const [recordSetupOpen,setRecordSetupOpen]=useState(false);
+  const [recordCourseChoice,setRecordCourseChoice]=useState<string|null|undefined>(undefined);
+  const [recordInitialTitle,setRecordInitialTitle]=useState<string|undefined>(undefined);
   const [recordFolder,setRecordFolder]=useState<string|null>(null);
+  useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<ClassSetupRequestDetail>).detail;if(!detail)return;setRecordCourseChoice(detail.courseId);setRecordInitialTitle(detail.title);setRecordFolder(null);setRecordSetupOpen(true);};window.addEventListener(CLASS_SETUP_REQUEST_EVENT,open);return()=>window.removeEventListener(CLASS_SETUP_REQUEST_EVENT,open);},[]);
 
   const [selectedNoteId,setSelectedNoteId]=useState<string|null>(null);
   const [settingsCategory,setSettingsCategory]=useState<SettingsCategory>('general');
@@ -407,7 +410,7 @@ function LearningWorkspaceContent({
   <Sheet open={sources} onOpenChange={setSources}><SheetContent><SheetHeader><SheetTitle>{currentMap.id.startsWith('generated:')?'Trust status':'Reading reference'}</SheetTitle><SheetDescription>{currentMap.id.startsWith('generated:')?'This graph is a structural draft awaiting retrieval and claim review.':'A place to continue learning about this sample map.'}</SheetDescription></SheetHeader><div className="source-content"><BookOpen size={26}/><h3>{currentMap.source.title}</h3><p>{currentMap.id.startsWith('generated:')?'The concepts and relationships came from the local deterministic baseline. They are useful for evaluating the learning flow, but they are not source-verified teaching.':'These are authored sample lessons, not live source-verified AI responses. The reference provides related reading; it is not a claim that each sentence has been independently verified.'}</p>{currentMap.source.url?<a href={currentMap.source.url} target="_blank" rel="noreferrer">Open reference<ExternalLink size={15}/></a>:null}</div></SheetContent></Sheet>
   <Dialog open={dialog!==null} onOpenChange={v=>{if(!v)setDialog(null)}}><DialogContent className={dialog==='setup'?'settings-dialog':undefined}><DialogHeader><DialogTitle>{dialog==='topic'?'Keep that curiosity.':dialog==='setup'?'Set up Open Learn on this device.':'A first look at Open Learn.'}</DialogTitle><DialogDescription>{dialog==='topic'?'The graph service could not complete this request. You can save the idea and explore one of the sample maps.':dialog==='setup'?'Add a provider key to enable model-powered lessons and quizzes. Keys stay in this device encrypted credential store.':'This workspace combines authored sample lessons with a functional draft-graph backend.'}</DialogDescription></DialogHeader>{dialog==='topic'?<div className="dialog-body"><div className="pending-topic"><Sparkles size={18}/>{topic}</div><Button onClick={()=>{setState(s=>({...s,ideas:Array.from(new Set([...s.ideas,topic.trim()]))}));setDialog(null);setNotice('Topic saved to Knowledge maps → Ideas for later.')}}>Save topic for later<Bookmark size={15}/></Button><Button variant="outline" onClick={()=>{setDialog(null);openMap('systems')}}>Explore a sample map<ArrowRight size={15}/></Button></div>:dialog==='setup'?<div className="dialog-body"><LocalDataSettings onDone={()=>{localStorage.setItem('forma-desktop-setup-v1','done');setDialog(null)}}/><Button variant="ghost" onClick={()=>{localStorage.setItem('forma-desktop-setup-v1','done');setDialog(null)}}>Continue with the built-in tutor</Button></div>:<div className="dialog-body"><p>Try the maps, change teaching gear, select a passage, and follow an exploration without losing your place.</p><p>Progress here means <strong>explored</strong>, not mastered. Your saved lessons, branches, and preferences stay in this browser. Live model teaching, source retrieval, and account sync are the next backend layers.</p><Button onClick={()=>setDialog(null)}>Back to learning<ArrowRight size={15}/></Button></div>}</DialogContent></Dialog>
   {notice?<div className="toast-message" role="status"><Check size={16}/>{notice}<button onClick={()=>setNotice('')} aria-label="Dismiss notification"><X size={14}/></button></div>:null}
-  <ClassRecorder courseName={courses.find(c=>c.id===activeCourseId)?.name} setupOpen={recordSetupOpen} onSetupOpenChange={setRecordSetupOpen} folder={recordFolder} courseId={activeCourseId} onNoteCreated={noteId=>{setRecordedNoteId(noteId);switchSidebarTab('notes');}} />
+  <ClassRecorder courseName={(recordCourseChoice!==undefined?courses.find(c=>c.id===recordCourseChoice)?.name:courses.find(c=>c.id===activeCourseId)?.name)} setupOpen={recordSetupOpen} onSetupOpenChange={open=>{setRecordSetupOpen(open);if(!open){setRecordCourseChoice(undefined);setRecordInitialTitle(undefined);}}} folder={recordFolder} courseId={activeCourseId} courseChoice={recordCourseChoice} initialTitle={recordInitialTitle} onNoteCreated={noteId=>{setRecordedNoteId(noteId);switchSidebarTab('notes');}} />
   {courseDialogOpen ? <CourseDialog
     open={courseDialogOpen}
     onOpenChange={setCourseDialogOpen}

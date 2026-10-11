@@ -9,6 +9,8 @@ mastery by accident.
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import json
 import os
 import re
@@ -18,7 +20,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import DateTime, bindparam, text
 
 from .storage import Store
 from .workspace_note_models import (
@@ -27,6 +29,7 @@ from .workspace_note_models import (
     WorkspaceNoteExport,
     WorkspaceNoteLinkCreate,
     WorkspaceNoteLinkRecord,
+    WorkspaceNotePage,
     WorkspaceNoteRecord,
     WorkspaceNoteReindexResponse,
     WorkspaceNoteSummary,
@@ -616,6 +619,67 @@ class WorkspaceNoteService:
                 for note_id in stale:
                     connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id})
         return results
+
+    @staticmethod
+    def _decode_note_cursor(cursor: str) -> tuple[datetime, str]:
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+            updated_at = datetime.fromisoformat(payload["updatedAt"])
+            note_id = payload["id"]
+            if not isinstance(note_id, str) or not NOTE_ID.fullmatch(note_id):
+                raise ValueError("invalid note ID")
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            return updated_at, note_id
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error):
+            raise WorkspaceNoteError("invalid_cursor", "The notes page cursor is invalid. Refresh the list.", 422)
+
+    @staticmethod
+    def _encode_note_cursor(updated_at: Any, note_id: str) -> str:
+        if not isinstance(updated_at, datetime):
+            updated_at = datetime.fromisoformat(str(updated_at))
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        raw = json.dumps({"updatedAt": updated_at.isoformat(), "id": note_id}, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+    def list_page(self, learner_id: str, limit: int = 50, cursor: str | None = None) -> WorkspaceNotePage:
+        """Read a bounded, owner-scoped note page using the owner/update index."""
+        self._validate_learner(learner_id)
+        limit = max(1, min(int(limit), 100))
+        params: dict[str, Any] = {"learner_id": learner_id, "limit": limit + 1}
+        statement = """
+            SELECT id,updated_at FROM workspace_notes WHERE learner_id=:learner_id
+        """
+        if cursor:
+            cursor_updated, cursor_id = self._decode_note_cursor(cursor)
+            statement += " AND (updated_at < :cursor_updated OR (updated_at = :cursor_updated AND id < :cursor_id))"
+            params.update({"cursor_updated": cursor_updated, "cursor_id": cursor_id})
+        statement += " ORDER BY updated_at DESC,id DESC LIMIT :limit"
+        query = text(statement)
+        if cursor:
+            query = query.bindparams(bindparam("cursor_updated", type_=DateTime(timezone=True)))
+        with self.store.engine.connect() as connection:
+            rows = connection.execute(query, params).mappings().all()
+        page_rows = rows[:limit]
+        has_more = len(rows) > limit
+        summaries: list[WorkspaceNoteSummary] = []
+        stale: list[str] = []
+        for row in page_rows:
+            try:
+                summaries.append(self._summary(self._read_file(learner_id, row["id"])))
+            except WorkspaceNoteError as exc:
+                if exc.code == "note_not_found":
+                    stale.append(row["id"])
+                else:
+                    raise
+        if stale:
+            with self.store.transaction() as connection:
+                connection.execute(text("DELETE FROM workspace_notes WHERE learner_id=:learner_id AND id IN :ids").bindparams(
+                    bindparam("ids", expanding=True)),
+                    {"learner_id": learner_id, "ids": stale})
+        next_cursor = self._encode_note_cursor(page_rows[-1]["updated_at"], page_rows[-1]["id"]) if has_more and page_rows else None
+        return WorkspaceNotePage(notes=summaries, next_cursor=next_cursor)
 
     def search(self, learner_id: str, query: str, limit: int = 30) -> list[WorkspaceNoteSummary]:
         self._validate_learner(learner_id)

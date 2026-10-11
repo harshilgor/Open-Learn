@@ -47,11 +47,12 @@ def test_migration_lock_is_released_on_failure(monkeypatch):
     engine.dispose.assert_called_once()
 
 
-def test_free_boot_rejects_external_workers(monkeypatch):
+def test_free_boot_requires_release_migration_owner_for_external_mode(monkeypatch):
     monkeypatch.setattr(hosted_runtime, 'configuration_errors', lambda: [])
     monkeypatch.setenv('OPENLEARN_WORKER_MODE', 'external')
+    monkeypatch.delenv('OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL', raising=False)
     monkeypatch.setattr(sys, 'argv', ['hosted_runtime', 'api-free'])
-    with pytest.raises(SystemExit, match='embedded'):
+    with pytest.raises(SystemExit, match='release-owned migration job'):
         hosted_runtime.main()
 
 

@@ -16,6 +16,7 @@ from .study_note_models import ProposalCreate
 from .study_note_service import StudyNoteService
 from .mode_transition_models import ModeClassificationRequest, ModeTransitionInteraction, ModeTransitionResponse
 from .mode_transition_service import ModeTransitionService
+from .mode_transition_routing import classify_mode_for_session
 
 
 from .usage.context import usage_job
@@ -159,33 +160,9 @@ def build_learning_router(store_provider, provider_getter):
 
     @router.post("/sessions/{sid}/mode-classification")
     def classify_mode(sid: str, command: ModeClassificationRequest, owner=Depends(material_owner), db=Depends(store_provider)):
-        session = MaterialService(db).session(owner, sid)
-        journey = JourneyService(db, None).get(owner, sid)
-        transitions = ModeTransitionService(db)
         classifier = __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid").lower()
         provider = provider_getter() if classifier in {"provider", "hybrid"} else None
-        if command.bypass_suggestion_id:
-            if not transitions.valid_bypass(owner, sid, command.bypass_suggestion_id):
-                problem("transition_unavailable", "This transition request has expired.", 409)
-            # A bypass only suppresses the same one-shot classification after the
-            # learner chose to continue in the current mode. It does not change mode.
-            result = transitions.classify(command.message, journey.get("turns", []),
-                command.current_mode, session_id=sid, owner=owner, concept_title=journey.get("steps", [{}])[journey.get("position", 0)].get("title") if journey.get("steps") else session.goal,
-                course_id=session.course_id, provider=provider, bypass_suggestion_id=command.bypass_suggestion_id)
-        else:
-            graph = db.get_graph(session.graph_id)
-            step = journey.get("steps", [])
-            position = min(journey.get("position", 0), max(0, len(step) - 1))
-            concept_title = step[position].get("title") if step else (graph.title if graph else session.goal)
-            concept_id = step[position].get("conceptId") if step else session.current_concept_id
-            result = transitions.classify(command.message, journey.get("turns", []),
-                command.current_mode, session_id=sid, owner=owner, concept_title=concept_title,
-                concept_id=concept_id, course_id=session.course_id, provider=provider)
-        if result.suggestion:
-            suggestion = result.suggestion.model_copy(update={"source_turn_id": f"request:{sid}:{journey.get('revision', 1)}",
-                "mode_revision": journey.get("modeRevision", 1)})
-            result.suggestion = suggestion
-            transitions.attach_suggestion_metadata(owner, sid, suggestion)
+        result = classify_mode_for_session(db, owner, sid, command, provider)
         return result.model_dump(mode="json", by_alias=True)
 
     @router.get("/sessions/{sid}/mode-transition")
@@ -206,6 +183,9 @@ def build_learning_router(store_provider, provider_getter):
                 suggestion_id=interaction.suggestion_id, action=interaction.action,
                 target_mode=interaction.target_mode, session_id=sid),
                 expected_mode_revision=interaction.expected_mode_revision)
+            if interaction.action in {"accept", "dismiss"}:
+                from .generation_command_receipts import clear_mode_choice_by_suggestion
+                clear_mode_choice_by_suggestion(db, owner, sid, interaction.suggestion_id)
         except ValueError as exc:
             problem("transition_unavailable", str(exc), 409)
         return result

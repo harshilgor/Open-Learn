@@ -92,6 +92,8 @@ export function mergeClassSnapshot(current:ClassSnapshot|null,next:ClassSnapshot
   return {...next,outputs,transcript,liveTranscript,events,outputHasMore:next.outputsReset?next.outputHasMore:current.outputHasMore,outputCursor:next.outputsReset?next.outputCursor:current.outputCursor,outputGeneration:next.outputsReset?next.outputGeneration:current.outputGeneration,transcriptHasMore:next.transcriptReset?next.transcriptHasMore:current.transcriptHasMore,transcriptCursor:next.transcriptReset?next.transcriptCursor:current.transcriptCursor,transcriptGeneration:next.transcriptReset?next.transcriptGeneration:current.transcriptGeneration};
 }
 export const CLASS_OPEN_EVENT='openlearn-class-open';
+export const CLASS_SETUP_REQUEST_EVENT='openlearn-class-setup-request';
+export type ClassSetupRequestDetail={courseId:string|null;title:string};
 export const CLASS_CHAT_OPEN_REQUEST_EVENT='openlearn-class-chat-open-request';
 export type ClassChatOpenResult={title:string;pageIndex:number};
 export type ClassReferenceCue={kind:'chapter'|'figure';number:number};

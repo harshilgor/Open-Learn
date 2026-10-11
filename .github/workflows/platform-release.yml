@@ -29,6 +29,7 @@ jobs:
       RENDER_API_TOKEN: ${{ secrets.RENDER_API_TOKEN }}
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
       OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+      OPENLEARN_FRONTEND_ORIGIN: ${{ vars.OPENLEARN_FRONTEND_ORIGIN }}
       RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
       API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -49,6 +50,9 @@ jobs:
       - name: Validate prerequisites before changing external state
         run: |
           python -c 'import os; keys=["DATABASE_MIGRATION_URL","RENDER_SERVICE_ID","API_ORIGIN","VERCEL_TOKEN","VERCEL_ORG_ID","VERCEL_PROJECT_ID"]; missing=[key for key in keys if not os.getenv(key)]; assert not missing, "Missing release configuration: " + ", ".join(missing); assert os.getenv("RENDER_DEPLOY_HOOK_URL") or os.getenv("RENDER_API_TOKEN"), "Missing Render deployment credential"'
+          if [ "$RELEASE_ENVIRONMENT" = production ]; then
+            python -c 'import os; from urllib.parse import urlparse; value=urlparse(os.getenv("OPENLEARN_FRONTEND_ORIGIN", "")); assert value.scheme == "https" and value.hostname and value.path in ("", "/") and not value.username and not value.password and not value.query and not value.fragment, "Set OPENLEARN_FRONTEND_ORIGIN to the production HTTPS origin (scheme and host only)"'
+          fi
           python -m backend.scripts.check_release_contract
           echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       # Authenticate and fetch the Vercel project configuration before the
@@ -56,12 +60,10 @@ jobs:
       - name: Install deployment CLI
         run: npm install --global vercel@59.11.2
       - name: Link frontend project for CI
-        working-directory: web
         run: |
           mkdir -p .vercel
           printf '{"projectId":"%s","orgId":"%s"}\n' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" > .vercel/project.json
       - name: Verify Vercel access and pull matching environment
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel pull --yes --environment=production --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
@@ -78,7 +80,6 @@ jobs:
         env:
           OPENLEARN_ENFORCE_RELEASE_GATE: '1'
           OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel build --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
@@ -86,7 +87,6 @@ jobs:
             vercel build --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
       - name: Stage frontend without production alias promotion
-        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             candidate=$(vercel deploy --prebuilt --prod --skip-domain --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
@@ -95,13 +95,21 @@ jobs:
           fi
           echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
       - name: Verify staged frontend/backend pair
-        working-directory: web
         run: |
           vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/frontend-release.json"
           python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
       - name: Promote validated production candidate
         if: inputs.environment == 'production'
         run: vercel promote "$FRONTEND_CANDIDATE" --yes --token="$VERCEL_TOKEN"
+      - name: Verify promoted production backend/frontend pair
+        if: inputs.environment == 'production'
+        run: >-
+          python -m backend.scripts.release_gate
+          --api "$API_ORIGIN"
+          --expected-sha "$RELEASE_SHA"
+          --frontend "$OPENLEARN_FRONTEND_ORIGIN"
+          --expected-frontend-sha "$RELEASE_SHA"
+          --require-external-migrations
       - name: Capture protected production diagnostics
         if: inputs.environment == 'production'
         run: python -m backend.scripts.performance_report --api "$API_ORIGIN" --out outputs/performance/production-operations.html

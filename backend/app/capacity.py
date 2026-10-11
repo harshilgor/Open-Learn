@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-ROLE_POOLS = {'api': 5, 'api-free': 5, 'learning': 2, 'agent': 2,
+ROLE_POOLS = {'api': 5, 'api-free': 5, 'generation': 5, 'learning': 2, 'agent': 2,
               'class': 2, 'browser': 2, 'notifications': 2, 'migrate': 1, 'cron': 1}
 
 

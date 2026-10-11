@@ -1,6 +1,7 @@
 "use client";
 
 import { request } from './api';
+import { cachedAccountOwnerId } from './account-session';
 import { sendMessage } from './assistant-client';
 import { routeFlashcardRequest } from './flashcards-client';
 
@@ -18,8 +19,11 @@ export type ConversationReplyTarget = {
 
 /** Both chat surfaces admit a message once before selecting a domain execution owner. */
 export async function admitConversation(message: string, sessionId: string, courseId?: string | null, previousBrowserTaskId?: string, attachments: {versionId:string;name:string}[] = [], presentation: 'conversation'|'ask'|'learn'|'quiz' = 'conversation', replyTarget?: ConversationReplyTarget): Promise<AdmissionReply & { message?: string }> {
-  const identity = await request<{ ownerId: string }>('/v1/account');
-  const storageKey = `openlearn-conversation-admission:${identity.ownerId}:${sessionId}`;
+  // The normal chat path has already made an authenticated browser-task request,
+  // which resolves and caches the current owner. Avoid a second identity RTT.
+  // Keep the request fallback for other callers and cold local sessions.
+  const ownerId = cachedAccountOwnerId() || (await request<{ ownerId: string }>('/v1/account')).ownerId;
+  const storageKey = `openlearn-conversation-admission:${ownerId}:${sessionId}`;
   const saved = sessionStorage.getItem(storageKey);
   const pending: Pending = saved ? JSON.parse(saved) : {
     key: crypto.randomUUID(), body: { clientMessageId: crypto.randomUUID(), sessionId, text: message,

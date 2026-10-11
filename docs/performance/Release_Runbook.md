@@ -13,7 +13,7 @@ P04 implements the pipeline, contract, and probes. This document distinguishes r
 
 ## Activation prerequisites
 
-Create/use matching GitHub environments named staging and production. Configure existing credentials as environment secrets: DATABASE_MIGRATION_URL, RENDER_API_TOKEN, VERCEL_TOKEN. Configure variables RENDER_SERVICE_ID, OPENLEARN_API_ORIGIN, VERCEL_ORG_ID, VERCEL_PROJECT_ID. The migration connection must point to the same approved database as the target API and use a connection mode suitable for Alembic/advisory locks. Never copy production data into staging without its separate data policy.
+Create/use matching GitHub environments named staging and production. Configure existing credentials as environment secrets: DATABASE_MIGRATION_URL, RENDER_API_TOKEN, VERCEL_TOKEN. Configure variables RENDER_SERVICE_ID, OPENLEARN_API_ORIGIN, VERCEL_ORG_ID, VERCEL_PROJECT_ID, and (for production only) OPENLEARN_FRONTEND_ORIGIN. The frontend origin must be HTTPS with no path or query. The migration connection must point to the same approved database as the target API and use a connection mode suitable for Alembic/advisory locks. Never copy production data into staging without its separate data policy.
 
 Where preview protection is enabled, provide the existing approved VERCEL_AUTOMATION_BYPASS_SECRET for read-only verification. The gate sends it only to the frontend origin; it never persists it. Missing/unusable protection access fails the probe; do not disable protections to make it pass.
 
@@ -46,7 +46,7 @@ Run the workload scenarios before qualifying a production performance improvemen
 
 Record prior backend commit/deploy ID, prior frontend deployment, schema heads, queue/lease state, and compatibility evidence. Release concurrency does not cancel an in-progress deployment/migration. Render deploy POSTs are not blindly retried: if transport fails after submission, inspect Render for the existing deploy before creating another.
 
-Stage production frontend using --prod --skip-domain and promote only after pair gates succeed. Production configuration is used for that staged build. Publish observed latency/error/cost comparison and retain the small-load artifact alongside the commit.
+Stage production frontend using --prod --skip-domain and promote only after pair gates succeed. Production configuration is used for that staged build. The release workflow then checks the promoted public frontend alias against the exact backend/frontend commits and API origin before capturing protected diagnostics. If that check fails, stop and follow the rollback procedure; do not assume promotion was undone. Publish the observed latency/error/cost comparison and retain the workload artifact alongside the commit.
 
 ## Rollback
 

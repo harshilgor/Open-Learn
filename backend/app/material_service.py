@@ -405,7 +405,6 @@ class MaterialService:
         now = time.time()
         # Keep abandoned-part storage bounded without a separate maintenance worker.
         # The current version is excluded so its caller can resume after expiry.
-        expired_keys = []
         with self.store.transaction() as conn:
             expired = conn.execute(text(
                 "SELECT version_id FROM material_upload_sessions "
@@ -413,10 +412,11 @@ class MaterialService:
                 "ORDER BY expires_at LIMIT 20"
             ), {"now": now, "version": vid}).scalars().all()
             for expired_version in expired:
-                expired_keys.extend(conn.execute(
+                expired_version_keys = conn.execute(
                     text("SELECT object_key FROM material_upload_parts WHERE version_id=:version"),
                     {"version": expired_version},
-                ).scalars().all())
+                ).scalars().all()
+                self._queue_object_cleanup(conn, expired_version_keys)
                 conn.execute(text("DELETE FROM material_upload_sessions WHERE version_id=:version"), {"version": expired_version})
             row = conn.execute(text(
                 "SELECT * FROM material_upload_sessions WHERE version_id=:version"
@@ -445,12 +445,40 @@ class MaterialService:
                     ), {"expiry": now + 86400, "id": upload_id})
             result = conn.execute(text("SELECT * FROM material_upload_sessions WHERE id=:id"), {"id": upload_id}).mappings().one()
             receipt = self._upload_session_receipt(dict(result), conn)
-        for key in expired_keys:
+        self.process_object_cleanup()
+        return receipt
+
+    @staticmethod
+    def _queue_object_cleanup(conn, keys):
+        for key in dict.fromkeys(keys):
+            conn.execute(text(
+                "INSERT INTO object_cleanup_queue(object_key,created_at,next_attempt_at) "
+                "VALUES(:key,:now,:now) ON CONFLICT(object_key) DO NOTHING"
+            ), {"key": key, "now": time.time()})
+
+    def process_object_cleanup(self, limit=20):
+        """Retry idempotent object deletes recorded before their DB references disappear."""
+        now = time.time()
+        with self.store.engine.connect() as conn:
+            keys = conn.execute(text(
+                "SELECT object_key FROM object_cleanup_queue WHERE next_attempt_at<=:now "
+                "ORDER BY created_at LIMIT :limit"
+            ), {"now": now, "limit": max(1, min(100, int(limit)))}).scalars().all()
+        cleaned = 0
+        for key in keys:
             try:
                 self.objects.delete(key)
             except Exception:
-                pass
-        return receipt
+                with self.store.transaction() as conn:
+                    conn.execute(text(
+                        "UPDATE object_cleanup_queue SET attempts=attempts+1, "
+                        "next_attempt_at=:next WHERE object_key=:key"
+                    ), {"next": now + 300, "key": key})
+                continue
+            with self.store.transaction() as conn:
+                conn.execute(text("DELETE FROM object_cleanup_queue WHERE object_key=:key"), {"key": key})
+            cleaned += 1
+        return cleaned
 
     def upload_session(self, owner, upload_id):
         row = self._upload_session_row(owner, upload_id)
@@ -561,14 +589,9 @@ class MaterialService:
                 ), {"now": time.time(), "id": upload_id, "lease": lease}).rowcount
                 if not changed:
                     problem("upload_lease_lost", "This upload must be resumed before finalizing it.", 409)
+                self._queue_object_cleanup(conn, keys)
                 conn.execute(text("DELETE FROM material_upload_parts WHERE version_id=:version"), {"version": material["version_id"]})
-            for key in keys:
-                try:
-                    self.objects.delete(key)
-                except Exception:
-                    # The completed ledger no longer references these parts;
-                    # a storage cleanup failure must not make completion fail.
-                    pass
+            self.process_object_cleanup(limit=len(keys))
             return result
         except Exception:
             with self.store.transaction() as conn:

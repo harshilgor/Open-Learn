@@ -37,13 +37,19 @@ const getSystemAudioSnapshot = () => {
 };
 const getSystemAudioServerSnapshot = () => false;
 
-export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, courseName, onNoteCreated }: {
+export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, courseName, courseChoice, initialTitle, onNoteCreated }: {
   setupOpen: boolean; onSetupOpenChange: (open: boolean) => void; folder: string | null;
   courseId?: string | null; courseName?:string; onNoteCreated: (noteId: string) => void;
+  courseChoice?: string | null; initialTitle?:string;
 }) {
   const [title, setTitle] = useState('');
+  const [titleSync, setTitleSync] = useState({ setupOpen, initialTitle });
+  if (titleSync.setupOpen !== setupOpen || titleSync.initialTitle !== initialTitle) {
+    setTitleSync({ setupOpen, initialTitle });
+    if (setupOpen && initialTitle !== undefined) setTitle(initialTitle);
+  }
   const [pickedCourse,setPickedCourse]=useState('');
-  const effectiveCourse=courseId||pickedCourse||null;
+  const effectiveCourse=courseChoice!==undefined?courseChoice:courseId||pickedCourse||null;
   const [courses,setCourses]=useState<CourseSummary[]>([]);
   const [materials,setMaterials]=useState<CourseMaterial[]>([]);
   const [selectedMaterials,setSelectedMaterials]=useState<string[]>([]);
@@ -183,7 +189,7 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
   }, [notice]);
 
   async function start() {
-    if(!consent||!owner||!effectiveCourse||starting)return;
+    if(!consent||!owner||(!effectiveCourse&&courseChoice===undefined)||starting)return;
     setStarting(true);
     setError('');
     let liveVadContext:AudioContext|null=null;
@@ -235,8 +241,8 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
     <Dialog open={setupOpen} onOpenChange={open=>{if(!open&&starting)lectureCapture.cancelStart();if(!open){setConsent(false);setIncludeSystemAudio(false);}onSetupOpenChange(open);}}>
       <DialogContent className={styles.setup} showCloseButton={!starting} onEscapeKeyDown={event=>{if(starting)event.preventDefault();}} onPointerDownOutside={event=>{if(starting)event.preventDefault();}}>
         <DialogHeader><DialogTitle>Start an In-Class session</DialogTitle><DialogDescription>Audio is saved on this device first. Connected providers prepare live notes and study material after upload; charges may apply. Capture stays on this device, and reopening a class never restarts the microphone.</DialogDescription></DialogHeader>
-        {!courseId?<label className={styles.titleLabel}>Course<select value={pickedCourse} onChange={e=>{setPickedCourse(e.target.value);setSelectedMaterials([]);}}><option value="">Choose a course</option>{courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}</select></label>:null}
-        <p>{courseName||'General class session'} · {buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'}</p><label className={styles.titleLabel}>Class title<input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="e.g. Biology · Lecture 4" /></label>
+        {courseChoice!==undefined?<p>{effectiveCourse?courses.find(course=>course.id===effectiveCourse)?.name||courseName||'Course class':'General class · No course'} · {buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'}</p>:!courseId?<label className={styles.titleLabel}>Course<select value={pickedCourse} onChange={e=>{setPickedCourse(e.target.value);setSelectedMaterials([]);}}><option value="">Choose a course</option>{courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}</select></label>:null}
+        {courseChoice===undefined?<p>{courseName||'General class session'} · {buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'}</p>:null}<label className={styles.titleLabel}>Class title<input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="e.g. Biology · Lecture 4" /></label>
         <label className={styles.titleLabel}>Buddy for this session<select value={effectiveOverride} onChange={e=>{setBuddyOverride({course:effectiveCourse,id:e.target.value});}}><option value="">Course/default Buddy ({buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'})</option>{buddies.snapshot?.profiles.filter(p=>!p.archived).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className={styles.titleLabel}>Note detail<select value={preferences.depth} onChange={event => setPreferences(current => ({ ...current, depth: event.target.value as LecturePreferences['depth'] }))}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
         <label className={styles.optionLabel}><input type="checkbox" checked={preferences.keepAudio} onChange={event => setPreferences(current => ({ ...current, keepAudio: event.target.checked }))} /> Keep class audio for playback</label>
@@ -250,7 +256,7 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
         {desktopClassCapture()?.onLifecycle ? <small>Closing the window while recording keeps it in the tray. Locking or sleeping the computer stops recording and saves audio. Open Learn cannot wake the computer or restart capture automatically.</small> : null}
         <label className={styles.optionLabel}><input type="checkbox" checked={consent} onChange={e=>setConsent(e.target.checked)}/>I have permission to record this class.</label>
         {!owner?<p role="status">Connect to verify your account before starting; saved capture can continue locally if the connection later drops.</p>:null}
-        <div className={styles.dialogActions}><Button variant="outline" onClick={() => {if(starting)lectureCapture.cancelStart();setConsent(false);setIncludeSystemAudio(false);onSetupOpenChange(false);}}>{starting?'Cancel start':'Cancel'}</Button><Button disabled={!consent||!owner||!effectiveCourse||starting} onClick={() => void start()}><Mic size={16} />{starting?'Starting…':'Start listening'}</Button></div>
+        <div className={styles.dialogActions}><Button variant="outline" onClick={() => {if(starting)lectureCapture.cancelStart();setConsent(false);setIncludeSystemAudio(false);onSetupOpenChange(false);}}>{starting?'Cancel start':'Cancel'}</Button><Button disabled={!consent||!owner||(!effectiveCourse&&courseChoice===undefined)||starting} onClick={() => void start()}><Mic size={16} />{starting?'Starting…':'Start listening'}</Button></div>
         {error ? <p role="alert" className={styles.error}>{error}</p> : null}
       </DialogContent>
     </Dialog>
