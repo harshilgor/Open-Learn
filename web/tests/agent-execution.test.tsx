@@ -11,6 +11,15 @@ const task={id:'task',schemaVersion:2,revision:7,sessionId:'session',kind:'lab_a
 beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.clearAllMocks();sessionStorage.clear();mocks.request.mockImplementation(async(path:string)=>path==='/v1/usage/allowance'?{windowId:null,windowState:'ready',serverTime:100,resetsAt:null,grantedMicrocredits:100_000_000,usedMicrocredits:0,heldMicrocredits:0,availableMicrocredits:100_000_000,revision:0,availability:'available',reasonCode:null}:{admissionEnabled:true});mocks.snapshot.mockResolvedValue({cursor:1,hasMore:false,items:[{id:'question',sequence:1,type:'input.requested',taskId:'task'}],tasks:[task]});mocks.sendMessage.mockResolvedValue({handled:true,references:[]});container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
 afterEach(()=>{act(()=>root.unmount());container.remove();});
 async function mount(){await act(async()=>{root.render(<ExecutionPanel sessionId="session" onSession={vi.fn()}/>);await new Promise(resolve=>setTimeout(resolve,20));});}
+it('clears a polling outage after recovery without showing a failed message alert',async()=>{
+  await mount();
+  mocks.snapshot.mockRejectedValueOnce(new Error('Service unavailable'));
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(container.textContent).toContain('Task updates are reconnecting');
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(container.textContent).not.toContain('Task updates are reconnecting');
+});
 it('answers the exact task/question with steering and revision',async()=>{
   await mount();
   await act(async()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Centimeters; ignore trial 3')!.click());

@@ -19,6 +19,7 @@ const prefix='openlearn-agent-pending:';
 export function ExecutionPanel({sessionId,onSession,courseId,showTools=true}:{sessionId:string|null;onSession:(id:string)=>void;courseId?:string|null;showTools?:boolean}){
   const [tasks,setTasks]=useState<AgentTask[]>([]),[items,setItems]=useState<Activity[]>([]);
   const [enabled,setEnabled]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const [activityError,setActivityError]=useState('');
   const [kind,setKind]=useState('lab_analysis'),[query,setQuery]=useState(''),[csv,setCsv]=useState('trial,distance,time\n1,10,2\n2,20,4\n3,999,1\n');
   const [answers,setAnswers]=useState<Record<string,string>>({});
   const [hasPending,setHasPending]=useState(false);
@@ -41,19 +42,19 @@ export function ExecutionPanel({sessionId,onSession,courseId,showTools=true}:{se
       page=await snapshot(sessionId,page.cursor);
     }
     if(epoch!==generation.current)return;
-    cursor.current=page.cursor;setTasks(page.tasks);
+    cursor.current=page.cursor;setTasks(page.tasks);setActivityError('');
     setItems(previous=>{const map=new Map((resetForRetention?[]:previous).map(item=>[item.id,item]));for(const item of collected)map.set(item.id,item);return [...map.values()].sort((a,b)=>a.sequence-b.sequence);});
   },[sessionId]);
   useEffect(()=>{
     generation.current++;cursor.current=undefined;
     let stopped=false,inflight=false;
     const invalidate=()=>{generation.current++;};
-    const update=()=>{if(inflight)return;inflight=true;void refresh().catch(cause=>{if(!stopped)setError(cause.message);}).finally(()=>{inflight=false;});};
-    const timer=window.setTimeout(()=>{setTasks([]);setItems([]);setError('');update();},0);
+    const update=()=>{if(inflight)return;inflight=true;void refresh().catch(cause=>{if(!stopped)setActivityError(cause.message);}).finally(()=>{inflight=false;});};
+    const timer=window.setTimeout(()=>{setTasks([]);setItems([]);setError('');setActivityError('');update();},0);
     if(showTools)void request<{admissionEnabled:boolean;capabilities?:{name:string;state:string;runtime?:string}[]}>('/v1/assistant/execution-capabilities').then(value=>{if(!stopped){setEnabled(value.admissionEnabled);const sandbox=value.capabilities?.find(capability=>capability.name==='sandbox_lab');setSandboxState(sandbox?.state||'setup_required');setSandboxFixture(sandbox?.runtime==='offline_sandbox_fixture');}}).catch(()=>undefined);
     const interval=window.setInterval(update,2000);
     const clear=()=>{
-      generation.current++;cursor.current=undefined;pending.current=null;setHasPending(false);setTasks([]);setItems([]);setAnswers({});setQuery('');setEnabled(false);
+      generation.current++;cursor.current=undefined;pending.current=null;setHasPending(false);setTasks([]);setItems([]);setAnswers({});setQuery('');setEnabled(false);setActivityError('');
       for(let at=sessionStorage.length-1;at>=0;at--){const key=sessionStorage.key(at);if(key?.startsWith(prefix))sessionStorage.removeItem(key);}
     };
     window.addEventListener(ACCOUNT_CHANGED,clear);
@@ -115,6 +116,7 @@ export function ExecutionPanel({sessionId,onSession,courseId,showTools=true}:{se
       <LearningContinuationPanel task={task}/>
       <ConnectedTaskPanel task={task}/>
     </article>)}
+    {activityError && (showTools || tasks.length > 0) ? <p role="status">Task updates are reconnecting. Your conversation is still here.</p> : null}
     {error?<p role="alert">{error} Your reply is preserved. Refresh and reconcile a changed task before sending again.</p>:null}
     {hasPending?<button type="button" disabled={busy} onClick={()=>{if(sessionId)sessionStorage.removeItem(prefix+sessionId);pending.current=null;setHasPending(false);setError('Earlier pending intent dismissed. Verify server history before sending changed content.');}}>Reconcile pending message</button>:null}
   </section>;
