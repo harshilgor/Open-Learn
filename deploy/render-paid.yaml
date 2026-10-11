@@ -27,6 +27,10 @@ services:
     dockerCommand: python -m backend.app.reminder_cron
     envVars:
       - fromGroup: openlearn-production
+      - key: OPENLEARN_PROCESS_ROLE
+        value: cron
+      - key: OPENLEARN_DB_POOL_SIZE
+        value: '1'
       - key: OPENLEARN_MIGRATE_ON_START
         value: 'false'
       - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL

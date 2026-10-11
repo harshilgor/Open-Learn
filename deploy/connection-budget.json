@@ -10,6 +10,7 @@
     {"role": "agent", "replicas": 1, "poolSize": 2},
     {"role": "class", "replicas": 1, "poolSize": 2},
     {"role": "browser", "replicas": 1, "poolSize": 2},
-    {"role": "notifications", "replicas": 1, "poolSize": 2}
+    {"role": "notifications", "replicas": 1, "poolSize": 2},
+    {"role": "cron", "replicas": 1, "poolSize": 1}
   ]
 }

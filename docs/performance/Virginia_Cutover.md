@@ -3,9 +3,10 @@
 ## Capacity envelope
 
 One API process (five connections) and five serial worker processes (two each)
-use at most 15 pooled connections. Two complete service generations use 30;
+plus the backup cron's one connection use at most 16 pooled connections.
+Two complete service generations conservatively use 32;
 two migration connections and 20 reserved for auth/platform/operations yield
-52 of the observed 60-connection database limit. Eight remain unallocated.
+54 of the observed 60-connection database limit. Six remain unallocated.
 This is a planning envelope, not a load qualification. No replicas may be
 added without rerunning `check_connection_budget` with their actual count.
 HTTP concurrency is bounded at 128, including long-lived streams. Provider
@@ -15,8 +16,11 @@ worker lease and serial tick behavior remain unchanged. Pool overflow is zero.
 Long-lived SQLAlchemy services should use the IPv4 session pooler or direct
 Postgres when IPv6 is supported. Keep migration advisory locks on a direct
 or session connection; transaction pooling is not approved for migration or
-future LISTEN consumers. Actual hosted URL mode still requires verification.
-No listener exists in this stage. URL passwords must never appear in reports.
+future LISTEN consumers. The live URL was verified through a redacted dashboard
+read: Supabase session pooler, port 5432. No listener exists in this stage.
+URL passwords must never appear in reports. The free embedded API keeps a
+ten-second pool wait after the three-second candidate caused admission failures
+in the real workload. Its live override is OPENLEARN_DB_POOL_TIMEOUT_SECONDS=10.
 
 ## Probe contract
 
@@ -37,7 +41,8 @@ five Starter workers (0.5 CPU / 512 MB each). Preliminary listed compute cost:
 $25 + five × $7 = $60/month, excluding provider use, cron, bandwidth, tax and
 database upgrades. These sizes need memory/CPU measurement before qualification.
 Supabase quota remediation and backup/restore coverage are required before
-cutover; do not delete user data to fit the free tier. Billing approval is pending.
+cutover; do not delete user data to fit the free tier. The user chose to keep
+hosting free on October 10. No paid services or upgrades have been provisioned.
 
 ## Ordered cutover and rollback
 

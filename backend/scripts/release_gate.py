@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--expected-sha')
     parser.add_argument('--frontend')
     parser.add_argument('--expected-frontend-sha')
+    parser.add_argument('--frontend-metadata', type=Path, help='Metadata fetched from this candidate with authenticated vercel curl')
     parser.add_argument('--require-external-migrations', action='store_true')
     args = parser.parse_args()
     for origin in filter(None, (args.api, args.frontend)):
@@ -60,12 +61,17 @@ def main():
             if args.frontend:
                 import os
                 bypass = os.getenv('VERCEL_AUTOMATION_BYPASS_SECRET')
-                response = client.get(args.frontend.rstrip('/') + '/api/release',
-                    headers={'x-vercel-protection-bypass': bypass} if bypass else {})
-                if response.status_code != 200:
+                if args.frontend_metadata:
+                    frontend = json.loads(args.frontend_metadata.read_text(encoding='utf-8-sig'))
+                    status = 200
+                else:
+                    response = client.get(args.frontend.rstrip('/') + '/api/release',
+                        headers={'x-vercel-protection-bypass': bypass} if bypass else {})
+                    status = response.status_code
+                    frontend = response.json() if status == 200 else {}
+                if status != 200:
                     errors.append('frontend_metadata_unavailable')
                 else:
-                    frontend = response.json()
                     if frontend.get('protocolVersion') != contract['protocolVersion']:
                         errors.append('frontend_protocol_mismatch')
                     if sorted(frontend.get('requiredCapabilities', [])) != sorted(contract['requiredCapabilities']):
@@ -77,7 +83,7 @@ def main():
                     expected_origin = str(httpx.URL(args.api)).rstrip('/')
                     if frontend.get('apiOriginFingerprint') != hashlib.sha256(expected_origin.encode()).hexdigest():
                         errors.append('frontend_api_origin_mismatch')
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, OSError, ValueError, TypeError):
         errors = ['release_probe_failed']
     print(json.dumps({'passed': not errors, 'errors': errors}))
     raise SystemExit(1 if errors else 0)
