@@ -17,6 +17,10 @@ import {useBuddyPresence} from '@/lib/buddy-presence';
 type BuddyContext = { snapshot:BuddySnapshot|null; active:Buddy|undefined; select:(id:string)=>void; refresh:()=>Promise<void>; edit:(buddy?:Buddy)=>void; error:string };
 const Context=createContext<BuddyContext>({snapshot:null,active:undefined,select:()=>{},refresh:async()=>{},edit:()=>{},error:''});
 export const useBuddies=()=>useContext(Context);
+const celebrationStyles=['roll','dance','bounce'] as const;
+function newBuddyInput():BuddyInput {
+  return {name:'',avatar:'spark',color:'sage',style:'encouraging',concise:true,examples:true,proactive:false,appearance:{...defaultAppearance,celebration:celebrationStyles[Math.floor(Math.random()*celebrationStyles.length)]}};
+}
 export function BuddyAvatar({buddy,expression}:{buddy:Buddy;expression?:Expression}) {
   const {active}=useBuddies();
   const look={...defaultAppearance,...buddy.appearance};
@@ -29,29 +33,35 @@ export function BuddyAvatar({buddy,expression}:{buddy:Buddy;expression?:Expressi
 
 export function BuddyProvider({children}:{children:ReactNode}) {
   const [snapshot,setSnapshot]=useState<BuddySnapshot|null>(null),[activeId,setActiveId]=useState(''),[error,setError]=useState('');
-  const [editor,setEditor]=useState<{buddy?:Buddy}|null>(null);
+  const [editor,setEditor]=useState<{buddy?:Buddy;initial:BuddyInput}|null>(null);
   const generation=useRef(0);
   const invalidate=useCallback(()=>{generation.current++;},[]);
   const [accountEpoch,setAccountEpoch]=useState(0);
   const refresh=useCallback(async()=>{const request=++generation.current;try{const next=await buddyApi.snapshot();if(request!==generation.current)return;setSnapshot(next);setActiveId(current=>next.profiles.some(p=>p.id===current)?current:next.defaultBuddyId);setError('');}catch(e){if(request===generation.current)setError(e instanceof Error?e.message:'Could not load Buddies.');}},[]);
   useEffect(()=>{const reset=()=>{for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('openlearn-pending-chat-draft:')||key?.startsWith('openlearn-text-outbox:'))sessionStorage.removeItem(key);}clearChatDraftFiles();generation.current++;setSnapshot(null);setActiveId('');setEditor(null);setError('');setAccountEpoch(value=>value+1);void refresh();};const timer=setTimeout(()=>void refresh(),0);window.addEventListener(ACCOUNT_CHANGED,reset);return()=>{invalidate();clearTimeout(timer);window.removeEventListener(ACCOUNT_CHANGED,reset);};},[refresh,invalidate]);
   const active=snapshot?.profiles.find(p=>p.id===activeId);
-  return <Context.Provider value={{snapshot,active,select:setActiveId,refresh,edit:buddy=>setEditor({buddy}),error}}><Fragment key={accountEpoch}>{children}</Fragment>{editor?<BuddyEditor existing={editor.buddy} onClose={()=>setEditor(null)} onSaved={async buddy=>{await refresh();setActiveId(buddy.id);setEditor(null);}}/>:null}</Context.Provider>;
+  return <Context.Provider value={{snapshot,active,select:setActiveId,refresh,edit:buddy=>setEditor({buddy,initial:buddy||newBuddyInput()}),error}}><Fragment key={accountEpoch}>{children}</Fragment>{editor?<BuddyEditor existing={editor.buddy} initial={editor.initial} onClose={()=>setEditor(null)} onSaved={async buddy=>{await refresh();setActiveId(buddy.id);setEditor(null);}}/>:null}</Context.Provider>;
 }
 
-function BuddyEditor({existing,onClose,onSaved}:{existing?:Buddy;onClose:()=>void;onSaved:(buddy:Buddy)=>Promise<void>}) {
+function BuddyEditor({existing,initial,onClose,onSaved}:{existing?:Buddy;initial:BuddyInput;onClose:()=>void;onSaved:(buddy:Buddy)=>Promise<void>}) {
   const {snapshot,refresh,error:connectionError}=useBuddies();
-  const [input,setInput]=useState<BuddyInput>(existing||{name:'',avatar:'spark',color:'sage',style:'encouraging',concise:true,examples:true,proactive:false});
+  const [input,setInput]=useState<BuddyInput>(initial);
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[replacement,setReplacement]=useState('');
+  const previewAppearance={...defaultAppearance,...input.appearance};
+  const previewExpression=useBuddyPresence('buddy-editor-preview',previewAppearance.sleepy);
 
   async function save(){setBusy(true);setError('');try{await onSaved(await buddyApi.save(input,existing));}catch(e){setError(e instanceof Error?e.message:'Could not save.');}finally{setBusy(false);}}
   async function archive(){if(!existing||!replacement)return;setBusy(true);try{await buddyApi.archive(existing,replacement);await refresh();onClose();}catch(e){setError(e instanceof Error?e.message:'Could not archive.');}finally{setBusy(false);}}
-  return <Dialog open onOpenChange={value=>{if(!value&&!busy)onClose();}}><DialogContent className="max-h-[90dvh] overflow-y-auto"><DialogTitle>{existing?'Customize':'Create'} Buddy</DialogTitle><DialogDescription>What would you like to call your study partner?</DialogDescription>
+  return <Dialog open onOpenChange={value=>{if(!value&&!busy)onClose();}}><DialogContent className="buddy-editor-dialog max-h-[90dvh] max-w-xl overflow-y-auto"><DialogTitle>{existing?'Customize':'Create'} Buddy</DialogTitle><DialogDescription>Choose a name and look. You can personalize the details later.</DialogDescription>
     <label className="flex flex-col gap-2 text-sm font-medium">Buddy name<input autoFocus placeholder="e.g. Nova" className="w-full rounded-lg border border-border bg-background px-3 py-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring" maxLength={60} value={input.name} onChange={e=>setInput({...input,name:e.target.value})} onKeyDown={e=>{if(e.key==='Enter'&&!busy&&snapshot&&input.name.trim())void save();}}/></label>
     <BuddyCustomization value={input} onChange={setInput}/>
     <p className="text-xs leading-relaxed text-muted-foreground">Your Buddy learns how you like to study as you talk. You can always ask it to change its approach.</p>    {!snapshot?<div role="status"><p>{connectionError?'Reconnect to save your Buddy. You can customize it here while the service is unavailable.':'Connecting to your account. You can customize your Buddy while we connect.'}</p><Button variant="outline" onClick={()=>void refresh()}>Retry connection</Button></div>:null}
-    {error?<p role="alert">{error}</p>:null}<Button disabled={busy||!snapshot||!input.name.trim()} onClick={()=>void save()}>{busy?'Saving…':existing?'Save Buddy':'Create Buddy'}</Button>
+    {error?<p role="alert">{error}</p>:null}
     {existing?<><Button variant="outline" disabled={busy} onClick={async()=>{setBusy(true);try{await buddyApi.makeDefault(existing.id);await refresh();}catch(e){setError(String(e));}finally{setBusy(false);}}}>Use as my default</Button><details><summary>Archive Buddy</summary><p>{Object.values(snapshot?.courses||{}).filter(id=>id===existing.id).length} assigned courses and {snapshot?.responsibilities?.[existing.id]||0} responsibility records will transfer to the replacement. Chats stay attributed to this Buddy in All chats. Existing reminder and task IDs remain unchanged.</p><select aria-label="Replacement Buddy" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Choose replacement</option>{snapshot?.profiles.filter(p=>!p.archived&&p.id!==existing.id).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select><Button variant="outline" disabled={busy||!replacement} onClick={()=>void archive()}>Archive and reassign</Button></details></>:null}
+    <div className="buddy-finish-card">
+      <div className="buddy-finish-preview"><span className="buddy-finish-art" aria-hidden="true"><Character {...previewAppearance} index={previewAppearance.shape} color={buddyColors[input.color]} expression={previewExpression} size={68} animated/></span><span className="buddy-finish-copy"><small>Your Buddy</small><strong>{input.name.trim()||'Your new Buddy'}</strong><span>Ready to learn together</span></span></div>
+      <Button className="buddy-create-button" disabled={busy||!snapshot||!input.name.trim()} onClick={()=>void save()}>{busy?(existing?'Saving…':'Creating…'):existing?'Save Buddy':'Create Buddy'}<span aria-hidden="true">✦</span></Button>
+    </div>
   </DialogContent></Dialog>;
 }
 

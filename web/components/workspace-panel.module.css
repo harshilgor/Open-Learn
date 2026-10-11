@@ -739,7 +739,7 @@
 .writingSurface[hidden] { display:none; }
 .notePreview { width:100%; max-width:820px; padding:20px 24px 64px; margin:0; background:transparent; }
 .notePreview img { display:block; max-width:100%; height:auto; border-radius:6px; margin:12px 0; }
-.notePreview p:has(>br:only-child):only-child:before { content:'Write your note…'; color:var(--muted-foreground); pointer-events:none; }
+.notePreview p:has(>br:only-child):only-child:before { content:'Write your noteâ€¦'; color:var(--muted-foreground); pointer-events:none; }
 .noteFind { display:flex; align-items:center; gap:8px; margin:6px 20px; padding:5px 8px; border:1px solid var(--border); border-radius:6px; font-size:12px; }
 .noteFind input { flex:1; width:0; background:transparent; outline:none; }
 .noteFind button { min-height:28px; }
