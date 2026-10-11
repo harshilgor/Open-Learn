@@ -118,12 +118,12 @@ def build_agent_router(store_getter, provider_getter=lambda: None):
         if last_event_id:
             try:after=max(after,int(last_event_id))
             except ValueError:fail('invalid_input','Invalid activity cursor.',422)
-        initial=svc.snapshot(learner,session_id,after)
+        initial=await asyncio.to_thread(svc.snapshot,learner,session_id,after)
         if not stream:return initial
         async def generate():
             cursor=after
             while not await request.is_disconnected():
-                snapshot=svc.snapshot(learner,session_id,cursor)
+                snapshot=await asyncio.to_thread(svc.snapshot,learner,session_id,cursor)
                 if snapshot.get('resnapshotRequired'):
                     yield f'event: resync_required\ndata: {json.dumps({"cursor":snapshot["cursor"],"prunedThrough":snapshot["prunedThrough"]})}\n\n'
                     return

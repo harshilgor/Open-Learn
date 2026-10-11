@@ -114,18 +114,18 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
     async def events(identifier: str, request: Request, after: int = Query(default=0, ge=0), stream: bool = False,
                      last_event_id: str | None = Header(default=None, alias='Last-Event-ID')):
         learner = owner(); repo = AssistantStore(store_getter())
-        repo.read('assistant_runs', learner, identifier)
+        await asyncio.to_thread(repo.read, 'assistant_runs', learner, identifier)
         if last_event_id:
             try: after = max(after, int(last_event_id))
             except ValueError: fail('invalid_input', 'Invalid event cursor.', 422)
-        if not stream: return {'events': repo.events(learner, identifier, after)}
+        if not stream: return {'events': await asyncio.to_thread(repo.events, learner, identifier, after)}
         async def generate():
             sequence = after
             while not await request.is_disconnected():
-                for event in repo.events(learner, identifier, sequence):
+                for event in await asyncio.to_thread(repo.events, learner, identifier, sequence):
                     sequence = event['sequence']
                     yield f'id: {sequence}\nevent: assistant\ndata: {json.dumps(event)}\n\n'
-                state = repo.read('assistant_runs', learner, identifier)
+                state = await asyncio.to_thread(repo.read, 'assistant_runs', learner, identifier)
                 if state['status'] in TERMINAL: break
                 yield ': keepalive\n\n'
                 await asyncio.sleep(1)
