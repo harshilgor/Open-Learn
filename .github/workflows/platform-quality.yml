@@ -19,6 +19,7 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       AI_TUTOR_PROVIDER: deterministic_baseline
       AI_TUTOR_ENV: development
@@ -35,7 +36,7 @@ jobs:
       - run: python -m backend.scripts.check_connection_budget
       - name: Backend feature and persistence regressions
         run: >-
-          python -m pytest -q backend/tests/test_performance.py backend/tests/test_release_gates.py
+          python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_performance.py backend/tests/test_release_gates.py
           backend/tests/test_migrations.py backend/tests/test_hosted_free_runtime.py
           backend/tests/test_generation_infrastructure.py backend/tests/test_durable_generation_replay.py
           backend/tests/test_live_branching.py backend/tests/test_conversation_admission.py
