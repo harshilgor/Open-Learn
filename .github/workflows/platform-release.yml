@@ -66,6 +66,114 @@ jobs:
           else
             vercel pull --yes --environment=preview --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
+      - name: Verify protected frontend access before changing production
+        run: vercel curl / --yes --fail --silent --show-error --max-time 30 --output "$RUNNER_TEMP/frontend-access-preflight.html"
+      - name: Run the single release migration
+        run: python -m backend.scripts.release_migrate
+      - name: Deploy the compatible backend commit
+        run: python -m backend.scripts.render_release --commit "$RELEASE_SHA"
+      - name: Gate backend schema, capabilities, commit, and migration ownership
+        run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --require-external-migrations
+      - name: Build frontend for the matching environment
+        env:
+          OPENLEARN_ENFORCE_RELEASE_GATE: '1'
+          OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+        run: |
+          if [ "$RELEASE_ENVIRONMENT" = production ]; then
+            vercel build --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+          else
+            vercel build --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+          fi
+      - name: Stage frontend without production alias promotion
+        run: |
+          if [ "$RELEASE_ENVIRONMENT" = production ]; then
+            candidate=$(vercel deploy --prebuilt --prod --skip-domain --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
+          else
+            candidate=$(vercel deploy --prebuilt --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
+          fi
+          echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
+      - name: Verify staged frontend/backend pair
+        run: |
+          vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --yes --fail --silent --show-error --max-time 30 > "$RUNNER_TEMP/frontend-release.json"
+          python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
+      - name: Promote validated production candidate
+        if: inputs.environment == 'production'
+        run: vercel promote "$FRONTEND_CANDIDATE" --yes --token="$VERCEL_TOKEN"
+      - name: Capture protected production diagnostics
+        if: inputs.environment == 'production'
+        run: python -m backend.scripts.performance_report --api "$API_ORIGIN" --out outputs/performance/production-operations.html
+      - uses: actions/upload-artifact@v4
+        if: inputs.environment == 'production'
+        with:
+          name: production-performance-diagnostics
+          path: outputs/performance/production-operations.*name: Coordinated platform release
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Existing GitHub environment with matching backend/database/frontend secrets
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-release-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    uses: ./.github/workflows/platform-quality.yml
+  release:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ inputs.environment }}
+    env:
+      DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
+      RENDER_API_TOKEN: ${{ secrets.RENDER_API_TOKEN }}
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+      RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
+      API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      LIVE_BRANCHING_METRICS_TOKEN: ${{ secrets.PERFORMANCE_METRICS_TOKEN }}
+      RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: pip install -r backend/requirements.txt
+      - name: Validate prerequisites before changing external state
+        run: |
+          python -c 'import os; keys=["DATABASE_MIGRATION_URL","RENDER_SERVICE_ID","API_ORIGIN","VERCEL_TOKEN","VERCEL_ORG_ID","VERCEL_PROJECT_ID"]; missing=[key for key in keys if not os.getenv(key)]; assert not missing, "Missing release configuration: " + ", ".join(missing); assert os.getenv("RENDER_DEPLOY_HOOK_URL") or os.getenv("RENDER_API_TOKEN"), "Missing Render deployment credential"'
+          python -m backend.scripts.check_release_contract
+          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      # Authenticate and fetch the Vercel project configuration before the
+      # migration or backend deployment can change production state.
+      - name: Install deployment CLI
+        run: npm install --global vercel@59.11.2
+      - name: Link frontend project for CI
+        run: |
+          mkdir -p .vercel
+          printf '{"projectId":"%s","orgId":"%s"}\n' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" > .vercel/project.json
+      - name: Verify Vercel access and pull matching environment
+        run: |
+          if [ "$RELEASE_ENVIRONMENT" = production ]; then
+            vercel pull --yes --environment=production --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+          else
+            vercel pull --yes --environment=preview --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
+          fi
       - name: Run the single release migration
         run: python -m backend.scripts.release_migrate
       - name: Deploy the compatible backend commit
