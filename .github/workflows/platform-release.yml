@@ -59,12 +59,11 @@ jobs:
         run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --require-external-migrations
       - name: Install deployment CLI
         run: npm install --global vercel@59.11.2
-      - name: Link the checked-out repository to the Vercel project
-        run: vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
       - name: Build frontend for the matching environment
         env:
           OPENLEARN_ENFORCE_RELEASE_GATE: '1'
           OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
@@ -74,6 +73,7 @@ jobs:
             vercel build --token="$VERCEL_TOKEN"
           fi
       - name: Stage frontend without production alias promotion
+        working-directory: web
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             candidate=$(vercel deploy --prebuilt --prod --skip-domain --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
@@ -82,6 +82,7 @@ jobs:
           fi
           echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
       - name: Verify staged frontend/backend pair
+        working-directory: web
         run: |
           vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/frontend-release.json"
           python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
