@@ -1,0 +1,8 @@
+{
+  "protocolVersion": 1,
+  "schemaHeads": ["0083_live_branching_observability"],
+  "compatibleSchemaHeads": [["0083_live_branching_observability"]],
+  "requiredCapabilities": ["durable-generation-v1", "branch-revisions-v1", "workspace-note-revisions-v1", "performance-timing-v1"],
+  "migrationPolicy": "expand-contract",
+  "migrationOwner": "single-release-job"
+}

@@ -20,6 +20,7 @@ desktop/.vite/
 .venv/
 voice-agent/.venv/
 web/.npm-cache/
+web/.vitest-tmp/
 backend/data/*.db
 backend/build/
 backend/data/materials/

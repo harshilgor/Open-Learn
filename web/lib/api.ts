@@ -1,7 +1,7 @@
 import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
 import { ACCOUNT_CHANGED, authenticatedFetch, sessionToken } from './account-session';
 import { ApiReadCache, readFreshness } from './api-read-cache';
-import { recordApiTiming } from './api-performance';
+import { createPerformanceTraceId, recordApiTiming } from './api-performance';
 import { uploadMaterialParts, type MaterialUploadSession } from './material-upload';
 /**
  * Browser client for the learning-kernel API.
@@ -451,6 +451,7 @@ export async function recordChatOutboxMetrics(sessionId: string, metrics: ChatOu
 
 async function requestUncached<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
+  if (!headers.has('X-OpenLearn-Trace-Id')) headers.set('X-OpenLearn-Trace-Id', createPerformanceTraceId());
   headers.set('Accept', 'application/json');
   const token = desktopToken();
   if (token) headers.set('X-Forma-Desktop-Token', token);
@@ -461,12 +462,14 @@ async function requestUncached<T>(path: string, init: RequestInit = {}): Promise
   try {
     response = await authenticatedFetch(url(path), { ...init, headers });
   } catch (cause) {
-    recordApiTiming(path, startedAt, 0);
+    recordApiTiming(path, startedAt, 0, undefined, init.method || 'GET');
     if (init.signal?.aborted) throw cause;
     throw new LearningApiError(503, 'service_unavailable', serviceConnectionMessage());
   }
-  const text = await response.text();
-  recordApiTiming(path, startedAt, response.status);
+  let text: string;
+  try { text = await response.text(); }
+  catch (cause) { recordApiTiming(path, startedAt, response.status, response.headers, init.method || 'GET', 'body_read_failed'); throw cause; }
+  recordApiTiming(path, startedAt, response.status, response.headers, init.method || 'GET');
   let body: unknown = null;
   if (text) {
     try {

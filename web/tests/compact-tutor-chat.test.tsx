@@ -6,6 +6,9 @@ const mocks=vi.hoisted(()=>({create:vi.fn(),start:vi.fn(),journey:vi.fn()}));
 vi.mock('@/lib/api',async original=>({...await original<object>(),learningApi:{createSession:mocks.create}}));
 vi.mock('@/lib/generation-stream',()=>({GenerationStream:class{wasCancelled=false;start=mocks.start;stop=async()=>{};}}));
 vi.mock('@/lib/learning-workflows',()=>({getJourney:mocks.journey}));
+// Browser admission is covered independently; this fixture exercises tutoring.
+vi.mock('@/lib/browser-assistant',()=>({useBrowserAssistant:()=>({tasks:[],tryStart:async()=>false,command:vi.fn(),replyTargets:[],setReplyTarget:vi.fn()})}));
+vi.mock('@/components/assistant/execution-panel',()=>({ExecutionPanel:()=>null}));
 vi.mock('@/components/rich-content',()=>({RichContent:({body}:{body:string})=><p>{body}</p>}));
 vi.mock('@/components/chat-composer',()=>({ChatComposer:({value,onChange,onSubmit,busy}:{value:string;onChange:(s:string)=>void;onSubmit:()=>void;busy:boolean})=><><textarea aria-label="Question" value={value} onChange={e=>onChange(e.target.value)}/><button disabled={busy} onClick={onSubmit}>Send</button></>}));
 let root:Root, container:HTMLDivElement;
@@ -17,7 +20,7 @@ it('creates a separate course-linked discussion, sends revision-safe note contex
   expect(document.activeElement).toBe(container.querySelector('textarea'));await ask();
   expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({courseId:'physics',gear:'Quick'}));
   expect(mocks.start).toHaveBeenCalledWith('discussion-1',expect.objectContaining({mode:'ask',expectedRevision:1,noteContext:{notes:[{noteId:'n1',expectedRevision:3,startOffset:0,endOffset:23}]}}),expect.anything());
-  expect(container.textContent).toContain('Weights combine inputs.');expect(window.location.href).toBe(url);expect(localStorage.getItem('forma:context-chat:n1')).toBe('discussion-1');
+  expect(container.textContent).toContain('Weights combine inputs.');expect(window.location.href).toBe(url);expect(localStorage.getItem('forma:context-chat:session:n1')).toBe('discussion-1');
 });
 it('recovers the conversation revision after a failed request and keeps the user question for retry',async()=>{
   mocks.start.mockRejectedValueOnce(new Error('Connection interrupted'));

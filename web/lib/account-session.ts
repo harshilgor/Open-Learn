@@ -41,7 +41,7 @@ function resolveIdentity(token: string, input: string, headers: Headers): Promis
       if (!saved) throw error;
       return undefined;
     });
-    if (response) recordApiTiming('/v1/account', startedAt, response.status);
+    if (response) recordApiTiming('/v1/account', startedAt, response.status, response.headers);
     if (epoch !== identityEpoch) throw new Error('The account changed while loading. Please retry.');
     if (response && !response.ok) return response;
     const ownerId = response ? (await response.clone().json() as { ownerId: string }).ownerId : saved;

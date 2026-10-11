@@ -25,7 +25,9 @@ class IdentityMiddleware:
         from .usage.context import current_store
         store_token = current_store.set(self.store_provider())
         try:
-            principal = await run_in_threadpool(authenticate, self.store_provider(), headers.get('authorization'), headers.get('x-dev-learner-id'))
+            from .performance import span
+            with span('identity'):
+                principal = await run_in_threadpool(authenticate, self.store_provider(), headers.get('authorization'), headers.get('x-dev-learner-id'))
             path = scope['path']
             if not path.startswith('/v1/account'):
                 from sqlalchemy import text

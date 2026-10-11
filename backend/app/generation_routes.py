@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from .generation_models import BranchSelectionRequest, GenerationRequest, OutboxMetricsRequest
 from .generation_service import GenerationManager
 from .generation_store import GenerationStore
+from .performance import span
 from .generation_observability import live_branching_metrics, record_client_outbox_snapshot
 from .conversation_branching import ConversationBranchStore
 from .material_routes import material_owner
@@ -51,7 +52,8 @@ def build_generation_router(store_provider, provider_getter):
     async def create(sid: str, command: GenerationRequest, key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200), owner=Depends(material_owner)):
         started = time.perf_counter()
         manager.runtime_loop = asyncio.get_running_loop()
-        record = await asyncio.to_thread(manager.create, owner, sid, command, key)
+        with span("admission"):
+            record = await asyncio.to_thread(manager.create, owner, sid, command, key)
         if record.get("createdNow") and record.get("id"):
             latency_ms = (time.perf_counter() - started) * 1000
             try:
@@ -108,7 +110,8 @@ def build_generation_router(store_provider, provider_getter):
     ):
         started = time.perf_counter()
         manager.runtime_loop = asyncio.get_running_loop()
-        record = await asyncio.to_thread(manager.retry, owner, generation_id, key)
+        with span("admission"):
+            record = await asyncio.to_thread(manager.retry, owner, generation_id, key)
         if record.get("createdNow") and record.get("id"):
             latency_ms = (time.perf_counter() - started) * 1000
             try:

@@ -92,15 +92,17 @@ from .identity import validate_identity_configuration
 validate_identity_configuration()
 store = Store(database_url())
 from .identity_middleware import IdentityMiddleware
+from .performance import PerformanceMiddleware
 app.add_middleware(IdentityMiddleware, store_provider=lambda: store)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[local_web_origin, "http://127.0.0.1:3000", "http://localhost:3000"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length", "Server-Timing", "X-OpenLearn-Trace-Id"],
     allow_credentials=True,
 )
+app.add_middleware(PerformanceMiddleware)
 generator = GraphGenerator()
 lesson_provider = configured_lesson_provider()
 # Fail before accepting traffic if an allowance or any enabled paid-provider
@@ -121,6 +123,10 @@ def apply_browser_provider(values: dict[str, str]) -> None:
 
 def get_store() -> Store:
     return store
+
+
+from .release import build_release_router
+app.include_router(build_release_router(get_store))
 
 
 # The learner graph is a separate cross-topic projection.  Its routes use the
@@ -276,6 +282,7 @@ app.include_router(build_course_router(get_store, lambda: lesson_provider))
 
 
 @app.get("/health")
+@app.get("/live")
 def health() -> dict:
     payload: dict = {
         "status": "ok",
@@ -283,28 +290,16 @@ def health() -> dict:
         "graph_provider": generator.provider_name,
         "lesson_provider": getattr(lesson_provider, "provider_name", "deterministic_baseline"),
     }
-    try:
-        from .web_evidence.readiness import evaluate_readiness
-
-        report = evaluate_readiness(store)
-        payload["webEvidence"] = report.as_dict()
-        if report.blocking_errors and any(
-            e != "web_evidence_retention_stale" for e in report.blocking_errors
-        ) and report.feature_flag_enabled:
-            payload["status"] = "degraded"
-    except Exception as exc:  # noqa: BLE001 — health must stay available
-        payload["webEvidence"] = {"status": "error", "error": type(exc).__name__}
     return payload
+
+
+from .readiness import DependencyReadiness
+dependency_readiness = DependencyReadiness()
 
 
 @app.get('/ready')
 def ready():
-    from sqlalchemy import text
-    from .database import require_current_schema
-    try:
-        with store.engine.connect() as connection:connection.execute(text('SELECT 1'))
-        require_current_schema(store.url)
-    except Exception:
+    if not dependency_readiness.check(store.engine):
         return JSONResponse(status_code=503,content={'status':'unavailable'},headers={'Cache-Control':'no-store'})
     return JSONResponse(content={'status':'ready'},headers={'Cache-Control':'no-store'})
 

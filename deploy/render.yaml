@@ -15,6 +15,9 @@ services:
         value: embedded
       - key: OPENLEARN_MIGRATE_ON_START
         value: 'false'
+      # Apply only after enabling the single migration job in platform-release.yml.
+      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+        value: 'true'
       - key: AI_TUTOR_PROVIDER
         value: openrouter
       - key: OPENROUTER_MODEL

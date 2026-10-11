@@ -374,13 +374,8 @@ def test_generation_runner_binds_verified_owner_and_conversation_usage_scope(liv
         assert current_root.get() == session.id
 
     monkeypatch.setattr(manager, "_run_generation", inspect_scope)
-    coroutine = manager._run(record["id"], "local", command, None, lease["ownerToken"])
-    try:
-        coroutine.send(None)
-    except StopIteration:
-        pass
-    else:
-        pytest.fail("The test runner should complete without suspending")
+    import asyncio
+    asyncio.run(manager._run(record["id"], "local", command, None, lease["ownerToken"]))
     assert principal_context.get().owner_id == "local"
     assert current_store.get() is None
     assert current_root.get() is None

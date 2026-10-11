@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 import { nextOutboxMessage, restoreOutbox, type OutboxMessage } from '@/lib/chat-outbox';
+import { beginGenerationTiming } from '@/lib/api-performance';
 
 export function useChatOutbox({ storageKey, enabled, turnCount, send }: {
   storageKey: string; enabled: boolean; turnCount: number;
@@ -57,7 +58,7 @@ export function useChatOutbox({ storageKey, enabled, turnCount, send }: {
   },[enabled,messages,turnCount]);
   return {
     messages,
-    enqueue(text:string){if(messages.length>=30)return false;setMessages(current=>[...current,{id:crypto.randomUUID(),text,createdAt:Date.now(),status:'queued',baseTurn:turnCount}]);return true;},
+    enqueue(text:string){if(messages.length>=30)return false;const id=crypto.randomUUID();beginGenerationTiming(id);setMessages(current=>[...current,{id,text,createdAt:Date.now(),status:'queued',baseTurn:turnCount}]);return true;},
     retry(id:string){setMessages(current=>current.map(item=>item.id===id?{...item,status:'queued',error:undefined}:item));},
     remove(id:string){setMessages(current=>current.filter(item=>item.id!==id||item.status==='sending'||item.status==='accepted'));},
     resolveChoice(){setMessages(current=>current.filter(item=>item.status!=='choice'));},

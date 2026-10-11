@@ -14,6 +14,7 @@ from typing import AsyncIterator, Protocol
 from .generation_models import GenerationEvent, GenerationRequest
 from .generation_observability import purge_expired_outbox_snapshots
 from .generation_store import GenerationStore, StaleGenerationWrite, TERMINAL
+from .performance import current_trace, emit_trace, observe, span, trace_scope
 from .context_provenance import block_decision, provider_input_fingerprint
 from .conversation_branching import ConversationBranchStore, classify_relation
 from .journey_service import JourneyService
@@ -119,6 +120,7 @@ class DurableReplayEventStore:
         self.metadata[generation_id] = {
             "branchId": record.get("branchId"),
             "contextRevision": record.get("contextRevision"),
+            "traceId": (record.get("metrics") or {}).get("traceId"),
         }
         token = record.get("ownerToken")
         if token:
@@ -131,9 +133,14 @@ class DurableReplayEventStore:
             if value is not None:
                 enriched.setdefault(key, value)
         owner_token = self.owner_tokens.get(generation_id)
-        event = await asyncio.to_thread(
-            self.records.append_event, generation_id, event_type, enriched, None, owner_token,
-            allow_cancelled_checkpoint=allow_cancelled_checkpoint)
+        with span("event_persist"):
+            event = await asyncio.to_thread(
+                self.records.append_event, generation_id, event_type, enriched, None, owner_token,
+                allow_cancelled_checkpoint=allow_cancelled_checkpoint)
+        if event_type == "text.delta" and str(enriched.get("text", "")).strip():
+            trace = current_trace.get()
+            if trace and "generation_first_persisted_text" not in trace.stages:
+                observe("generation_first_persisted_text", (time.perf_counter() - trace.started_at) * 1000)
         condition = self.conditions.get(generation_id)
         if condition:
             async with condition:
@@ -358,8 +365,14 @@ class GenerationManager:
         # queued task admitted by another worker does not. Bind the verified
         # owner explicitly so usage admission, reconciliation, and the
         # conversation spend ceiling apply on every execution path.
-        with usage_scope(self.store, owner, record["session"]):
-            await self._run_generation(generation_id, owner, request, active_provider, owner_token)
+        with trace_scope((record.get("metrics") or {}).get("traceId"), "chat") as trace:
+            observe("generation_queue", max(0, time.time() - record["createdAt"]) * 1000)
+            try:
+                with usage_scope(self.store, owner, record["session"]), span("generation_total"):
+                    await self._run_generation(generation_id, owner, request, active_provider, owner_token)
+            finally:
+                # Terminal success/failure is authoritative in generation_records.
+                emit_trace(trace, "execution_ended")
 
     async def _run_generation(self, generation_id: str, owner: str, request: GenerationRequest,
                    active_provider=None, owner_token: str | None = None) -> None:
@@ -428,6 +441,7 @@ class GenerationManager:
                     loop,
                 ))
 
+            context_started = time.perf_counter()
             prepared = await asyncio.to_thread(
                 JourneyService(self.store, provider).prepare_stream,
                 owner,
@@ -438,6 +452,7 @@ class GenerationManager:
                 generation_id,
                 self.branching.context_snapshot(owner, generation_id),
             )
+            observe("generation_context", (time.perf_counter() - context_started) * 1000)
             prepared["visualType"] = request.visual_type
             for future in emitted_futures:
                 await asyncio.wrap_future(future)
@@ -583,8 +598,13 @@ class GenerationManager:
                 "learnerContextUsed": any(block.kind == "evidence" for block in context.blocks),
                 "courseContextUsed": any(block.kind == "course" for block in context.blocks),
             }, owner_token=owner_token)
+            provider_request_perf = time.perf_counter()
+            first_provider_delta = True
             provider_stream = provider.stream_text(provider_input, output_limit, images=prepared.get("images")) if prepared.get("images") else provider.stream_text(provider_input, output_limit)
             async for delta in provider_stream:
+                if first_provider_delta:
+                    observe("provider_first_delta", (time.perf_counter() - provider_request_perf) * 1000)
+                    first_provider_delta = False
                 if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await flush_text(final_cancelled_checkpoint=True)
                     await self._cancel(generation_id, owner_token)
