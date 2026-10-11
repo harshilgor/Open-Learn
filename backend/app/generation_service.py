@@ -212,7 +212,7 @@ class GenerationManager:
                 await asyncio.to_thread(self.records.interrupt_expired_leases)
                 await asyncio.to_thread(self.records.interrupt_unowned_legacy)
                 await asyncio.to_thread(purge_expired_outbox_snapshots, self.store)
-                self._schedule_queued(provider=self.provider_getter() if self.provider_getter else self.provider)
+                await asyncio.to_thread(self._schedule_queued, provider=self.provider_getter() if self.provider_getter else self.provider)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -232,7 +232,7 @@ class GenerationManager:
             target_id = record.get("cancelTargetGenerationId")
             task = self.tasks.get(target_id) if target_id else None
             if task and record.get("cancelTargetStatus") == "cancel_requested":
-                task.cancel()
+                self._cancel_task(task)
             return record
         journey_service = JourneyService(self.store, provider)
         record = self.records.create(owner, session_id, request.model_dump(mode="json", by_alias=True), key,
@@ -296,9 +296,7 @@ class GenerationManager:
         if not claimed:
             return None
         self.buffer.bind_generation(claimed["id"], claimed)
-        self.tasks[claimed["id"]] = asyncio.create_task(
-            self._run(claimed["id"], owner, request, provider, claimed["ownerToken"]),
-            name=claimed["id"])
+        self._launch_record(claimed, owner, request, provider)
         return claimed
 
     def _schedule_queued(self, owner: str | None = None, session_id: str | None = None, provider=None) -> None:
@@ -318,15 +316,33 @@ class GenerationManager:
                 continue
             request = GenerationRequest.model_validate(claimed["request"])
             self.buffer.bind_generation(claimed["id"], claimed)
-            self.tasks[claimed["id"]] = asyncio.create_task(
-                self._run(claimed["id"], claimed["owner"], request, chosen_provider, claimed["ownerToken"]),
-                name=claimed["id"])
+            self._launch_record(claimed, claimed["owner"], request, chosen_provider)
+
+    def _launch_record(self, record, owner, request, provider):
+        def launch():
+            self.tasks[record['id']] = asyncio.create_task(
+                self._run(record['id'], owner, request, provider, record['ownerToken']), name=record['id'])
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self.runtime_loop.call_soon_threadsafe(launch)
+        else:
+            self.runtime_loop = asyncio.get_running_loop()
+            launch()
+
+    def _cancel_task(self, task):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            task.get_loop().call_soon_threadsafe(task.cancel)
+        else:
+            task.cancel()
 
     async def _renew_owner_lease(self, generation_id: str, owner_token: str) -> None:
         interval = max(2.0, min(5.0, self.lease_seconds / 3))
         while generation_id in self.tasks:
             await asyncio.sleep(interval)
-            if not self.records.renew_lease(generation_id, owner_token, self.lease_seconds):
+            if not await asyncio.to_thread(self.records.renew_lease, generation_id, owner_token, self.lease_seconds):
                 task = self.tasks.get(generation_id)
                 if task and task is not asyncio.current_task():
                     task.cancel()
@@ -335,7 +351,7 @@ class GenerationManager:
     async def _run(self, generation_id: str, owner: str, request: GenerationRequest,
                    active_provider=None, owner_token: str | None = None) -> None:
         """Run under a durable owner/conversation usage scope, including recovered work."""
-        record = self.records.get(owner, generation_id)
+        record = await asyncio.to_thread(self.records.get, owner, generation_id)
         from .usage.context import usage_scope
 
         # A request-created task happens to inherit request ContextVars, but a
@@ -372,7 +388,7 @@ class GenerationManager:
             pending_text_started = 0.0
             pending_text_length = 0
             if not final_cancelled_checkpoint:
-                record = self.records.get(owner, generation_id)
+                record = await asyncio.to_thread(self.records.get, owner, generation_id)
                 checkpoint = await self.buffer.append(generation_id, "generation.checkpoint", {
                     "outputSequence": record["outputSeq"],
                     "persistedLength": len(record["partialOutput"] or ""),
@@ -398,10 +414,10 @@ class GenerationManager:
             sequence = event.sequence
 
         try:
-            record = self.records.get(owner, generation_id)
+            record = await asyncio.to_thread(self.records.get, owner, generation_id)
             if record.get("ownerToken") != owner_token or record["status"] != "preparing":
                 return
-            self.records.update_metrics(generation_id, {"startedAt": started_at, "queueSeconds": max(0, started_at - record["createdAt"])}, owner_token=owner_token)
+            await asyncio.to_thread(self.records.update_metrics, generation_id, {"startedAt": started_at, "queueSeconds": max(0, started_at - record["createdAt"])}, owner_token=owner_token)
             await self.buffer.append(generation_id, "generation.started", {"mode": request.mode, "gear": request.gear.value})
             loop = asyncio.get_running_loop()
             emitted_futures = []
@@ -415,7 +431,7 @@ class GenerationManager:
             prepared = await asyncio.to_thread(
                 JourneyService(self.store, provider).prepare_stream,
                 owner,
-                request_session_id := self.records.get(owner, generation_id)["session"],
+                request_session_id := (await asyncio.to_thread(self.records.get, owner, generation_id))["session"],
                 request,
                 lambda: self.records.cancelled(generation_id),
                 emit_event,
@@ -427,7 +443,7 @@ class GenerationManager:
                 await asyncio.wrap_future(future)
             if prepared.get("responseKind") == "social":
                 context_ready_at = time.time()
-                self.records.update_metrics(generation_id, {
+                await asyncio.to_thread(self.records.update_metrics, generation_id, {
                     "contextReadyAt": context_ready_at,
                     "contextBuildSeconds": context_ready_at - started_at,
                     "responseRoute": "social",
@@ -439,10 +455,10 @@ class GenerationManager:
                     "decision": "social_reply",
                 })
                 sequence = event.sequence
-                if self.records.cancelled(generation_id):
+                if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await self._cancel(generation_id, owner_token)
                     return
-                self.records.transition(generation_id, "streaming", owner_token=owner_token)
+                await asyncio.to_thread(self.records.transition, generation_id, "streaming", owner_token=owner_token)
                 block_id = f"social_{generation_id}"
                 event = await self.buffer.append(generation_id, "lesson.block_started", {
                     "block": {"id": block_id, "kind": "explanation", "heading": ""},
@@ -454,12 +470,12 @@ class GenerationManager:
                 })
                 sequence = event.sequence
                 await self.buffer.append(generation_id, "generation.checkpoint", {
-                    "outputSequence": self.records.get(owner, generation_id)["outputSeq"],
+                    "outputSequence": (await asyncio.to_thread(self.records.get, owner, generation_id))["outputSeq"],
                     "persistedLength": len(prepared["directReply"]),
                 })
                 event = await self.buffer.append(generation_id, "lesson.block_completed", {"blockId": block_id})
                 sequence = event.sequence
-                self.records.transition(generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
+                await asyncio.to_thread(self.records.transition, generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
                 def finalize_social_reply():
                     with self.store.transaction() as connection:
                         from sqlalchemy import text
@@ -501,14 +517,14 @@ class GenerationManager:
                 await asyncio.to_thread(finalize_social_reply)
                 return
             context_ready_at = time.time()
-            self.records.update_metrics(generation_id, {"contextReadyAt": context_ready_at, "contextBuildSeconds": context_ready_at - started_at}, owner_token=owner_token)
+            await asyncio.to_thread(self.records.update_metrics, generation_id, {"contextReadyAt": context_ready_at, "contextBuildSeconds": context_ready_at - started_at}, owner_token=owner_token)
             await self.buffer.append(generation_id, "generation.context_ready", {"sourceCount": len(prepared["sources"]), "actionId": prepared["actionId"], "decision": prepared.get("decision")})
             for source in prepared["sources"]:
                 await self.buffer.append(generation_id, "source.added", {"spanId": source.get("spanId"), "title": source.get("title")})
-            if self.records.cancelled(generation_id):
+            if await asyncio.to_thread(self.records.cancelled, generation_id):
                 await self._cancel(generation_id, owner_token)
                 return
-            self.records.transition(generation_id, "streaming", owner_token=owner_token)
+            await asyncio.to_thread(self.records.transition, generation_id, "streaming", owner_token=owner_token)
             from .visualization_planner import has_visual_simulation_update, plan_visualizations, should_reserve_visual
             from .openintelligentui import enabled as generated_visuals_enabled
             use_generated_visuals = generated_visuals_enabled()
@@ -526,7 +542,7 @@ class GenerationManager:
             chunks: list[str] = []
             first_delta_at = None
             provider_started_at = time.time()
-            self.records.update_metrics(generation_id, {"providerStartedAt": provider_started_at}, owner_token=owner_token)
+            await asyncio.to_thread(self.records.update_metrics, generation_id, {"providerStartedAt": provider_started_at}, owner_token=owner_token)
             provider_input = prepared["generationContext"] if getattr(provider, "supports_generation_context", False) else prepared["prompt"]
             context = prepared["generationContext"]
             output_limit = conversation_output_limit(request.gear, provider, context) if prepared.get("responseKind") == "conversation" else teaching_output_limit(request.gear, provider, context)
@@ -538,7 +554,7 @@ class GenerationManager:
             provider_name = getattr(provider, "provider_name", "unknown")
             model_name = getattr(provider, "model", "unknown")
             wire_digest = provider_input_fingerprint(provider_name, model_name, wire_payload)
-            self.records.update_metrics(generation_id, {
+            await asyncio.to_thread(self.records.update_metrics, generation_id, {
                 "contextVersion": wire_digest,
                 "contextSchemaVersion": 3,
                 "providerInputFingerprintKind": "provider_model_and_serialized_payload_sha256",
@@ -569,14 +585,14 @@ class GenerationManager:
             }, owner_token=owner_token)
             provider_stream = provider.stream_text(provider_input, output_limit, images=prepared.get("images")) if prepared.get("images") else provider.stream_text(provider_input, output_limit)
             async for delta in provider_stream:
-                if self.records.cancelled(generation_id):
+                if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await flush_text(final_cancelled_checkpoint=True)
                     await self._cancel(generation_id, owner_token)
                     return
                 chunks.append(delta)
                 if first_delta_at is None:
                     first_delta_at = time.time()
-                    self.records.update_metrics(generation_id, {"firstDeltaAt": first_delta_at, "providerTtftSeconds": first_delta_at - provider_started_at, "applicationTtftSeconds": first_delta_at - started_at}, owner_token=owner_token)
+                    await asyncio.to_thread(self.records.update_metrics, generation_id, {"firstDeltaAt": first_delta_at, "providerTtftSeconds": first_delta_at - provider_started_at, "applicationTtftSeconds": first_delta_at - started_at}, owner_token=owner_token)
                 for operation in parser.feed(delta):
                     await publish_stream_operation(operation)
                 if visual_task and visual_task.done() and not visual_published and parser.block_id:
@@ -598,7 +614,7 @@ class GenerationManager:
             body = "".join(chunks).strip()
             if not body:
                 raise ModelProviderError("PROVIDER_ERROR")
-            self.records.transition(generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
+            await asyncio.to_thread(self.records.transition, generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
             if not visual_published:
                 try:
                     visualizations = await asyncio.wait_for(visual_task, timeout=180 if use_generated_visuals else 10) if visual_task else []
@@ -653,9 +669,9 @@ class GenerationManager:
             await asyncio.to_thread(finalize_reply)
         except asyncio.CancelledError:
             try:
-                if self.records.cancelled(generation_id):
+                if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await flush_text(final_cancelled_checkpoint=True)
-                    self.records.update_metrics(generation_id, {"cancelled": True, "completedAt": time.time()}, owner_token=owner_token)
+                    await asyncio.to_thread(self.records.update_metrics, generation_id, {"cancelled": True, "completedAt": time.time()}, owner_token=owner_token)
                     await self._cancel(generation_id, owner_token)
                 else:
                     await flush_text()
@@ -669,9 +685,9 @@ class GenerationManager:
             # A user Stop can race a buffered checkpoint or provider failure.
             # Cancellation has priority over failure once it is durably recorded.
             try:
-                if self.records.cancelled(generation_id):
+                if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await flush_text(final_cancelled_checkpoint=True)
-                    self.records.update_metrics(generation_id, {
+                    await asyncio.to_thread(self.records.update_metrics, generation_id, {
                         "cancelled": True,
                         "completedAt": time.time(),
                     }, owner_token=owner_token)
@@ -684,24 +700,26 @@ class GenerationManager:
             except Exception:
                 logging.getLogger(__name__).info("Generation %s could not flush its final text batch", generation_id)
             if isinstance(exc, StaleGenerationWrite) and not getattr(exc, "metric_recorded", False):
-                self.records.record_stale_write()
+                await asyncio.to_thread(self.records.record_stale_write)
                 exc.metric_recorded = True
             logging.getLogger(__name__).exception("Generation %s failed", generation_id)
             code = error_code(exc)
             try:
-                record = self.records.get(owner, generation_id)
+                record = await asyncio.to_thread(self.records.get, owner, generation_id)
                 if record["status"] not in TERMINAL:
-                    with self.store.transaction() as connection:
-                        self.records.validate_owner(connection, generation_id, owner_token)
-                        self.records.update_metrics(generation_id, {"errorCode": code, "completedAt": time.time()}, connection, owner_token)
-                        self.records.transition(generation_id, "failed", error_code=code, sequence=sequence,
-                                                owner_token=owner_token, connection=connection)
-                        JourneyService(self.store, provider).finish_stream_turn(owner, record["session"], generation_id, "failed", code, connection)
-                        detail = str(exc).strip() if isinstance(exc, ModelProviderError) else ""
-                        message = detail if detail and detail not in ERRORS else "The generation could not be completed. Please try again."
-                        self.records.append_event(generation_id, "generation.error", {"code": code, "message": message}, connection, owner_token)
+                    def persist_failure():
+                        with self.store.transaction() as connection:
+                            self.records.validate_owner(connection, generation_id, owner_token)
+                            self.records.update_metrics(generation_id, {"errorCode": code, "completedAt": time.time()}, connection, owner_token)
+                            self.records.transition(generation_id, "failed", error_code=code, sequence=sequence,
+                                                    owner_token=owner_token, connection=connection)
+                            JourneyService(self.store, provider).finish_stream_turn(owner, record["session"], generation_id, "failed", code, connection)
+                            detail = str(exc).strip() if isinstance(exc, ModelProviderError) else ""
+                            message = detail if detail and detail not in ERRORS else "The generation could not be completed. Please try again."
+                            self.records.append_event(generation_id, "generation.error", {"code": code, "message": message}, connection, owner_token)
+                    await asyncio.to_thread(persist_failure)
             except RuntimeError:
-                if self.records.cancelled(generation_id):
+                if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await self._cancel(generation_id, owner_token)
                     return
                 # A fenced or expired owner may not publish or commit anything.
@@ -713,7 +731,7 @@ class GenerationManager:
             if visual_task and not visual_task.done():
                 visual_task.cancel()
             self.tasks.pop(generation_id, None)
-            self._schedule_queued(provider=provider)
+            await asyncio.to_thread(self._schedule_queued, provider=provider)
 
     async def _publish_lesson_operation(self, generation_id, operation):
         if operation.action == "start":
@@ -731,7 +749,7 @@ class GenerationManager:
     async def _cancel(self, generation_id: str, owner_token: str | None = None) -> None:
         # Cancellation is set durably before this method; do not publish a terminal
         # event until the provider iterator has been closed by the caller.
-        try:
+        def persist():
             with self.store.transaction() as connection:
                 if owner_token is not None:
                     self.records.validate_owner(connection, generation_id, owner_token)
@@ -739,6 +757,8 @@ class GenerationManager:
                                                 owner_token=owner_token, connection=connection)
                 JourneyService(self.store, self.provider).finish_stream_turn(record["owner"], record["session"], generation_id, "cancelled", "CANCELLED", connection)
                 self.records.append_event(generation_id, "generation.cancelled", {"code": "CANCELLED"}, connection, owner_token)
+        try:
+            await asyncio.to_thread(persist)
         except RuntimeError:
             return
 
@@ -748,7 +768,7 @@ class GenerationManager:
         if task and record["status"] == "cancel_requested":
             # Cancelling the task closes the async provider iterator/context at
             # once. The task emits the terminal event after the connection ends.
-            task.cancel()
+            self._cancel_task(task)
         elif record["status"] == "cancel_requested" and not record.get("capacityReserved"):
             # No worker owns a durable execution lease (typically a queued
             # item); it is safe to confirm cancellation here. If another
@@ -774,7 +794,7 @@ class GenerationManager:
         # use the explicit Stop action when they want to cancel provider work.
 
     async def events(self, owner: str, generation_id: str, after: int) -> AsyncIterator[GenerationEvent]:
-        record = self.records.get(owner, generation_id)
+        record = await asyncio.to_thread(self.records.get, owner, generation_id)
         self._attach(generation_id)
         try:
             async for event in self.buffer.subscribe(generation_id, after, record["status"] in TERMINAL):

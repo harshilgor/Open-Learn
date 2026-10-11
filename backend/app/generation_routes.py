@@ -35,7 +35,8 @@ def build_generation_router(store_provider, provider_getter):
     async def start_generation_recovery():
         nonlocal recovery_task
         if recovery_task is None or recovery_task.done():
-            manager._schedule_queued(provider=provider_getter())
+            manager.runtime_loop = asyncio.get_running_loop()
+            await asyncio.to_thread(manager._schedule_queued, provider=provider_getter())
             recovery_task = asyncio.create_task(manager.recovery_loop(), name="generation-recovery")
 
     @router.on_event("shutdown")
@@ -49,11 +50,12 @@ def build_generation_router(store_provider, provider_getter):
     @router.post("/sessions/{sid}/generations", status_code=202)
     async def create(sid: str, command: GenerationRequest, key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200), owner=Depends(material_owner)):
         started = time.perf_counter()
-        record = manager.create(owner, sid, command, key)
+        manager.runtime_loop = asyncio.get_running_loop()
+        record = await asyncio.to_thread(manager.create, owner, sid, command, key)
         if record.get("createdNow") and record.get("id"):
             latency_ms = (time.perf_counter() - started) * 1000
             try:
-                manager.records.record_acceptance_latency(record["id"], latency_ms)
+                await asyncio.to_thread(manager.records.record_acceptance_latency, record["id"], latency_ms)
             except Exception:
                 # Metrics are best-effort; they must never turn a durable
                 # acceptance into a failed HTTP submission.
@@ -105,11 +107,12 @@ def build_generation_router(store_provider, provider_getter):
         owner=Depends(material_owner),
     ):
         started = time.perf_counter()
-        record = manager.retry(owner, generation_id, key)
+        manager.runtime_loop = asyncio.get_running_loop()
+        record = await asyncio.to_thread(manager.retry, owner, generation_id, key)
         if record.get("createdNow") and record.get("id"):
             latency_ms = (time.perf_counter() - started) * 1000
             try:
-                manager.records.record_acceptance_latency(record["id"], latency_ms)
+                await asyncio.to_thread(manager.records.record_acceptance_latency, record["id"], latency_ms)
             except Exception:
                 logging.getLogger(__name__).exception("Could not persist retry acceptance metric")
             record["metrics"] = {**(record.get("metrics") or {}), "acceptanceLatencyMs": latency_ms}

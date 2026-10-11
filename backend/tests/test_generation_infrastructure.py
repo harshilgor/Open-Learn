@@ -13,6 +13,30 @@ from backend.app.session_models import LearningSession
 from backend.app.storage import Store
 
 
+def test_stream_observer_reads_database_off_event_loop():
+    from types import SimpleNamespace
+    from backend.app.generation_service import GenerationManager
+    manager = object.__new__(GenerationManager)
+    manager.observers = {}
+    reads = []
+    def read(owner, identifier):
+        # A synchronous database wait here must never stall health checks or
+        # other streams running on the same ASGI event loop.
+        with pytest.raises(RuntimeError):
+            asyncio.get_running_loop()
+        reads.append((owner, identifier))
+        return {'status': 'completed'}
+    async def subscribe(identifier, after, terminal):
+        assert terminal
+        yield 'completed'
+    manager.records = SimpleNamespace(get=read)
+    manager.buffer = SimpleNamespace(subscribe=subscribe)
+    async def observe():
+        return [event async for event in manager.events('local', 'generation', 0)]
+    assert asyncio.run(observe()) == ['completed']
+    assert reads == [('local', 'generation')]
+
+
 def request(message="Explain probability"):
     return GenerationRequest(mode="ask", message=message, gear="Guided", expectedRevision=1).model_dump(mode="json", by_alias=True)
 
