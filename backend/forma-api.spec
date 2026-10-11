@@ -46,6 +46,7 @@ a = Analysis(
         (str(root / "app" / "flashcards" / "instructions.txt"), "backend/app/flashcards"),
         (str(root / "migrations"), "backend/migrations"),
         (str(root / "alembic.ini"), "backend"),
+        (str(root.parent / "deploy" / "release-contract.json"), "deploy"),
         (str(root / "app" / "browser_assistant" / "observer.js"), "backend/app/browser_assistant"),
         (str(root / "app" / "browser_assistant" / "adapters" / "canvas-read.js"), "backend/app/browser_assistant/adapters"),
         (str(root.parent / "canvas-extension"), "canvas-extension"),

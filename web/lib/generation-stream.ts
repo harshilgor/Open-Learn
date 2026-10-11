@@ -1,6 +1,7 @@
 import { authenticatedFetch } from './account-session';
 import { apiBaseUrl, request, type Gear } from './api';
 import type { VisualType } from './visualization-spec';
+import { beginGenerationTiming, bindGenerationTiming, recordGenerationTiming } from './api-performance';
 
 export type GenerationMode = 'ask' | 'learn';
 export type GenerationRequest = { mode: GenerationMode; message: string; gear: Gear; expectedRevision: number; clientMessageId?: string; replyToGenerationId?: string; parentGenerationId?: string; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
@@ -32,9 +33,12 @@ export class GenerationStream {
   async start(sessionId: string, body: GenerationRequest, callbacks: GenerationCallbacks): Promise<GenerationDescriptor> {
     const key = body.clientMessageId || crypto.randomUUID();
     const requestBody = body.clientMessageId ? body : { ...body, clientMessageId: key };
+    const traceId = beginGenerationTiming(key);
     const descriptor = await request<GenerationDescriptor>(`/v1/sessions/${encodeURIComponent(sessionId)}/generations`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: JSON.stringify(requestBody),
-    });
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-OpenLearn-Trace-Id': traceId }, body: JSON.stringify(requestBody),
+    }).catch(cause => { recordGenerationTiming(key, 'failed'); throw cause; });
+    recordGenerationTiming(key, 'accepted');
+    if (descriptor.id) bindGenerationTiming(key, descriptor.id, descriptor.metrics?.traceId);
     this.descriptor = descriptor;
     this.sequence = descriptor.sequence || 0;
     if (descriptor.id) callbacks.onDescriptor?.(descriptor);
@@ -46,10 +50,13 @@ export class GenerationStream {
   }
 
   async retry(sourceGenerationId: string, idempotencyKey: string, callbacks: GenerationCallbacks): Promise<GenerationDescriptor> {
+    const traceId = beginGenerationTiming(idempotencyKey);
     const descriptor = await request<GenerationDescriptor>(
       `/v1/generations/${encodeURIComponent(sourceGenerationId)}/retry`,
-      { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey } },
-    );
+      { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey, 'X-OpenLearn-Trace-Id': traceId } },
+    ).catch(cause => { recordGenerationTiming(idempotencyKey, 'failed'); throw cause; });
+    recordGenerationTiming(idempotencyKey, 'accepted');
+    if (descriptor.id) bindGenerationTiming(idempotencyKey, descriptor.id, descriptor.metrics?.traceId);
     this.descriptor = descriptor;
     this.sequence = descriptor.sequence || 0;
     if (descriptor.id) callbacks.onDescriptor?.(descriptor);
@@ -61,6 +68,7 @@ export class GenerationStream {
   }
 
   async resume(descriptor: GenerationDescriptor, callbacks: GenerationCallbacks, afterSequence = descriptor.sequence || 0): Promise<void> {
+    if (descriptor.id) beginGenerationTiming(descriptor.id, 'resume', typeof descriptor.metrics?.traceId === 'string' ? descriptor.metrics.traceId : undefined);
     this.descriptor = descriptor;
     this.sequence = afterSequence;
     if (descriptor.id) callbacks.onDescriptor?.(descriptor);
@@ -100,7 +108,7 @@ export class GenerationStream {
       } catch (cause) {
         if (this.stopped || (cause instanceof DOMException && cause.name === 'AbortError')) return;
         retries += 1;
-        if (retries > 5) throw new GenerationConnectionError();
+        if (retries > 5) { recordGenerationTiming(generationId, 'disconnected'); throw new GenerationConnectionError(); }
         callbacks.onReconnect?.();
         await new Promise(resolve => window.setTimeout(resolve, Math.min(1000 * 2 ** retries, 8000)));
       }
@@ -119,7 +127,9 @@ export class GenerationStream {
     const terminalStatus = {'generation.completed':'completed','generation.cancelled':'cancelled','generation.interrupted':'interrupted','generation.error':'failed'}[event.type];
     if (this.descriptor) this.descriptor = {...this.descriptor, sequence: this.sequence, ...(terminalStatus ? {status: terminalStatus} : {})};
     callbacks.onSequence?.(this.sequence);
+    if (event.type === 'text.delta' && typeof event.data.text === 'string' && event.data.text.trim()) recordGenerationTiming(event.generationId, 'first_text_received');
     callbacks.onEvent(event);
+    if (terminalStatus) recordGenerationTiming(event.generationId, terminalStatus === 'completed' ? 'completed' : terminalStatus === 'cancelled' ? 'cancelled' : 'failed');
     if (['generation.completed', 'generation.cancelled', 'generation.interrupted', 'generation.error'].includes(event.type)) this.terminal = true;
   }
 }

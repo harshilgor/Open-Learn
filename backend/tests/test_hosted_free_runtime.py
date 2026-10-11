@@ -8,6 +8,7 @@ from backend.app import database, hosted_runtime
 
 
 def test_free_boot_migrates_before_uvicorn(monkeypatch):
+    monkeypatch.delenv('OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL', raising=False)
     monkeypatch.setattr(hosted_runtime, 'configuration_errors', lambda: [])
     monkeypatch.setenv('OPENLEARN_WORKER_MODE', 'embedded')
     monkeypatch.setattr(sys, 'argv', ['hosted_runtime', 'api-free'])
@@ -21,6 +22,7 @@ def test_free_boot_migrates_before_uvicorn(monkeypatch):
 
 
 def test_failed_free_migration_does_not_serve(monkeypatch):
+    monkeypatch.delenv('OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL', raising=False)
     monkeypatch.setattr(hosted_runtime, 'configuration_errors', lambda: [])
     monkeypatch.setenv('OPENLEARN_WORKER_MODE', 'embedded')
     monkeypatch.setattr(sys, 'argv', ['hosted_runtime', 'api-free'])
@@ -51,3 +53,20 @@ def test_free_boot_rejects_external_workers(monkeypatch):
     monkeypatch.setattr(sys, 'argv', ['hosted_runtime', 'api-free'])
     with pytest.raises(SystemExit, match='embedded'):
         hosted_runtime.main()
+
+
+def test_release_managed_free_boot_checks_schema_without_migrating(monkeypatch):
+    monkeypatch.setattr(hosted_runtime, 'configuration_errors', lambda: [])
+    monkeypatch.setenv('OPENLEARN_WORKER_MODE', 'embedded')
+    monkeypatch.setenv('OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL', 'true')
+    monkeypatch.setattr(sys, 'argv', ['hosted_runtime', 'api-free'])
+    monkeypatch.setattr(database, 'database_url', lambda: 'postgresql+psycopg://test')
+    events = []
+    monkeypatch.setattr(database, 'require_current_schema', lambda url: events.append('schema-check'))
+    migrate = MagicMock()
+    monkeypatch.setattr(database, 'run_serialized_migrations', migrate)
+    import uvicorn
+    monkeypatch.setattr(uvicorn, 'run', lambda *args, **kwargs: events.append('serve'))
+    hosted_runtime.main()
+    assert events == ['schema-check', 'serve']
+    migrate.assert_not_called()

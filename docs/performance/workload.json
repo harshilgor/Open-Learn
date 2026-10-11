@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "status": "proposed engineering qualification; traffic assumptions require confirmation from measurements",
+  "profiles": {"baseline": {"concurrentUsers": 1}, "growth": {"concurrentUsers": 10}, "burst": {"concurrentUsers": 50}},
+  "regions": ["US West", "US East", "Europe"],
+  "samplesPerScenarioPerProfile": 100,
+  "minimumSamplesForPercentileGate": 100,
+  "availabilityObjective": {"successfulEligibleRequests": 0.999, "windowDays": 30, "note": "Target, not established uptime; report expected conflicts/cancellations separately."},
+  "qualityThresholds": {"ownershipViolations": 0, "lostAcknowledgedWrites": 0, "duplicateExternalEffects": 0, "contextContractRegressions": 0, "modeTransitionWithoutRequiredConfirmation": 0},
+  "warmP95TargetsMs": {"acceptance": 750, "shortQuestionFirstMeaningfulText": 2500, "noteCloudSaveExcludingDebounce": 1000, "providerToBrowserOverhead": 100},
+  "productionProbeBudget": {"maxSyntheticPrompts": 3, "maxRequestedOutputTokensPerPrompt": 512, "maxEstimatedProviderCostUsd": 0.05, "note": "Read-only health probes are separate; larger load runs use isolated staging. Production model probes require an approved test account and cost bounds."},
+  "scenarios": [
+    {"id": "greeting", "input": "Hi", "assert": "Brief relevant reply; no unsolicited topic lesson", "coverage": ["web/tests/social-turn.test.tsx"]},
+    {"id": "short-tutoring", "input": "Explain why the sky is blue in two sentences.", "assert": "First meaningful text and factual relevance; response length appropriate", "coverage": ["backend/tests/test_generation_infrastructure.py"]},
+    {"id": "followup-active", "input": "Also give me an example while the previous reply runs.", "assert": "Durable acceptance, correct parent/branch, no lost message", "coverage": ["backend/tests/test_live_branching.py", "web/tests/chat-outbox.test.tsx"]},
+    {"id": "context-switch", "input": "New topic: explain linear equations.", "assert": "Correct branch and context isolation", "coverage": ["backend/tests/test_live_branching.py", "backend/tests/test_context_provenance.py"]},
+    {"id": "selected-passage", "input": "Explain this selected passage.", "assert": "Uses selected note/source/version with provenance", "coverage": ["backend/tests/test_selected_material_context.py"]},
+    {"id": "mode-recommendation", "input": "Quiz me on what we just discussed.", "assert": "Recommendation preserved; required transition confirmation honored", "coverage": ["backend/tests/test_mode_transition.py", "web/tests/conversation-admission.test.tsx"]},
+    {"id": "branch-revision", "input": "Rewrite that answer more simply.", "assert": "Ancestor context retained; stale revision conflicts do not overwrite", "coverage": ["backend/tests/test_live_branching.py"]},
+    {"id": "notes-during-generation", "assert": "Cloud save succeeds while generation runs; body/revision exact", "coverage": ["backend/tests/test_workspace_notes.py", "web/tests/notes-sidebar.test.tsx"]},
+    {"id": "notes-offline-recovery", "assert": "Local recovery distinguished from cloud save; no stale overwrite", "coverage": ["backend/tests/test_note_drafts.py", "web/tests/usage-recovery.test.tsx"]},
+    {"id": "browser-request", "input": "Open YouTube.", "assert": "Correct task/admission and safe controls, request-specific progress", "coverage": ["backend/tests/test_browser_assistant.py", "web/tests/browser-assistant.test.tsx"]},
+    {"id": "document-context", "assert": "Source attachment context and permissions preserved", "coverage": ["backend/tests/test_materials.py", "backend/tests/test_context_provenance.py"]},
+    {"id": "in-class", "assert": "Capture, processing, notes and evidence retain existing lifecycle", "coverage": ["backend/tests/test_in_class.py", "web/tests/in-class.test.tsx"]},
+    {"id": "reminders", "assert": "Due work dispatched once; chat remains responsive", "coverage": ["backend/tests/test_chat_reminders.py"]},
+    {"id": "cancellation-replay", "assert": "Cancellation, reconnection and Last-Event-ID preserve ordered durable text", "coverage": ["backend/tests/test_durable_generation_replay.py", "web/tests/generation-connection.test.tsx"]},
+    {"id": "long-history-multiple-tabs", "assert": "No cross-owner data; bounded requests and responsive composer", "coverage": ["web/tests/compact-tutor-chat.test.tsx", "web/tests/account-transport.test.tsx"]},
+    {"id": "identity-and-usage", "assert": "Revocation and admission budgets remain enforced during retries", "coverage": ["backend/tests/test_identity_revocation.py", "backend/tests/test_unified_usage.py"]}
+  ]
+}

@@ -64,8 +64,11 @@ class GenerationStore:
         request_hash = hashlib.sha256(_json([session_id, request]).encode()).hexdigest()
         now = time.time()
         message_text = request.get("message") or ("Start learning" if request.get("action") == "start" else "Continue")
+        from .performance import current_trace
+        active_trace = current_trace.get()
         record = {"id": f"gen_{uuid4().hex}", "owner": owner, "session": session_id, "mode": request["mode"],
-                  "request": request, "createdAt": now, "metrics": {"queuedAt": now}}
+                  "request": request, "createdAt": now, "metrics": {"queuedAt": now,
+                      **({"traceId": active_trace.trace_id} if active_trace else {})}}
         values = {"id": record["id"], "owner": owner, "session": session_id, "key": key, "hash": request_hash,
                   "mode": request["mode"], "provider": provider, "model": model, "payload": _json(record), "now": now,
                   "message": message_text}
@@ -188,6 +191,8 @@ class GenerationStore:
     def retry(self, owner: str, source_generation_id: str, key: str,
               *, provider: str | None = None, model: str | None = None, on_create=None) -> dict:
         """Create a fresh execution for a failed/interrupted accepted message."""
+        from .performance import current_trace
+        active_trace = current_trace.get()
         now = time.time()
         generation_id = f"gen_{uuid4().hex}"
         try:
@@ -222,7 +227,8 @@ class GenerationStore:
                     problem("retry_not_available", "This response no longer has an accepted message to retry.", 409)
                 payload = {"id": generation_id, "owner": owner, "session": source["session_id"],
                     "mode": source["mode"], "request": request, "createdAt": now,
-                    "metrics": {"queuedAt": now, "retryOfGenerationId": source_generation_id},
+                    "metrics": {"queuedAt": now, "retryOfGenerationId": source_generation_id,
+                        **({"traceId": active_trace.trace_id} if active_trace else {})},
                     "messageId": event["client_message_id"], "conversationSeq": event["sequence"],
                     "contextRevision": source["context_revision"], "branchId": source["branch_id"],
                     "relation": source["relation"], "parentGenerationId": source_generation_id}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 from functools import lru_cache
 from pathlib import Path
 
@@ -11,16 +12,33 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
+from .performance import ObservedQueuePool, instrument_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def approved_schema_heads(expected: set[str]) -> list[set[str]]:
+    contract_path = BACKEND_ROOT.parent / 'deploy' / 'release-contract.json'
+    if not contract_path.exists():
+        return [expected]
+    contract = json.loads(contract_path.read_text(encoding='utf-8'))
+    if set(contract['schemaHeads']) != expected:
+        raise RuntimeError('Release contract does not match code migrations.')
+    approved = [set(heads) for heads in contract.get('compatibleSchemaHeads', [sorted(expected)])]
+    if expected not in approved:
+        raise RuntimeError('Release contract must include its current schema.')
+    return approved
 
 
 @lru_cache(maxsize=4)
 def _postgres_engine(url: str) -> Engine:
     # Domain Store objects share one bounded pool per process. Separate default
     # pools per domain exhaust Supabase's session limit during deploy overlap.
-    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=0,
-                         pool_timeout=10, pool_recycle=300)
+    from .capacity import process_budget
+    budget = process_budget()
+    return instrument_engine(create_engine(url, pool_pre_ping=True, pool_size=budget.pool_size, max_overflow=0,
+                         pool_timeout=budget.pool_timeout, pool_recycle=300, poolclass=ObservedQueuePool,
+                         connect_args={'connect_timeout': budget.connect_timeout}))
 
 
 def database_url() -> str:
@@ -56,7 +74,7 @@ def create_database_engine(url: str | None = None) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
-    return engine
+    return instrument_engine(engine)
 
 
 def run_migrations(url: str | None = None) -> None:
@@ -82,7 +100,7 @@ def require_current_schema(url: str) -> None:
     engine=create_engine(url, poolclass=NullPool) if url.startswith('postgresql') else create_database_engine(url)
     try:
         with engine.connect() as conn:
-            if set(MigrationContext.configure(conn).get_current_heads())!=expected:
+            if set(MigrationContext.configure(conn).get_current_heads()) not in approved_schema_heads(expected):
                 raise RuntimeError('Database schema is not current. Run the release migration before starting services.')
     finally:engine.dispose()
 

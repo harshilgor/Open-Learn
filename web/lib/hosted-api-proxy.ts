@@ -1,5 +1,5 @@
-const requestHeaders = ['authorization', 'content-type', 'accept', 'last-event-id', 'idempotency-key', 'x-idempotency-key', 'if-match', 'range'];
-const responseHeaders = ['content-type', 'content-disposition', 'content-range', 'accept-ranges', 'retry-after', 'etag'];
+const requestHeaders = ['authorization', 'content-type', 'accept', 'last-event-id', 'idempotency-key', 'x-idempotency-key', 'if-match', 'range', 'x-openlearn-trace-id'];
+const responseHeaders = ['content-type', 'content-disposition', 'content-range', 'accept-ranges', 'retry-after', 'etag', 'x-openlearn-trace-id'];
 
 export async function proxyHostedApi(request: Request, segments: string[]): Promise<Response> {
   const localPreview = process.env.NODE_ENV === 'development' && ['localhost','127.0.0.1','[::1]'].includes(new URL(request.url).hostname);

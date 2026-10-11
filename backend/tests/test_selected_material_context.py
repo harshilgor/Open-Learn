@@ -28,6 +28,11 @@ def test_selected_owned_passage_is_the_entire_manifest(monkeypatch):
         with TestClient(app) as client:
             chosen = client.post("/v1/materials/text", json={"title": "Chosen", "text": "A derivative measures a local rate of change."}).json()
             other = client.post("/v1/materials/text", json={"title": "Other", "text": "An integral accumulates quantities."}).json()
+            # External-worker CI does not run FastAPI's embedded ingestion
+            # shortcut. Complete the two fixture jobs before selecting spans.
+            from backend.app.material_service import MaterialService
+            MaterialService(store).process_one()
+            MaterialService(store).process_one()
             for item in (chosen, other):
                 assert client.post("/v1/sessions/session-selected/materials", json={"materialVersionId": item["versionId"]}).status_code == 200
             chosen_span = client.get(f"/v1/material-versions/{chosen['versionId']}/blocks").json()["blocks"][0]["id"]

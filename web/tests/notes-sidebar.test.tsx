@@ -79,15 +79,15 @@ describe('unified sidebar and notes',()=>{
     expect(container.querySelector('[aria-label="Note discussion"]')?.textContent).toContain('Velocity describes motion.');
     expect(container.querySelector('[aria-current="page"]')).not.toBeNull();
   });
-  it('renders mutually exclusive empty and blank editor states and hides empty formatting tools',async()=>{
+  it('renders mutually exclusive empty and blank editor states and keeps formatting available while editing',async()=>{
     act(()=>root.render(<Harness/>));await settle();expect(container.textContent).toContain('Your notes');
     expect(container.querySelector('[aria-label="Note title"]')).toBeNull();
     click('Test new note');await settle();expect(container.textContent).not.toContain('Start writing, or save something from your conversation.');
-    expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();expect(container.querySelector('[data-note-toolbar]')).toBeNull();
+    expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();expect(container.querySelector('[data-note-toolbar]')).not.toBeNull();
     const editor=container.querySelector<HTMLElement>('[contenteditable="true"]')!;
     act(()=>{editor.textContent='My first sentence.';editor.dispatchEvent(new Event('input',{bubbles:true}));});await settle(800);
     expect(mocks.create).toHaveBeenCalled();expect(mocks.create.mock.calls[0][0].body).toContain('My first sentence.');
-    expect(container.querySelector('[data-note-toolbar]')).toBeNull();
+    expect(container.querySelector('[data-note-toolbar]')).not.toBeNull();
   });
   it('creates a folder through the shared Notes command',async()=>{
     act(()=>root.render(<Harness/>));await settle();click('Test new folder');await settle();

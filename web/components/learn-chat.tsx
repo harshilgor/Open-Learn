@@ -22,6 +22,8 @@ import { RichContent } from './rich-content';
 import { materialRequest, materialCommand, prepareAttachment, type MaterialAnswer } from '@/lib/chat-materials';
 import { getJourney, workflow, waitForJob, rememberSessionHint, navigateToSession, restoreSessionAuthority, isStaleSessionConflict, type ChatMode, type Journey } from '@/lib/learning-workflows';
 import { GenerationConnectionError, GenerationStream, type GenerationCallbacks, type GenerationEvent, type GenerationMode } from '@/lib/generation-stream';
+import { hasPendingGenerationCommit, recordGenerationTiming } from '@/lib/api-performance';
+import { PerformanceDiagnostics } from './performance-diagnostics';
 import { QuizWorkspace } from './quiz-workspace';
 import { NoteDraftCard } from './note-draft-card';
 import panelStyles from './study-note-panel.module.css';
@@ -439,6 +441,15 @@ export function LearnChat({
   const [hasNewContentBelow, setHasNewContentBelow] = useState(false);
   const scrollRafRef = useRef<number | null>(null);
   const lesson = [...turns].reverse().find(turn => turn.lesson)?.lesson || null;
+  useEffect(() => {
+    // A React commit marker, not physical screen paint or a replay's original TTFT.
+    if (!hasPendingGenerationCommit()) return;
+    for (const turn of turns) {
+      if (turn.generationId && turn.stream?.blocks.some(block => block.body.trim())) {
+        recordGenerationTiming(turn.generationId, 'first_text_committed');
+      }
+    }
+  }, [turns]);
   function rememberGeneration(value: GenerationRecovery) {
     try {
       const next = readGenerationRecoveries().filter(item => item.generationId !== value.generationId);
@@ -1460,6 +1471,7 @@ export function LearnChat({
       )}
     </AnimatePresence>
     <div className={styles.composerDock}><div className={styles.composerInner}>
+      <PerformanceDiagnostics />
       {replyStatus ? <BuddyReplyStatus buddy={buddies.active} label={replyStatus}/> : null}
       {new Set(activeGenerationStreams.current.values()).size > 1
         ? <button type="button" className={styles.stopAllResponses} onClick={stopAllResponses}>Stop all responses</button>

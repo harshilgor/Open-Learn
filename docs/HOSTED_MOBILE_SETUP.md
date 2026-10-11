@@ -4,7 +4,7 @@ The first hosting target is a **free Render API with Supabase PostgreSQL**, whil
 
 ## Free development deployment
 
-Use `deploy/render.yaml`: it defines only `openlearn-api`, explicitly on `plan: free`, with no paid workers, database, disk, or pre-deploy command. The command `python -m backend.app.hosted_runtime api-free` completes migrations under a PostgreSQL advisory lock before starting one Uvicorn process. `OPENLEARN_MIGRATE_ON_START=false` prevents Store instances from independently migrating. Set `OPENLEARN_WORKER_MODE=embedded`; the API runs its existing learning worker while awake.
+Use `deploy/render.yaml`: it defines only `openlearn-api`, explicitly on `plan: free`, with no paid workers, database, disk, or pre-deploy command. The revised template sets `OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL=true`: run the single migration job before deployment, and `api-free` checks schema compatibility before starting Uvicorn. Existing deployments without this flag retain advisory-lock bootstrap migration behavior until the release pipeline is enabled. `OPENLEARN_MIGRATE_ON_START=false` prevents Store instances from independently migrating. `OPENLEARN_WORKER_MODE=embedded` retains background execution on the free service while awake. Follow [the platform release runbook](performance/Release_Runbook.md) before applying the revised template.
 
 Keep `AI_TUTOR_PROVIDER=openrouter` and `OPENROUTER_MODEL=openrouter/free`. The free Blueprint pins both values. Supply the existing private OpenRouter key only in Render's environment group. Remote sandbox execution, browser assistant execution, and general agent admission are disabled in this profile. They can be enabled after provider setup and cost review.
 

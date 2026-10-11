@@ -478,7 +478,8 @@ class ModeTransitionService:
         if not self.store or not sid:
             return 0
         try:
-            row = self.store.engine.connect().execute(text("SELECT payload FROM practice_records WHERE id=:id AND owner_id=:owner AND kind='journey'"), {"id": f"journey_{sid}", "owner": owner}).first()
+            with self.store.engine.connect() as conn:
+                row = conn.execute(text("SELECT payload FROM practice_records WHERE id=:id AND owner_id=:owner AND kind='journey'"), {"id": f"journey_{sid}", "owner": owner}).first()
             journey = json.loads(row[0]) if row else {}
             return self._learner_turn_count(journey.get("turns", []))
         except Exception:

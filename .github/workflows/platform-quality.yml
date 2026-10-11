@@ -1,0 +1,71 @@
+name: Platform quality
+
+on:
+  pull_request:
+    paths: ['backend/**', 'web/**', 'deploy/**', '.github/workflows/platform-*.yml']
+  push:
+    branches: [main]
+    paths: ['backend/**', 'web/**', 'deploy/**', '.github/workflows/platform-*.yml']
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: platform-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AI_TUTOR_PROVIDER: deterministic_baseline
+      AI_TUTOR_ENV: development
+      OPENLEARN_WORKER_MODE: external
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python -m backend.scripts.check_release_contract
+      - run: python -m backend.scripts.check_connection_budget
+      - name: Backend feature and persistence regressions
+        run: >-
+          python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_performance.py backend/tests/test_release_gates.py
+          backend/tests/test_migrations.py backend/tests/test_hosted_free_runtime.py
+          backend/tests/test_generation_infrastructure.py backend/tests/test_durable_generation_replay.py
+          backend/tests/test_live_branching.py backend/tests/test_conversation_admission.py
+          backend/tests/test_workspace_notes.py backend/tests/test_mode_transition.py
+          backend/tests/test_context_provenance.py backend/tests/test_selected_material_context.py
+      - name: Deterministic staging benchmark (not provider latency)
+        run: python -m backend.scripts.performance_benchmark --runs 10 --out outputs/performance/ci-baseline.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backend-performance-baseline
+          path: outputs/performance/ci-baseline.json
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - name: Transport, notes, context, and stream regressions
+        run: >-
+          npx vitest run tests/performance.test.tsx tests/product-service.test.tsx
+          tests/account-transport.test.tsx tests/api-loading.test.tsx tests/chat-outbox.test.tsx
+          tests/generation-connection.test.tsx tests/generation-activity.test.tsx
+          tests/conversation-admission.test.tsx tests/notes-sidebar.test.tsx
+          tests/workspace-side-chats.test.tsx tests/compact-tutor-chat.test.tsx
+      - run: npm run build:production

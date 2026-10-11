@@ -41,6 +41,18 @@ function Wait-ForHealth([int]$Port, [System.Diagnostics.Process]$Process) {
     throw 'The bundled API sidecar did not become healthy.'
 }
 
+function Stop-Sidecar([System.Diagnostics.Process]$Process) {
+    if ($null -eq $Process -or $Process.HasExited) { return }
+    # PyInstaller's Windows bootloader can spawn a child process for the bundled
+    # Python runtime. Killing only the launcher leaves that child holding forma.db.
+    try {
+        $Process.Kill($true)
+    } catch {
+        & taskkill.exe /PID $Process.Id /T /F | Out-Null
+    }
+    $Process.WaitForExit()
+}
+
 try {
     # Clean-launch test: the sidecar must initialize a fresh app-data database and migrations.
     $firstPort = Get-FreeLoopbackPort
@@ -49,15 +61,13 @@ try {
     $headers = @{ 'X-Forma-Desktop-Token' = 'runtime-smoke-token'; 'Content-Type' = 'application/json' }
     Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$firstPort/v1/topic-scopes" -Headers $headers -Body '{"topic":"runtime smoke test","depth":"introductory"}' | Out-Null
     if (-not (Test-Path -LiteralPath (Join-Path $dataRoot 'forma.db'))) { throw 'The sidecar did not create its SQLite database in the application-data directory.' }
-    Stop-Process -Id $first.Id -Force
-    $first.WaitForExit()
+    Stop-Sidecar $first
 
     # Restart test: reopen against the same data directory and confirm the API is ready again.
     $secondPort = Get-FreeLoopbackPort
     $second = Start-Sidecar $secondPort
     Wait-ForHealth $secondPort $second
-    Stop-Process -Id $second.Id -Force
-    $second.WaitForExit()
+    Stop-Sidecar $second
 
     # Uninstall semantics: the application data directory is intentionally separate from the install directory.
     # A normal uninstaller must leave it intact so a reinstall can restore learner state.
@@ -66,7 +76,7 @@ try {
 }
 finally {
     foreach ($process in @($first, $second)) {
-        if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+        if ($null -ne $process -and -not $process.HasExited) { Stop-Sidecar $process }
     }
     if (-not $KeepRuntimeData -and (Test-Path -LiteralPath $runtimeRoot)) { Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }
 }
