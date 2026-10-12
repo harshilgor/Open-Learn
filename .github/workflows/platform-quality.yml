@@ -45,7 +45,7 @@ jobs:
           backend/tests/test_workspace_notes.py backend/tests/test_mode_transition.py
           backend/tests/test_context_provenance.py backend/tests/test_selected_material_context.py
           backend/tests/test_learner_memory_phase_a.py backend/tests/test_learner_memory_phase_b.py
-          backend/tests/test_learner_memory_phase_c.py
+          backend/tests/test_learner_memory_phase_c.py backend/tests/test_learner_memory_phase_d.py
       - name: Learner memory evaluation gates (recorded extraction outputs; no provider)
         run: python -m backend.app.evaluation_runner --memory
       - name: Deterministic staging benchmark (not provider latency)

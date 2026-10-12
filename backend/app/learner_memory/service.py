@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import bindparam, text
@@ -167,3 +171,150 @@ class LearnerMemoryService:
                 block[key].pop()
         block = {key: value for key, value in block.items() if value}
         return block if set(block) != {"note"} else None
+
+    # --- Phase D: retrieval v2 (§8.2) ------------------------------------------
+
+    def context(self, owner, course_id, message, *, purpose="teaching", now=None, concept_ids=(), timezone_name=None):
+        """Ranked, budgeted learner memory rendered as byte-stable text, or None.
+
+        Assessment context gets only preference and constraint facts, never
+        episodes, dates or progress (§2 rule 5). Never raises.
+        """
+        try:
+            return self._context(owner, course_id, message, purpose=purpose, now=now or time.time(),
+                                 concept_ids=tuple(item for item in concept_ids if item), timezone_name=timezone_name)
+        except Exception:
+            logger.warning("learner memory retrieval unavailable", exc_info=False)
+            return None
+
+    def _context(self, owner, course_id, message, *, purpose, now, concept_ids, timezone_name):
+        from . import retrieval, store
+        assessment = purpose == "assessment"
+        intent = retrieval.parse_time_intent(message, now, timezone_name)
+        tz = retrieval.zone(timezone_name)
+        with self.store.engine.connect() as conn:
+            names = store.course_names(conn, owner)
+            allowed = {"preference", "constraint"} if assessment else None
+            cache_key = (str(self.store.engine.url), owner)
+            all_facts, fact_index = _cached(_FACTS, cache_key, store.facts_watermark(conn, owner), lambda: _with_index(
+                store.static_facts(conn, owner), retrieval.fact_document))
+            facts = [fact for fact in all_facts
+                     if (fact["course_id"] is None or fact["course_id"] == course_id) and (allowed is None or fact["kind"] in allowed)]
+            since = now - policy.EPISODE_LOOKBACK_DAYS * policy.DAY_SECONDS
+            episodes, episode_index = [], None
+            if not assessment:
+                all_episodes, episode_index = _cached(_EPISODES, cache_key, store.episodes_watermark(conn, owner), lambda: _with_index(
+                    store.candidate_episodes(conn, owner, None, 0), retrieval.episode_document))
+                episodes = [episode for episode in all_episodes
+                            if episode["period_end"] >= since and (episode["course_id"] is None or not course_id or episode["course_id"] == course_id)
+                            ][:policy.EPISODE_CANDIDATE_CAP]
+            moment = datetime.fromtimestamp(now, timezone.utc)
+            upcoming = [] if assessment else self._upcoming(conn, owner, course_id, moment)
+            progress = [] if assessment else self._learner_state(conn, owner, course_id)
+            hydrate = lambda ids: store.volatile_for(conn, owner, ids)  # noqa: E731
+            retrieve = not assessment and retrieval.should_retrieve(message, intent)
+            ranked = retrieval.rank(facts, episodes, message=message, now=now, course_id=course_id, concept_ids=concept_ids,
+                                    intent=intent, hydrate=hydrate, fact_index=fact_index, episode_index=episode_index) if retrieve else []
+
+        # Profile: preferences and constraints always apply (until the Phase E
+        # core profile replaces this section). Course-scoped first.
+        def profile_rank(fact):
+            scoped = course_id is not None and fact["course_id"] == course_id
+            return (not scoped, fact["kind"] != "constraint", -policy.ORIGIN_RANK.get(fact["origin"], 0),
+                    -policy.last_reinforced_at(fact), fact["id"])
+        profile, used = [], 0
+        for fact in sorted((fact for fact in facts if fact["kind"] in {"preference", "constraint"}), key=profile_rank):
+            cost = estimate_tokens(fact["statement"]) + 12
+            if used + cost > policy.PROFILE_MAX_TOKENS:
+                break
+            profile.append(fact); used += cost
+        retrieved, chosen_episodes, omitted = [], [], []
+        if retrieve:
+            retrieved, chosen_episodes, omitted = retrieval.select(ranked, exclude_ids={fact["id"] for fact in profile})
+
+        def day(epoch):
+            return datetime.fromtimestamp(epoch, tz).date().isoformat()
+
+        def fact_line(fact):
+            label = fact["kind"].replace("_", " ")
+            if fact.get("course_id") and names.get(fact["course_id"]):
+                label += " · " + names[fact["course_id"]]
+            return f"- [{label}] {fact['statement']} (learner said, {day(fact['learned_at'])})"
+
+        sections = [
+            ("Profile:", [fact_line(fact) for fact in profile]),
+            ("Relevant memories:", [fact_line(entry.item) for entry in retrieved]),
+            ("Upcoming course dates:", [f"- {item['date']} · {item['type']} · {item['title']}" for item in upcoming]),
+            ("Learner progress:", [f"- {item['concept']} ({item['capability']}): {item['status']}" + (f", {item['retention'].replace('_', ' ')}" if item.get("retention") else "")
+                                   for item in progress]),
+            ("Earlier sessions:", [f"- {day(entry.item['period_end'])} · {entry.item['summary']}" for entry in chosen_episodes]),
+        ]
+        header = policy.MEMORY_BLOCK_HEADER + ":"
+
+        def render(parts):
+            lines = [header]
+            for title, items in parts:
+                if items:
+                    lines.append(title); lines.extend(items)
+            return "\n".join(lines)
+
+        # Whole-block cap: trim the least essential sections first.
+        sections = [(title, list(items)) for title, items in sections]
+        for index in (4, 3, 2, 1, 0):
+            while estimate_tokens(render(sections)) > policy.MEMORY_BLOCK_MAX_TOKENS and sections[index][1]:
+                sections[index][1].pop()
+        kept_profile = profile[:len(sections[0][1])]
+        kept_retrieved = retrieved[:len(sections[1][1])]
+        kept_episodes = chosen_episodes[:len(sections[4][1])]
+        for entry in retrieved[len(kept_retrieved):]:
+            omitted.append({"id": entry.item["id"], "reason": "block_budget"})
+        if not any(items for _, items in sections):
+            return None
+        trace = {
+            "policyVersion": policy.MEMORY_POLICY_VERSION, "purpose": purpose, "timeIntent": intent is not None,
+            "candidates": {"facts": len(facts), "episodes": len(episodes)},
+            "profile": [fact["id"] for fact in kept_profile],
+            "included": [{"id": entry.item["id"], "type": entry.item_type, "score": round(entry.score, 4),
+                          "relevance": round(entry.relevance, 4), "strength": round(entry.strength, 4)}
+                         for entry in kept_retrieved + kept_episodes],
+            "omitted": omitted[:50],
+        }
+        return MemoryContext(text=render(sections), fact_ids=tuple(fact["id"] for fact in kept_profile) + tuple(entry.item["id"] for entry in kept_retrieved),
+                             episode_ids=tuple(entry.item["id"] for entry in kept_episodes), trace=trace)
+
+
+# Per-process cache of static ranking rows, revalidated every turn by a cheap
+# watermark query, so a stale entry is never served (§11.4 latency target).
+_FACTS: "OrderedDict[str, tuple]" = OrderedDict()
+_EPISODES: "OrderedDict[str, tuple]" = OrderedDict()
+_CACHE_OWNERS = 64
+_CACHE_LOCK = threading.Lock()
+
+
+def _with_index(rows, document):
+    from . import retrieval
+    return rows, retrieval.build_index({row["id"]: document(row) for row in rows})
+
+
+def _cached(cache, key, watermark, load):
+    """key is (database URL, owner): never shared across databases or owners."""
+    with _CACHE_LOCK:
+        hit = cache.get(key)
+        if hit and hit[0] == watermark:
+            cache.move_to_end(key)
+            return hit[1]
+    rows = load()
+    with _CACHE_LOCK:
+        cache[key] = (watermark, rows)
+        cache.move_to_end(key)
+        while len(cache) > _CACHE_OWNERS:
+            cache.popitem(last=False)
+    return rows
+
+
+@dataclass(frozen=True)
+class MemoryContext:
+    text: str
+    fact_ids: tuple
+    episode_ids: tuple
+    trace: dict

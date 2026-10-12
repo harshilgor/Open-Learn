@@ -105,3 +105,66 @@ def extraction_model() -> str | None:
 def extraction_enabled() -> bool:
     """Extraction runs only with a mode and a configured model (§12)."""
     return extraction_mode() != "off" and extraction_model() is not None
+
+
+# --- Phase D: retrieval and ranking (spec §8.2, §9.2) --------------------------
+
+import math as _math
+
+CANDIDATE_CAP = 2000
+EPISODE_CANDIDATE_CAP = 300
+EPISODE_LOOKBACK_DAYS = 365
+MIN_RELEVANCE = 0.12
+DEADLINE_ALWAYS_DAYS = 14
+MAX_PER_KIND = 2
+MAX_EPISODES = 3
+PROFILE_MAX_TOKENS = 700
+RETRIEVED_MAX_TOKENS = 900
+EPISODES_MAX_TOKENS = 500
+# Semantic scoring waits on the open embeddings decision (§13); its weight is
+# dropped and the rest renormalized, as §8.2 step 5 allows.
+RELEVANCE_WEIGHTS = {"semantic": 0.45, "lexical": 0.30, "concept": 0.15, "temporal": 0.10}
+ORIGIN_BONUS = {"user_confirmed": 0.10, "user_stated": 0.08, "imported": 0.03, "inferred": 0.0, "system": 0.0}
+SCOPE_BONUS = 0.05
+MAX_STABILITY_DAYS = 365.0
+USE_STABILITY_FACTOR = 1.25
+# Reuse within a day strengthens a memory once, not once per message.
+USE_REINFORCEMENT_INTERVAL_SECONDS = 86400
+DEADLINE_GRACE_DAYS = 7
+CONSTRAINT_RETENTION_FLOOR = 0.5
+DAY_SECONDS = 86400.0
+
+
+def retrieval_v2_enabled() -> bool:
+    return _flag("OPENLEARN_MEMORY_RETRIEVAL_V2")
+
+
+def last_reinforced_at(fact) -> float:
+    return max(fact["learned_at"], fact.get("last_used_at") or 0.0, fact.get("confirmed_at") or 0.0)
+
+
+def retention(fact, now: float) -> float:
+    """MemoryBank-style exp(-Δt/S), with the §9.2 deadline and constraint exceptions."""
+    if fact["kind"] == "deadline" and fact.get("event_date"):
+        from datetime import datetime, timezone
+        try:
+            raw = fact["event_date"]
+            when = datetime.fromisoformat(raw.replace("Z", "+00:00")) if "T" in raw else datetime.fromisoformat(raw + "T23:59:59")
+            when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+            grace_end = when.timestamp() + DEADLINE_GRACE_DAYS * DAY_SECONDS
+            if now <= grace_end:
+                return 1.0
+            return _math.exp(-(now - grace_end) / DAY_SECONDS / max(1.0, fact["stability_days"]))
+        except ValueError:
+            pass
+    value = _math.exp(-max(0.0, now - last_reinforced_at(fact)) / DAY_SECONDS / max(1.0, fact["stability_days"]))
+    if fact["kind"] == "constraint" and fact["origin"] in {"user_stated", "user_confirmed"}:
+        value = max(value, CONSTRAINT_RETENTION_FLOOR)
+    return value
+
+
+def stability_after_use(stability_days: float) -> float:
+    return min(stability_days * USE_STABILITY_FACTOR, MAX_STABILITY_DAYS)
+
+# Time-intent scores decay over at most this many days outside the window.
+TEMPORAL_DECAY_MAX_DAYS = 7
