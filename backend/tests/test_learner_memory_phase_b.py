@@ -241,3 +241,13 @@ def test_memory_settings_use_optimistic_revisions(api):
     resumed = client.put("/v1/memory/settings", json={"learningEnabled": True, "expectedRevision": 1})
     assert resumed.json()["revision"] == 2 and resumed.json()["learningEnabled"] is True
     assert client.put("/v1/memory/settings", json={"learningEnabled": True, "expectedRevision": 1, "ownerId": "bob"}).status_code == 422
+
+
+def test_context_manifests_are_owner_scoped(api):
+    client, store = api
+    now = time.time()
+    with store.transaction() as conn:
+        conn.execute(text("INSERT INTO context_manifests(owner_id,id,payload,created_at) VALUES('bob','context_bob','{\"ownerId\":\"bob\"}',:now)"), {"now": now})
+        conn.execute(text("INSERT INTO context_manifests(owner_id,id,payload,created_at) VALUES('local','context_local','{\"ownerId\":\"local\"}',:now)"), {"now": now})
+    assert client.get("/v1/memory/contexts/context_local").json() == {"ownerId": "local"}
+    assert client.get("/v1/memory/contexts/context_bob").status_code == 404

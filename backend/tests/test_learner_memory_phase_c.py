@@ -360,3 +360,30 @@ def test_worker_purges_expired_shadow_facts_for_every_owner(chat, monkeypatch):
     assert worker.cleanup_memory_shadow_if_due(chat, now=10_001.0) == 0  # hourly
     with chat.engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE status='shadow'")).scalar_one() == 1
+
+
+def test_extraction_that_loses_a_concurrent_race_retries_and_then_supersedes(chat, monkeypatch):
+    from backend.app.generation_models import GenerationRequest
+    from backend.app.performance import STAGES
+    assert "memory_extract_job" in STAGES
+    jobs.extract_turn(chat, "alice", add_turn(chat, "my calc midterm is on November 3", "gen-1"), extractor=FakeExtractor([candidate()]))
+    add_turn(chat, "update: my calc midterm moved to November 10", "gen-2")
+    request = GenerationRequest(mode="ask", message="update: my calc midterm moved to November 10")
+    with chat.transaction() as conn:
+        queued = jobs.enqueue_extraction(chat, conn, "alice", session_id="session-c", generation_id="gen-2", request=request)
+    moved = candidate(statement="Has a calculus midterm on 2026-11-10.", quote="my calc midterm moved to November 10", event_date="2026-11-10")
+    # Simulate a concurrent job: this one does not see the active fact the
+    # other committed, so its insert hits the one-active-per-subject index.
+    real = facts._active_same_subject
+    monkeypatch.setattr(facts, "_active_same_subject", lambda *args, **kwargs: None)
+    jobs.run_memory_extract(chat, None, queued["id"], extractor=FakeExtractor([moved]))
+    record = WorkflowStore(chat).job("alice", queued["id"])
+    assert record["status"] == "retry_wait" and record["safe_error_code"] == "worker_failed"
+    monkeypatch.setattr(facts, "_active_same_subject", real)
+    with chat.transaction() as conn:
+        conn.execute(text("UPDATE learning_jobs SET next_retry_at=0 WHERE id=:id"), {"id": queued["id"]})
+    jobs.run_memory_extract(chat, None, queued["id"], extractor=FakeExtractor([moved]))
+    finished = WorkflowStore(chat).job("alice", queued["id"])
+    assert finished["status"] == "completed" and finished["result"]["superseded"] == 1
+    [active] = [fact for fact in all_visible(chat) if fact["status"] == "active"]
+    assert active["event_date"] == "2026-11-10"

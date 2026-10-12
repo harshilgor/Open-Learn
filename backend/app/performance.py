@@ -27,7 +27,7 @@ from sqlalchemy.pool import QueuePool
 STAGES = frozenset({"api_headers", "api_total", "database_checkout", "database_connect", "database_pool_acquire", "database_query",
     "database_hold", "identity", "admission", "generation_queue", "generation_context",
     "provider_first_delta", "generation_first_persisted_text", "generation_total",
-    "event_persist", "event_loop_lag", "cache_get", "cache_load", "memory_retrieve"})
+    "event_persist", "event_loop_lag", "cache_get", "cache_load", "memory_retrieve", "memory_extract_job"})
 logger = logging.getLogger("openlearn.performance")
 logger.setLevel(logging.INFO)
 _observed_engines = weakref.WeakSet()
