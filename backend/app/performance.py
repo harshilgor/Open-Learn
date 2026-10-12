@@ -15,6 +15,7 @@ import os
 import re
 import threading
 import time
+import weakref
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -23,12 +24,23 @@ from uuid import uuid4
 from sqlalchemy import event
 from sqlalchemy.pool import QueuePool
 
-STAGES = frozenset({"api_headers", "api_total", "database_checkout", "database_query",
+STAGES = frozenset({"api_headers", "api_total", "database_checkout", "database_connect", "database_pool_acquire", "database_query",
     "database_hold", "identity", "admission", "generation_queue", "generation_context",
     "provider_first_delta", "generation_first_persisted_text", "generation_total",
     "event_persist", "event_loop_lag"})
 logger = logging.getLogger("openlearn.performance")
 logger.setLevel(logging.INFO)
+_observed_engines = weakref.WeakSet()
+_engine_lock = threading.Lock()
+
+
+def pool_capacity_snapshot():
+    """Current process capacity only; no database URLs, credentials or SQL."""
+    with _engine_lock:
+        engines = list(_observed_engines)
+    return [{"size": engine.pool.size(), "checkedIn": engine.pool.checkedin(),
+             "checkedOut": engine.pool.checkedout(), "overflow": engine.pool.overflow()}
+            for engine in engines if isinstance(engine.pool, ObservedQueuePool)]
 
 
 def configure_performance_logging():
@@ -118,7 +130,7 @@ class TimingRegistry:
                     "p99Ms": percentile(values, .99)})
         return {"scope": "process", "pid": os.getpid(), "startedAt": self.started_at,
             "retention": "last 512 durations per series; counters since process start",
-            "series": rows, "queryShapes": queries.snapshot()}
+            "series": rows, "queryShapes": queries.snapshot(), "poolCapacity": pool_capacity_snapshot()}
 
 
 registry = TimingRegistry()
@@ -248,16 +260,52 @@ class PerformanceMiddleware:
 
 
 class ObservedQueuePool(QueuePool):
+    _acquisition = contextvars.ContextVar('openlearn_pool_acquisition', default=None)
+
+    def _create_connection(self):
+        started = time.perf_counter()
+        failed = False
+        try:
+            return super()._create_connection()
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            duration = (time.perf_counter() - started) * 1000
+            observe('database_connect', duration, failed=failed)
+            acquisition = self._acquisition.get()
+            if acquisition is not None:
+                acquisition[0] += duration
+
     def _do_get(self):
-        # Includes opening a new connection when required, not only queue wait.
-        with span("database_checkout"):
+        # Retain the total and separate new DBAPI connection establishment.
+        # Acquisition excluding connect includes queue wait and pool bookkeeping;
+        # it is not SQL execution or SQLAlchemy's later pre-ping.
+        acquisition = [0.0]
+        token = self._acquisition.set(acquisition)
+        started = time.perf_counter()
+        failed = False
+        try:
             return super()._do_get()
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            total = (time.perf_counter() - started) * 1000
+            self._acquisition.reset(token)
+            parent = self._acquisition.get()
+            if parent is not None:
+                parent[0] += acquisition[0]
+            observe('database_checkout', total, failed=failed)
+            observe('database_pool_acquire', max(0.0, total - acquisition[0]), failed=failed)
 
 
 def instrument_engine(engine):
     if getattr(engine, "_openlearn_timing_enabled", False):
         return engine
     engine._openlearn_timing_enabled = True
+    with _engine_lock:
+        _observed_engines.add(engine)
 
     @event.listens_for(engine, "before_cursor_execute")
     def before_query(conn, cursor, statement, parameters, context, executemany):
