@@ -1,7 +1,7 @@
 """LearnerMemoryService: the façade journey, compiler, routes, and jobs use.
 
-Phase A reads only existing stores (memory_derived, academic_entities, the
-unified learner state). Memory is context about the learner, never an
+Reads explicit preferences from memory_facts (Phase B), plus academic
+entities and the unified learner state. Memory is context about the learner, never an
 instruction, and every read is owner-scoped. Failures degrade to no memory.
 """
 from __future__ import annotations
@@ -94,22 +94,19 @@ class LearnerMemoryService:
             return None
 
     def _preferences(self, conn, owner, course_id):
-        rows = []
-        for row in conn.execute(text("SELECT id,kind,payload FROM memory_derived WHERE owner_id=:owner AND kind='preference' AND valid=true"),
-                                {"owner": owner}).mappings():
-            value = json.loads(row["payload"])
-            if not value.get("explicit") or value.get("scope") not in (None, course_id, {"courseId": course_id}):
-                continue
-            rows.append({"id": row["id"], "kind": row["kind"], "value": value})
-        items = []
-        for row in rank_remembered(conn, owner, rows, course_id)[:policy.MAX_PREFERENCES]:
-            inner = row["value"].get("value")
-            statement = inner.get("statement") if isinstance(inner, dict) else inner
-            if not isinstance(statement, str) or not statement.strip():
-                continue
-            items.append({"learnerSaid": statement.strip()[:policy.PREFERENCE_MAX_CHARS],
-                          "scope": "course" if row["value"].get("scope") is not None else "global"})
-        return items
+        from . import store
+
+        def rank(fact):
+            # Precedence (§10): course-scoped before global, explicit
+            # origins first, then most recently stated or confirmed.
+            scoped = course_id is not None and fact["course_id"] == course_id
+            newest = max(fact["learned_at"], fact["confirmed_at"] or 0.0)
+            return (not scoped, -policy.ORIGIN_RANK.get(fact["origin"], 0), -newest, fact["id"])
+
+        facts = sorted(store.active_preferences(conn, owner, course_id), key=rank)
+        return [{"learnerSaid": fact["statement"].strip()[:policy.PREFERENCE_MAX_CHARS],
+                 "scope": "course" if fact["course_id"] is not None else "global"}
+                for fact in facts[:policy.MAX_PREFERENCES] if fact["statement"].strip()]
 
     def _upcoming(self, conn, owner, course_id, moment):
         if not course_id:

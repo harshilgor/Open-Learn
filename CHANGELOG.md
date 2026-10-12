@@ -6,6 +6,7 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase B: migration `0086_learner_memory` adds `memory_facts` (add-only, with a timeline and a one-active-fact-per-subject index), `memory_episodes`, `memory_embeddings`, and `memory_settings`, and backfills existing saved preferences as facts. Saving a preference (Settings or "remember that…") also writes a fact in the same transaction; dismissing it or removing its source deletes the fact, and revising the source archives it. New owner-scoped, `no-store` APIs: `GET /v1/memory/facts`, `GET /v1/memory/facts/{id}/history`, `GET`/`DELETE /v1/memory/episodes`, and `GET`/`PUT /v1/memory/settings`. The chat memory block now reads preferences from `memory_facts`. The release contract schema head is now `0086_learner_memory`.
 - Learner memory Phase A (flagged, default off): `OPENLEARN_MEMORY_CHAT_CONTEXT` adds a bounded `learnerMemory` context block to default chat with explicit saved preferences, course dates in the next 30 days, and a five-item learner-state snapshot; `OPENLEARN_MEMORY_SKIP_UNUSED_COMPILE` skips the shared context compile that streamed chat turns discarded.
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.

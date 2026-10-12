@@ -140,6 +140,8 @@ from .identity_routes import build_identity_router
 app.include_router(build_identity_router(get_store))
 from .memory_routes import build_memory_router
 app.include_router(build_memory_router(get_store))
+from .learner_memory.routes import build_learner_memory_router
+app.include_router(build_learner_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
