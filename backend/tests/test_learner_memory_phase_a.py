@@ -134,6 +134,9 @@ def conversation(tmp_path, monkeypatch):
 
     monkeypatch.setenv("AI_TUTOR_ENV", "development")
     monkeypatch.setenv("AI_TUTOR_DEV_IDENTITY", "true")
+    # Generations run in-process here. CI sets OPENLEARN_WORKER_MODE=external,
+    # where no worker would ever produce the event stream these tests read.
+    monkeypatch.setenv("OPENLEARN_WORKER_MODE", "embedded")
     store = Store(tmp_path / "conversation.db")
     token = principal_context.set(Principal("local", "local"))
     scope = TopicScope(id="scope-memory", topic="probability", resolved_meaning="probability",
