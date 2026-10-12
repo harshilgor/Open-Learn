@@ -368,6 +368,10 @@ class GenerationStore:
             raise RuntimeError("Generation changed before its state transition")
         if status in TERMINAL and row["capacity_reserved"]:
             self._release_capacity(connection, row)
+        if status == "completed":
+            # Usage summaries/analytics aggregate completed generations.
+            from .cache import invalidate, owner_scope
+            invalidate("usage_display", owner_scope(row["owner_id"]))
         return self._row(connection.execute(text("SELECT * FROM generation_records WHERE id=:id"), {"id": generation_id}).mappings().one())
 
     @staticmethod

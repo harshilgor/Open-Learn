@@ -55,6 +55,10 @@ class AcademicPlanningService:
             conn.execute(text(f'UPDATE {table} SET payload=:payload,revision=:revision WHERE owner_id=:owner AND id=:id'), values)
         else:
             conn.execute(text(f'INSERT INTO {table}(owner_id,id,course_id,revision,payload,created_at) VALUES(:owner,:id,:course,:revision,:payload,:now)'), values)
+        if table == 'academic_entities':
+            # Calendar occurrences show academic deadlines.
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
         return payload
 
     def course(self, conn, owner, course):

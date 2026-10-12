@@ -27,7 +27,7 @@ from sqlalchemy.pool import QueuePool
 STAGES = frozenset({"api_headers", "api_total", "database_checkout", "database_connect", "database_pool_acquire", "database_query",
     "database_hold", "identity", "admission", "generation_queue", "generation_context",
     "provider_first_delta", "generation_first_persisted_text", "generation_total",
-    "event_persist", "event_loop_lag", "memory_retrieve"})
+    "event_persist", "event_loop_lag", "cache_get", "cache_load", "memory_retrieve"})
 logger = logging.getLogger("openlearn.performance")
 logger.setLevel(logging.INFO)
 _observed_engines = weakref.WeakSet()
@@ -128,9 +128,11 @@ class TimingRegistry:
                     "failuresSinceStart": row["failed"], "sampleFailures": sum(failed for value, failed in row["values"]), "sampleCount": len(values),
                     "p50Ms": percentile(values, .5), "p95Ms": percentile(values, .95),
                     "p99Ms": percentile(values, .99)})
+        from .cache import cache_status, metrics as cache_metrics
         return {"scope": "process", "pid": os.getpid(), "startedAt": self.started_at,
             "retention": "last 512 durations per series; counters since process start",
-            "series": rows, "queryShapes": queries.snapshot(), "poolCapacity": pool_capacity_snapshot()}
+            "series": rows, "queryShapes": queries.snapshot(), "poolCapacity": pool_capacity_snapshot(),
+            "cache": {"status": cache_status(), "namespaces": cache_metrics.snapshot()}}
 
 
 registry = TimingRegistry()
