@@ -598,12 +598,17 @@ Rollback is flag-only; data remains valid.
 
 Record answers here before the relevant phase starts:
 
-- [ ] Who pays for extraction and episode model calls: platform budget or learner credits? Daily per-owner cap?
-- [ ] Extraction and episode models (cost/quality). Is sending learner messages to that provider acceptable under the privacy policy?
+- [x] Who pays for extraction and episode model calls: platform budget or learner credits? Daily per-owner cap?
+  **Decided 2026-10-12:** the learner's allowance, through the existing usage ledger (also counted against the platform cap), with a per-owner daily cap on extraction calls.
+- [x] Extraction and episode models (cost/quality). Is sending learner messages to that provider acceptable under the privacy policy?
+  **Decided 2026-10-12:** Claude Haiku 5.5 (`anthropic/claude-haiku-5.5`), the model with the approved ledger tariff. Free routes were rejected because they may log prompts.
 - [ ] Are learners possibly under 13/18 (COPPA/FERPA)? If so, default `learning_enabled=false` for minors, or require guardian consent.
-- [ ] Sensitive facts on explicit request: allow (§2 rule 6), or refuse entirely?
+  Open: there is no age signal yet. Until one exists, the default below applies to everyone.
+- [x] Sensitive facts on explicit request: allow (§2 rule 6), or refuse entirely?
+  **Decided 2026-10-12:** allow, only on an explicit remember request, stored with `sensitive=true`, never embedded, and excluded from prompts unless enabled per fact. Inferred sensitive facts are always dropped.
 - [ ] Embeddings for memory facts (requires `AI_TUTOR_EMBEDDING_MODEL`; external provider sees fact text)?
-- [ ] Default for new accounts: memory learning on, with a first-run notice?
+- [x] Default for new accounts: memory learning on, with a first-run notice?
+  **Decided 2026-10-12:** on by default, with a one-time notice linking to Settings → Memory to review or pause.
 - [ ] Shadow-mode duration and who may review aggregate results.
 
 ## 14. Research basis (why these choices)
@@ -640,7 +645,7 @@ Benchmark figures above are mostly vendor-reported; treat them as directional, n
 
 Agent appends: date, phase, PR, deviations from this spec and why, open questions.
 
-- **2026-10-12 · Phase A · branch `codex/learner-memory-phase-a`**
+- **2026-10-12 · Phase A · branch `codex/learner-memory`**
   - Done: `backend/app/learner_memory/{policy,service}.py`; `learnerMemory` ContextBlock (priority 2, own 1,200-token cap) in conversation context behind `OPENLEARN_MEMORY_CHAT_CONTEXT`; compile skip behind `OPENLEARN_MEMORY_SKIP_UNUSED_COMPILE`; compiler ranking + cap 12 (`rank_remembered`); compiler token estimate now `context_engine.estimate_tokens`; `memory_retrieve` performance stage; tests in `backend/tests/test_learner_memory_phase_a.py`.
   - Deviation, step 3 (rolling session summary) not built: `conversation_state.py` already compacts every turn that leaves the recent window into a required `conversationState` block (model-written; generation fails rather than silently dropping turns). A second extractive summary would duplicate it. `OPENLEARN_MEMORY_SESSION_SUMMARY` was therefore not added. Revisit only if the compactor's cost or latency becomes a problem.
   - Deviation, step 1: the compile is skipped only for streamed conversation turns (`generation_id` set) with no selected spans. Selected spans still compile because `LearningControlPlane.prepare()` is what rejects an unavailable selection (409). The non-streamed path (voice) still commits the decision, so it keeps compiling. With the skip on, `generation.context_ready` carries `decision: null` for conversation turns; no web consumer reads it.
@@ -649,7 +654,7 @@ Agent appends: date, phase, PR, deviations from this spec and why, open question
   - Pre-existing failures (same on the unmodified tree, not caused by Phase A): 9 tests in `test_context_engine.py`, `test_course_learning.py`, `test_learning_workflows.py`, `test_nonstreaming_context_planning.py` fail with `sqlite3.IntegrityError: FOREIGN KEY constraint failed`.
   - Latency (offline SQLite, fixture provider, 40 turns per configuration): `memory_retrieve` p95 is 0.8 ms with no saved memory and 3.7 ms with 50 saved preferences; `generation_context` p95 did not increase (115 ms with flags off, 55–63 ms with flags on; tails are noisy at this sample size). Evidence: [docs/performance/Learner_Memory_Phase_A_Measurements_2026-10-12.md](performance/Learner_Memory_Phase_A_Measurements_2026-10-12.md). `performance_benchmark.py` gained `--memory-preferences N`. Still to measure: PostgreSQL and hosted traffic.
   - Rollout: both flags turned on in the local, gitignored `backend/.env`. Hosted stays off until a hosted check.
-- **2026-10-12 · Phase B · branch `codex/learner-memory-phase-a`**
+- **2026-10-12 · Phase B · branch `codex/learner-memory`**
   - Done: migration `0086_learner_memory` (`memory_facts`, `memory_episodes`, `memory_embeddings`, `memory_settings`, the §6.1 indexes) with the §6.4 preference backfill; `deploy/release-contract.json` heads moved to `0086_learner_memory`; `learner_memory/{store,models,routes}.py`; the read APIs from §10 (`GET /facts`, `GET /facts/{id}/history`, `GET`/`DELETE /episodes`, `GET`/`PUT /settings`), mounted next to `build_memory_router`; chat block preferences now read from `memory_facts`; tests in `backend/tests/test_learner_memory_phase_b.py`.
   - Dual-write lives in `SourceMemory.derive` (inside its transaction), not in the two routes, so every explicit-preference writer (Settings, agent admission) is covered by one hook. Facts link back through `basis[].derivedId`, and the fact ID is derived deterministically from `(owner, derivedId)`, so backfill and retries are idempotent.
   - Removal semantics (not spelled out in §6.4): dismissing a saved preference (`DELETE /v1/memory/derived/{id}`) or removing its source hard-deletes facts that no other basis supports (§9.1, "learner deletes"); revising the source archives them with `invalid_at` (the quoted text no longer exists exactly). A fact backed by several identical saves survives until its last basis goes.
@@ -660,3 +665,14 @@ Agent appends: date, phase, PR, deviations from this spec and why, open question
   - Not built yet (later phases per §10): `PATCH`/`DELETE`/`confirm`/`POST /facts`, `/profile`, `/forget-all`, `/changes`, and the UI. Tentative (non-explicit) preferences written after the migration are not mirrored; no current code path writes them.
   - Rollout: the migration runs through the release migration job (`docs/RELEASING.md`). `compatibleSchemaHeads` lists only `0086_learner_memory`, following earlier releases, because this code writes the new tables.
   - Tests: 8 new in `test_learner_memory_phase_b.py`, plus the 10 from Phase A, all pass. Affected suites (agent execution, identity/erasure, migrations, release gates and preflight, usage, context, workflows): every failure also fails on the Phase A commit without Phase B. These are the 9 foreign-key failures noted above and 5 Exa adapter tests (`test_agent_research.py` ×2, `test_web_evidence_readiness.py` ×3).
+- **2026-10-12 · Phase C · branch `codex/learner-memory`**
+  - Owner decisions recorded in §13 first: the learner's allowance pays, the model is Claude Haiku 5.5, explicit sensitive facts are stored flagged, and memory learning is on by default with a first-run notice. The under-13/18 question stays open (no age signal exists).
+  - Done: `learner_memory/{extraction,validator,jobs,evaluation}.py`; Phase C constants and flags in `policy.py`; store writes (deterministic IDs, dedupe, supersession, undo, caps); `memory_extract` enqueued in `finalize_reply` and `finalize_social_reply` (same transaction, `batch` queue, skipped when paused or disabled, never fails the turn); `worker.tick` dispatch; `GET /v1/memory/facts?generation_id=` and `DELETE /v1/memory/facts/{id}?undo=true` (pulled forward from §10 for the chip); `extraction` field on `GET /v1/memory/settings`; `GenerationRequest.pastedRanges` and `clientTimezone`; web composer paste tracking, `MemorySavedChip`, `MemoryFirstRunNotice`, and an event that opens Settings → Privacy & data; `backend/evaluation/memory_scenarios.json` (50 cases), `evaluation_runner --memory`, CI step; tests in `test_learner_memory_phase_c.py` and `web/tests/learner-memory.test.tsx`; evidence in [docs/memory/Phase_C_Evaluation_2026-10-12.md](memory/Phase_C_Evaluation_2026-10-12.md).
+  - Deviation, §7.6: the `memory.saved` stream event is not used. Extraction runs after `generation.completed`, when the stream is already closed. The client polls `GET /facts?generation_id=` at 2.5, 7 and 15 s, only for turns completed in the current tab.
+  - Deviation, §7.4 rule 2 (pasted spans): the client records pasted text snippets (the 20 most recent) and sends the ranges where they still appear in the final message. Offsets don't survive later edits, so snippets are matched instead. A stale snippet can only mark text as pasted (fewer facts, never more). Messages restored from the outbox after a reload lose their paste marks.
+  - Addition to §7.4: rejects quotes whose sentence attributes them to another person ("my roommate is…") unless the quote is first-person. Found by the evaluation suite.
+  - Addition: a daily cap on extraction model calls per owner (`MAX_EXTRACTIONS_PER_DAY = 150`), checked in the job so the chat path stays a single insert.
+  - Supersession: only an `active` new fact supersedes. A tentative or lower-origin fact never replaces an active one; it is stored `tentative`. Shadow facts never deduplicate or supersede, and they are hard-deleted after 30 days (checked at each extraction for the owner).
+  - Ledger: `usage/transport.begin_model` now accepts `anthropic/claude-haiku-5.5` when it equals `OPENLEARN_MEMORY_EXTRACTION_MODEL`, as well as `OPENROUTER_MODEL`. Pricing is unchanged (the Haiku tariff).
+  - Sensitive keywords skip common study terms ("race condition", "black-box", "conservative force"). A false hit only drops an inferred fact.
+  - Rollout: flags are off by default and not enabled locally. Next: turn on `shadow` with the Haiku model, review aggregate counts (per kind, rejection reasons) for at least 2 weeks, then switch to `on` (§12). The 30-day shadow retention purge runs inside extraction jobs, so an owner with no new turns keeps their shadow rows until Phase E consolidation.

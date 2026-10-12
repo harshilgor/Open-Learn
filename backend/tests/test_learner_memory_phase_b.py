@@ -234,7 +234,7 @@ def test_fact_and_episode_read_apis_are_owner_scoped_and_private(api):
 
 def test_memory_settings_use_optimistic_revisions(api):
     client, _ = api
-    assert client.get("/v1/memory/settings").json() == {"learningEnabled": True, "revision": 0, "updatedAt": None}
+    assert client.get("/v1/memory/settings").json() == {"learningEnabled": True, "revision": 0, "updatedAt": None, "extraction": "off"}
     paused = client.put("/v1/memory/settings", json={"learningEnabled": False, "expectedRevision": 0})
     assert paused.status_code == 200 and paused.json()["learningEnabled"] is False and paused.json()["revision"] == 1
     assert client.put("/v1/memory/settings", json={"learningEnabled": True, "expectedRevision": 0}).status_code == 409

@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import time
+from dataclasses import replace
 
 from sqlalchemy import text
 
@@ -220,3 +221,121 @@ def put_settings(conn, owner, *, learning_enabled, expected_revision, now=None):
         if not changed:
             return None
     return get_settings(conn, owner)
+
+
+# --- Phase C: extracted facts --------------------------------------------------
+
+def extracted_fact_id(owner, generation_id, subject_key, quote) -> str:
+    """Deterministic, so re-running an extraction job writes the same rows (§7.1)."""
+    return "fact_" + hashlib.sha256(json.dumps([owner, generation_id, subject_key, quote]).encode()).hexdigest()[:32]
+
+
+def context_facts(conn, owner, message, *, limit=policy.MAX_CONTEXT_FACTS, pool=500):
+    """Active or tentative facts most similar to the message, for supersession proposals."""
+    rows = conn.execute(text(f"""SELECT {FACT_COLUMNS} FROM memory_facts
+        WHERE owner_id=:owner AND status IN ('active','tentative') AND sensitive=:false
+        ORDER BY learned_at DESC, id LIMIT :pool"""), {"owner": owner, "false": False, "pool": pool}).mappings().all()
+    terms = set(re.findall(r"[a-z0-9]{3,}", (message or "").lower()))
+
+    def overlap(fact):
+        words = set(re.findall(r"[a-z0-9]{3,}", (fact["statement"] + " " + fact["subject_key"].replace("-", " ")).lower()))
+        return len(terms & words)
+    facts = [_decode(row) for row in rows]
+    ranked = sorted(facts, key=lambda fact: (-overlap(fact), -fact["learned_at"], fact["id"]))
+    return [fact for fact in ranked if overlap(fact) > 0][:limit]
+
+
+def facts_written_since(conn, owner, since) -> int:
+    return conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND learned_at>=:since"),
+                        {"owner": owner, "since": since}).scalar_one()
+
+
+def extraction_jobs_since(conn, owner, since) -> int:
+    return conn.execute(text("SELECT COUNT(*) FROM learning_jobs WHERE owner_id=:owner AND kind='memory_extract' AND created_at>=:since"),
+                        {"owner": owner, "since": since}).scalar_one()
+
+
+def write_extracted(conn, owner, accepted, *, turn_basis, origin="user_stated", now=None):
+    """Store one validated fact; returns (action, fact_id, superseded_ids).
+
+    action is "existing" (job re-run), "deduplicated", or "created".
+    """
+    now = now or time.time()
+    fact_id = extracted_fact_id(owner, turn_basis["generationId"], accepted.subject_key, accepted.quote)
+    if get_fact(conn, owner, fact_id):
+        return "existing", fact_id, []
+    basis = [{**turn_basis, "quote": accepted.quote, "start": accepted.start, "end": accepted.end}]
+    course = accepted.course_id
+    shadow = accepted.status == "shadow"
+    if not shadow:
+        same = _active_same_subject(conn, owner, accepted.subject_key, course)
+        if same and normalized(same["statement"]) == normalized(accepted.statement):
+            conn.execute(text("""UPDATE memory_facts SET basis=:basis,confirmed_at=:now,revision=revision+1
+                WHERE owner_id=:owner AND id=:id"""), {"basis": json.dumps(same["basis"] + basis), "now": now, "owner": owner, "id": same["id"]})
+            return "deduplicated", same["id"], []
+    superseded = []
+    if accepted.status == "active":
+        # Supersede only within the same scope, and only facts of equal or
+        # lower origin rank (§7.4). A tentative fact never replaces anything.
+        targets = {row["id"]: row for row in (get_fact(conn, owner, identifier) for identifier in accepted.supersedes) if row}
+        same = _active_same_subject(conn, owner, accepted.subject_key, course)
+        if same:
+            targets[same["id"]] = same
+        rank = policy.ORIGIN_RANK.get(origin, 0)
+        for old in targets.values():
+            if old["status"] not in {"active", "tentative"} or (old["course_id"] or "") != (course or ""):
+                continue
+            if policy.ORIGIN_RANK.get(old["origin"], 0) > rank:
+                continue
+            conn.execute(text("""UPDATE memory_facts SET status='superseded',invalid_at=:now,superseded_by=:new,revision=revision+1
+                WHERE owner_id=:owner AND id=:id"""), {"now": now, "new": fact_id, "owner": owner, "id": old["id"]})
+            superseded.append(old["id"])
+        if same and same["id"] not in superseded:
+            # An outranking active fact keeps the slot; hold the new one for review.
+            accepted = replace(accepted, status="tentative")
+    stability = initial_stability(accepted.importance)
+    conn.execute(text(f"""INSERT INTO memory_facts({FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,:course,'[]',:event_date,
+        :origin,:status,:sensitive,:confidence,:importance,:now,:now,NULL,NULL,:basis,NULL,0,:confirmed,:stability,:needs_review,:policy,1)"""),
+        {"owner": owner, "id": fact_id, "kind": accepted.kind, "statement": accepted.statement, "subject": accepted.subject_key,
+         "course": course, "event_date": accepted.event_date, "origin": origin, "status": accepted.status,
+         "sensitive": accepted.sensitive, "confidence": accepted.confidence, "importance": accepted.importance, "now": now,
+         "basis": json.dumps(basis), "confirmed": now if accepted.explicit and not shadow else None,
+         "stability": policy.CONFIRMED_STABILITY_DAYS if accepted.explicit and not shadow else stability,
+         "needs_review": False, "policy": policy.MEMORY_POLICY_VERSION})
+    return "created", fact_id, superseded
+
+
+def facts_for_generation(conn, owner, generation_id):
+    """Visible facts this turn created or reinforced (for the "Saved to memory" chip)."""
+    return [fact for fact in _facts_referencing(conn, owner, "generationId", generation_id)
+            if fact["status"] in {"active", "tentative"}]
+
+
+def undo_fact(conn, owner, fact_id, *, now=None, window_seconds=86400):
+    """Hard delete a fact; within the undo window, restore what it superseded.
+
+    Returns the restored IDs, or None when the fact does not exist.
+    """
+    now = now or time.time()
+    fact = get_fact(conn, owner, fact_id)
+    if not fact or fact["status"] == "shadow":
+        return None
+    predecessors = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND superseded_by=:id AND status='superseded'"),
+                                {"owner": owner, "id": fact_id}).mappings().all()
+    delete_fact(conn, owner, fact_id)
+    restored = []
+    if now - fact["learned_at"] <= window_seconds:
+        for row in map(_decode, predecessors):
+            if _active_same_subject(conn, owner, row["subject_key"], row["course_id"]):
+                continue
+            conn.execute(text("""UPDATE memory_facts SET status='active',invalid_at=NULL,superseded_by=NULL,revision=revision+1
+                WHERE owner_id=:owner AND id=:id"""), {"owner": owner, "id": row["id"]})
+            restored.append(row["id"])
+    conn.execute(text("UPDATE memory_facts SET superseded_by=NULL WHERE owner_id=:owner AND superseded_by=:id"), {"owner": owner, "id": fact_id})
+    return restored
+
+
+def delete_shadow_facts_before(conn, owner, before):
+    """Shadow facts are evaluation data only; hard delete past retention (§9.4)."""
+    return conn.execute(text("DELETE FROM memory_facts WHERE owner_id=:owner AND status='shadow' AND learned_at<:before"),
+                        {"owner": owner, "before": before}).rowcount

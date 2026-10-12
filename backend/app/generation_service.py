@@ -686,6 +686,10 @@ class GenerationManager:
                         artifact, journey = JourneyService(self.store, provider).commit_stream(
                             connection, owner, prepared, request, prepared["directReply"], [],
                         )
+                        # Social chit-chat often carries durable facts ("my exam is Friday").
+                        from .learner_memory.jobs import enqueue_extraction
+                        enqueue_extraction(self.store, connection, owner, session_id=journey["sessionId"],
+                                           generation_id=generation_id, request=request)
                         result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
                         completed_at = time.time()
                         final_metrics = {
@@ -859,6 +863,9 @@ class GenerationManager:
                     if cancelled:
                         raise asyncio.CancelledError()
                     artifact, journey = JourneyService(self.store, provider).commit_stream(connection, owner, prepared, request, body, visualizations)
+                    from .learner_memory.jobs import enqueue_extraction
+                    enqueue_extraction(self.store, connection, owner, session_id=journey["sessionId"],
+                                       generation_id=generation_id, request=request)
                     if use_generated_visuals:
                         from .visual_runs import VisualRuns
                         visual_run = VisualRuns(self.store).admit(connection, owner, artifact.session_id, artifact.id,

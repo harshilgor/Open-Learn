@@ -191,6 +191,11 @@ def tick(store, provider_getter):
             run_hypothesis(store, provider_getter(), job_id)
             did_work = True
             break
+        if kind == "memory_extract":
+            from .learner_memory.jobs import run_memory_extract
+            run_memory_extract(store, None, job_id)
+            did_work = True
+            break
     if LectureWorker(store, provider_getter).drain(limit=4):
         did_work = True
     if MaterialService(store).process_one():
