@@ -1,5 +1,13 @@
 # Free development deployment. Upgrade only when the owner opts into paid compute.
 services:
+  # Disposable cache-aside copies only; PostgreSQL stays authoritative.
+  # Free plan: 25 MB, 50 connections (see deploy/connection-budget.json).
+  - type: keyvalue
+    name: openlearn-cache-free
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
   - type: web
     name: openlearn-api
     runtime: docker
@@ -11,6 +19,14 @@ services:
     autoDeployTrigger: off
     envVars:
       - fromGroup: openlearn-production
+      # Cache invalidation needs Redis wherever cached data is written.
+      # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+      # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: openlearn-cache-free
+          property: connectionString
       - key: OPENLEARN_WORKER_MODE
         value: embedded
       - key: OPENLEARN_MIGRATE_ON_START

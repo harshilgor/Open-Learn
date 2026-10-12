@@ -176,7 +176,11 @@ def erase_owner(store, owner, *, revocation_journal=None):
             # The append-only authority receives the tombstone before local data
             # is erased, so a later database restore cannot revive the account.
             journal.append(account_deletion_record(owner))
-        return _erase_owner(store, owner)
+        result = _erase_owner(store, owner)
+        # After the erasure commits, remove disposable cached copies too.
+        from .cache import erase_owner as erase_cached
+        erase_cached(owner)
+        return result
 
 
 def _erase_owner(store, owner):

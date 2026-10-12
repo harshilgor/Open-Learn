@@ -404,6 +404,34 @@ class WebEvidenceStore:
             return None
         return data.get("hits")
 
+    def cached_search(
+        self,
+        cache_key: str,
+        *,
+        owner_id: str,
+        tenant_id: str,
+        fingerprint: str,
+        ttl_seconds: int,
+        loader,
+    ) -> list[dict]:
+        """Return provider hits, from Redis when enabled, else the SQL cache.
+
+        The key already binds tenant and source-policy fingerprint; Redis scope
+        is the hashed tenant. Concurrent misses share one billed provider call.
+        """
+        from ..cache import get_or_load, json_codec, namespace_active, owner_scope
+        if ttl_seconds > 0 and namespace_active("web_evidence"):
+            return get_or_load("web_evidence", owner_scope("tenant:" + tenant_id),
+                               {"key": cache_key, "fingerprint": fingerprint}, loader,
+                               ttl_seconds=ttl_seconds, single_flight=True, **json_codec())
+        cached = self.get_cache(cache_key, tenant_id=tenant_id, fingerprint=fingerprint)
+        if cached is not None:
+            return cached
+        hits = loader()
+        self.put_cache(cache_key, owner_id=owner_id, tenant_id=tenant_id, fingerprint=fingerprint,
+                       hits=hits, ttl_seconds=ttl_seconds)
+        return hits
+
     def put_cache(
         self,
         cache_key: str,

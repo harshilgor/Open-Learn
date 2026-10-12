@@ -16,6 +16,17 @@ from .occurrences import bounds, expand, parse
 def digest(value): return hashlib.sha256(encoded(value).encode()).hexdigest()
 
 
+# Calendar reads are polled. Calendar, academic, course and user-initiated
+# reminder writes invalidate after commit; background reminder delivery state
+# and sync freshness may lag by up to this TTL.
+CALENDAR_CACHE_TTL_SECONDS = 30
+
+
+def invalidate_calendar(owner):
+    from ..cache import invalidate, owner_scope
+    invalidate('calendar', owner_scope(owner))
+
+
 class CalendarService:
     def __init__(self, store): self.store = store
 
@@ -42,6 +53,7 @@ class CalendarService:
         else:
             result = conn.execute(text(f'UPDATE calendar_{kind} SET payload=:payload,status=:status,revision=revision+1,updated_at=:now WHERE id=:id AND owner_id=:owner AND revision=:expected'), args)
             if result.rowcount != 1: fail('revision_conflict', 'This calendar item changed. Refresh before saving.', 409)
+        invalidate_calendar(owner)
         return self.read(conn, owner, kind, data['id'])
 
     def list_rows(self, conn, owner, kind, parent=None):
@@ -57,6 +69,11 @@ class CalendarService:
         return self.read(conn, owner, 'permissions', identifier)
 
     def calendars(self, owner):
+        from ..cache import get_or_load, json_codec, owner_scope
+        return get_or_load('calendar', owner_scope(owner), {'calendars': 1}, lambda: self._calendars(owner),
+                           ttl_seconds=CALENDAR_CACHE_TTL_SECONDS, **json_codec())
+
+    def _calendars(self, owner):
         with self.transaction(owner) as conn:
             return {'items': [{**row, 'permission': self.permission(conn, owner, row['id']), 'canEdit': row['source'] == 'local' or row.get('role') in {'owner', 'writer'}} for row in self.list_rows(conn, owner, 'calendars') if row['status'] == 'active']}
 
@@ -159,6 +176,16 @@ class CalendarService:
     def cancel(self, owner, identifier, body, key): return self.operation(owner, key, [{'kind': 'cancel', 'eventId': identifier, **body.model_dump()}])
 
     def occurrences(self, owner, start, end, zone='UTC', calendar_ids=None, course_ids=None, agent=False, cursor=0):
+        if agent:
+            # Agent reads apply permission filtering and must see current state.
+            return self._occurrences(owner, start, end, zone, calendar_ids, course_ids, agent, cursor)
+        from ..cache import get_or_load, json_codec, owner_scope
+        parts = {'occurrences': [start, end, zone, list(calendar_ids or []), list(course_ids or []), cursor]}
+        return get_or_load('calendar', owner_scope(owner), parts,
+                           lambda: self._occurrences(owner, start, end, zone, calendar_ids, course_ids, agent, cursor),
+                           ttl_seconds=CALENDAR_CACHE_TTL_SECONDS, **json_codec())
+
+    def _occurrences(self, owner, start, end, zone='UTC', calendar_ids=None, course_ids=None, agent=False, cursor=0):
         lo, hi = bounds(start, end)
         try: display_zone = ZoneInfo(zone)
         except (ValueError, KeyError): fail('invalid_timezone', 'Choose an IANA timezone.', 422)
@@ -312,7 +339,9 @@ class CalendarService:
                 if result.get('overrideAfter'):
                     override = self.read(conn, owner, 'overrides', result['overrideAfter']['id'])
                     if result.get('overrideBefore'): self.write(conn, owner, 'overrides', result['overrideBefore'], override['revision'])
-                    else: conn.execute(text('DELETE FROM calendar_overrides WHERE id=:id AND owner_id=:owner'), {'id': override['id'], 'owner': owner})
+                    else:
+                        conn.execute(text('DELETE FROM calendar_overrides WHERE id=:id AND owner_id=:owner'), {'id': override['id'], 'owner': owner})
+                        invalidate_calendar(owner)
                 restored.append(self.write(conn, owner, 'events', before or {**current, 'status': 'cancelled'}, current['revision']))
             receipt = self.write(conn, owner, 'operations', {'id': uid('undo'), 'status': 'applied', 'actor': 'human', 'undoes': identifier, 'results': restored})
             self.write(conn, owner, 'operations', {**operation, 'status': 'undone', 'undoOperationId': receipt['id']}, operation['revision'])

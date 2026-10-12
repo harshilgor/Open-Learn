@@ -39,23 +39,32 @@ class Store:
 
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
-        with self.engine.begin() as connection:
-            from .execution import active_job
-            from .workflow_store import WorkflowStore
-            job = active_job.get()
-            if job is not None:
-                WorkflowStore(self).validate_lease(connection, job)
-            from .identity import principal_context, assert_principal_active
-            principal = principal_context.get()
-            if principal:
-                assert_principal_active(connection, principal)
-            yield connection
-            if principal:
-                assert_principal_active(connection, principal)
-            if job is not None:
-                status = connection.execute(text("SELECT status FROM learning_jobs WHERE id=:id"), {"id": job["id"]}).scalar_one_or_none()
-                if status == "running":
+        # Cache invalidations raised inside this transaction are flushed only
+        # after it commits and are discarded if it rolls back.
+        from .cache import begin_pending, end_pending
+        pending = begin_pending()
+        committed = False
+        try:
+            with self.engine.begin() as connection:
+                from .execution import active_job
+                from .workflow_store import WorkflowStore
+                job = active_job.get()
+                if job is not None:
                     WorkflowStore(self).validate_lease(connection, job)
+                from .identity import principal_context, assert_principal_active
+                principal = principal_context.get()
+                if principal:
+                    assert_principal_active(connection, principal)
+                yield connection
+                if principal:
+                    assert_principal_active(connection, principal)
+                if job is not None:
+                    status = connection.execute(text("SELECT status FROM learning_jobs WHERE id=:id"), {"id": job["id"]}).scalar_one_or_none()
+                    if status == "running":
+                        WorkflowStore(self).validate_lease(connection, job)
+            committed = True
+        finally:
+            end_pending(pending, committed)
 
     def close(self) -> None:
         self.engine.dispose()
@@ -160,6 +169,11 @@ class Store:
                 "payload": session.model_dump_json(),
             })
             connection.execute(text('INSERT INTO buddy_chats(id,owner_id,buddy_id) VALUES(:id,:owner,:buddy) ON CONFLICT(id) DO NOTHING'), {'id':session.id,'owner':session.learner_id,'buddy':buddy})
+            if previous is None and session.course_id:
+                # A new session changes its course's session count. Ordinary
+                # per-turn saves must not invalidate (it would empty the cache).
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(session.learner_id))
 
     def get_session(self, session_id: str, connection: Connection | None = None) -> LearningSession | None:
         with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
@@ -249,6 +263,9 @@ class Store:
             return False
         journey_id = f"journey_{session_id}"
         with self.transaction() as connection:
+            if session.course_id:
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(owner))
             from .in_class_service import invalidate_material_access
             invalidate_material_access(
                 connection, session_id=session_id, owner=owner,

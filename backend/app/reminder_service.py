@@ -116,6 +116,8 @@ class ReminderService:
         data=command.model_dump(); digest=hashlib.sha256(encoded(data).encode()).hexdigest()
         identifier='reminder_'+hashlib.sha256(f'{owner}:{key}'.encode()).hexdigest()[:32]
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             # Serialize per-user cap checks without a process-local lock.
             from .buddy_service import BuddyService
@@ -169,6 +171,8 @@ class ReminderService:
 
     def cancel(self,owner,identifier):
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -181,6 +185,8 @@ class ReminderService:
     def snooze(self,owner,identifier,minutes,key):
         if not 1<=minutes<=10080:fail('invalid_input','Snooze between one minute and one week.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -205,6 +211,8 @@ class ReminderService:
         replacement = 'move_' + hashlib.sha256(f'{owner}:{identifier}:{key}'.encode()).hexdigest()[:32]
         request_hash = hashlib.sha256(encoded([identifier, when, timezone]).encode()).hexdigest()
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn, owner)
             existing = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': replacement, 'owner': owner}).mappings().first()
             if existing:
@@ -230,6 +238,8 @@ class ReminderService:
             second=next_fire(command.schedule,command.timezone,first)
             if second and second-first<300:fail('invalid_time','Recurring reminders must be at least five minutes apart.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text("SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner AND kind='routine'"),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Routine unavailable.',404)
