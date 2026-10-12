@@ -58,6 +58,25 @@ def cleanup_upload_objects_if_due(store):
         return 0
 
 
+_last_memory_shadow_cleanup = 0.0
+
+
+def cleanup_memory_shadow_if_due(store, now=None):
+    """Hourly: shadow facts are evaluation data, kept SHADOW_RETENTION_DAYS."""
+    global _last_memory_shadow_cleanup
+    now = time.monotonic() if now is None else now
+    if now - _last_memory_shadow_cleanup < 3600:
+        return 0
+    _last_memory_shadow_cleanup = now
+    from .learner_memory import policy, store as memory_store
+    try:
+        with store.transaction() as conn:
+            return memory_store.purge_expired_shadow(conn, time.time() - policy.SHADOW_RETENTION_DAYS * 86400)
+    except Exception as exc:
+        log.warning("Memory shadow cleanup failed (%s)", type(exc).__name__)
+        return 0
+
+
 def monitor_usage_if_due(store, now=None):
     """Poll usage health at the same bounded cadence as reservation cleanup."""
     global _last_usage_monitor
@@ -162,6 +181,7 @@ def tick(store, provider_getter):
     from .material_service import MaterialService
     cleanup_voice_if_due(store)
     cleanup_upload_objects_if_due(store)
+    cleanup_memory_shadow_if_due(store)
     try:
         reconciled_usage = reconcile_usage_if_due(store)
     except Exception as exc:

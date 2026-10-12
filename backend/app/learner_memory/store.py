@@ -339,3 +339,12 @@ def delete_shadow_facts_before(conn, owner, before):
     """Shadow facts are evaluation data only; hard delete past retention (§9.4)."""
     return conn.execute(text("DELETE FROM memory_facts WHERE owner_id=:owner AND status='shadow' AND learned_at<:before"),
                         {"owner": owner, "before": before}).rowcount
+
+
+def purge_expired_shadow(conn, before, *, limit=500):
+    """Bounded, all-owner purge of shadow facts past retention (§9.4)."""
+    ids = conn.execute(text("SELECT owner_id,id FROM memory_facts WHERE status='shadow' AND learned_at<:before ORDER BY learned_at LIMIT :limit"),
+                       {"before": before, "limit": limit}).all()
+    for owner, fact_id in ids:
+        delete_fact(conn, owner, fact_id)
+    return len(ids)

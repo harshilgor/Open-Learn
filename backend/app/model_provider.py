@@ -370,6 +370,11 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             else:
                 payload["response_format"] = format_value
                 payload["provider"] = {"require_parameters": True, "allow_fallbacks": False}
+                if self.model.startswith("anthropic/"):
+                    # OpenRouter's strict-schema Anthropic endpoints reject
+                    # temperature; with require_parameters, keeping it leaves
+                    # no endpoint at all (404 "No endpoints found").
+                    payload.pop("temperature", None)
         from .usage.transport import begin_model, finish_model
         if not getattr(self, 'is_openai', False) and self.model != 'openrouter/free' and not self.model.endswith(':free'):
             payload['usage'] = {'include': True}

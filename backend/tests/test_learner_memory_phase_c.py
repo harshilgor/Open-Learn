@@ -328,3 +328,35 @@ def test_memory_evaluation_suite_meets_promotion_gates():
     assert set(report["gates"]) == set(GATES) and all(report["gates"].values())
     assert {name: row["cases"] >= 10 for name, row in report["categories"].items()} == {
         "abstention": True, "extraction": True, "injection": True, "knowledge_update": True, "sensitive": True}
+
+
+def test_strict_schema_calls_to_anthropic_drop_temperature(monkeypatch):
+    import httpx
+    from backend.app.learner_memory.extraction import SCHEMA
+    from backend.app.model_provider import OpenRouterLessonProvider
+    sent = []
+
+    class Response:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self): return {"choices": [{"finish_reason": "stop", "message": {"content": "{\"facts\": []}"}}]}
+    monkeypatch.setattr(httpx, "post", lambda url, headers=None, json=None, timeout=None: sent.append(json) or Response())
+    OpenRouterLessonProvider(site_url=None, app_name="test", api_key="k", model="anthropic/claude-haiku-5.5").complete_json("x", 50, response_schema=SCHEMA)
+    OpenRouterLessonProvider(site_url=None, app_name="test", api_key="k", model="openai/gpt-oss").complete_json("x", 50, response_schema=SCHEMA)
+    OpenRouterLessonProvider(site_url=None, app_name="test", api_key="k", model="anthropic/claude-haiku-5.5").complete_json("x", 50)
+    assert "temperature" not in sent[0] and sent[0]["provider"] == {"require_parameters": True, "allow_fallbacks": False}
+    assert sent[1]["temperature"] == 0.3 and sent[2]["temperature"] == 0.3
+
+
+def test_worker_purges_expired_shadow_facts_for_every_owner(chat, monkeypatch):
+    from backend.app import worker
+    monkeypatch.setenv("OPENLEARN_MEMORY_EXTRACTION", "shadow")
+    old = time.time() - (policy.SHADOW_RETENTION_DAYS + 1) * 86400
+    # Current first: each extraction also purges that owner's expired shadow facts.
+    jobs.extract_turn(chat, "alice", add_turn(chat, "my calc midterm is on November 3", "gen-new"), extractor=FakeExtractor([candidate()]))
+    jobs.extract_turn(chat, "alice", add_turn(chat, "my calc midterm is on November 3", "gen-old"), extractor=FakeExtractor([candidate()]), now=old)
+    monkeypatch.setattr(worker, "_last_memory_shadow_cleanup", 0.0)
+    assert worker.cleanup_memory_shadow_if_due(chat, now=10_000.0) == 1
+    assert worker.cleanup_memory_shadow_if_due(chat, now=10_001.0) == 0  # hourly
+    with chat.engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE status='shadow'")).scalar_one() == 1
