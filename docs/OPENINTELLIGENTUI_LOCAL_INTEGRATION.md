@@ -63,7 +63,9 @@ Generated cards offer **Download** and **Copy HTML**. Required reviewed library 
 
 Trusted numeric change events persist through the existing owned visualization PATCH endpoint. Requests serialize using the latest revision, and voice focus updates after each save. Revision history stores the initial code once and bounded numeric deltas for subsequent changes (maximum 500 revisions). The main chat browser test persisted mass 7 at revision 5 and restored it after reload; screenshot `outputs/openintelligentui-chat-saved-controls.png`.
 
-The producer validates JavaScript with `node --check` without executing it, normalizes valid multiline literal JSON and repairs only an exact unique CSS-class/DOM-ID mismatch. Other invalid code is rejected. Unsupported generated fetch/XHR/WebSocket calls are rejected; image/tile loading remains governed by CSP. Tool validation can return a bounded correction request inside the same accounted run; it is not a restart-based automatic regeneration.
+The producer validates JavaScript with `node --check` without executing it, normalizes valid multiline literal JSON and repairs only an exact unique CSS-class/DOM-ID mismatch. Unsupported generated fetch/XHR/WebSocket calls are rejected; image/tile loading remains governed by CSP.
+
+Correction (12 October 2026): the agent-side "tool validation" correction loop described here previously never executed, because `generateSandboxedUi` is a CopilotKit frontend tool that `CopilotKitMiddleware` intercepts before tool execution. Validation, headless runtime verification and repair now run in the Open Learn orchestrator, which answers the intercepted call with a tool result on the same thread. See [GENERATIVE_UI_ENGINE.md](GENERATIVE_UI_ENGINE.md).
 
 Optional MCP:
 
@@ -82,6 +84,15 @@ Verification includes 30 focused Python checks, followed by 20 passing checks in
 An optional paid visual model must be explicitly selected in `OPENLEARN_VISUAL_MODEL`, with `OPENLEARN_VISUAL_RATE_VERSION` and a matching `OPENLEARN_VISUAL_MODEL_TARIFFS` JSON entry. The entry must name provider `openrouter` and provide positive finite `usd_per_million_input`, `usd_per_million_output` and `usd_per_million_cache_read`; optional cache-write rates receive the same validation. Account allowances, paid-route enablement and platform spending caps continue to apply. This does not activate a paid model automatically.
 
 The production gate is `OPENLEARN_VISUAL_HOSTED_ENABLED=true`, set only after rollout checks. The supervisor preserves `hosted_runtime` authentication/storage/migration checks, and the image retains Playwright/Daytona dependencies with a non-root runtime user. The current Render service uses `deploy/Dockerfile` and an explicit `hosted_runtime api-free` command; changing environment variables alone does not deploy this candidate supervisor. A release must explicitly change the service image/start configuration and validate `/ready`, authenticated capability and a real visual job.
+
+## Runtime verification, repair and benchmark
+
+Added 12 October 2026; design in [GENERATIVE_UI_ENGINE.md](GENERATIVE_UI_ENGINE.md), results in [GENERATIVE_UI_EVALUATION.md](GENERATIVE_UI_EVALUATION.md).
+
+- `setup-openintelligentui.ps1` (via `web/scripts/build-visual-assets.mjs`) also builds `web/.visual-verification/verification-kit.js`. The API uses it with the backend's Playwright Chromium to test every candidate before publication. `GET /v1/visual-pipeline/capability` reports `runtimeVerification: available` or the reason it is unavailable (`assets_missing`, `playwright_missing`, `disabled`).
+- Model choice matters: the free `nvidia/nemotron-3-ultra-550b-a55b` endpoint truncates forced tool-call arguments, so it cannot produce working visuals here. `nvidia/nemotron-3-super-120b-a12b:free` and `cohere/north-mini-code:free` were verified to emit full arguments. Changing `OPENLEARN_VISUAL_MODEL` requires restarting the visual agent and the API.
+- Benchmark: with the API and both sidecars running, `backend\.venv\Scripts\python.exe backend\scripts\visual_benchmark.py --label my-run --owner visual-bench` writes `work/visual-benchmark/<timestamp>-my-run/report.md`, `results.json` and screenshots. Use a dedicated `--owner`: the `free-v1` allowance covers only a few visual generations per window. `--rescore <dir>` re-measures stored artifacts without generating.
+- Local diagnostics: setting `OPENLEARN_VISUAL_DEBUG_DIR` in development writes each candidate, verdict, raw AG-UI event stream and provider request to that folder.
 
 ## Container acceptance
 

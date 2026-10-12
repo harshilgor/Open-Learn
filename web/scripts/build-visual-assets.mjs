@@ -11,9 +11,23 @@ await mkdir(out,{recursive:true});
 const modules={three:'three',gsap:'gsap',d3:'d3',chart:'chart.js/auto',leaflet:'leaflet','orbit-controls':'three/addons/controls/OrbitControls.js'};
 for(const [name,module] of Object.entries(modules)) {
   const entry=name==='three'?resolve(dirname(require.resolve('three')),'three.module.js'):name==='leaflet'?resolve(dirname(require.resolve('leaflet')),'leaflet-src.esm.js'):require.resolve(module);
-  await build({...name==='leaflet'?{stdin:{contents:`import * as L from ${JSON.stringify(entry)}; export * from ${JSON.stringify(entry)}; export default L; export const createTripAnimator=(...args)=>window.createTripAnimator(...args);`,resolveDir:root}}:{entryPoints:[entry]},bundle:true,format:'esm',platform:'browser',minify:true,
+  // Namespace default exports let both `await import('three')` and
+  // `(await import('three')).default` work; generated code uses both idioms.
+  const wrapped={
+    leaflet:`import * as L from ${JSON.stringify(entry)}; export * from ${JSON.stringify(entry)}; export default L; export const createTripAnimator=(...args)=>window.createTripAnimator(...args);`,
+    three:`import * as Library from ${JSON.stringify(entry)}; export * from ${JSON.stringify(entry)}; export default Library;`,
+    d3:`import * as Library from ${JSON.stringify(entry)}; export * from ${JSON.stringify(entry)}; export default Library;`,
+    'orbit-controls':`import {OrbitControls} from ${JSON.stringify(entry)}; export * from ${JSON.stringify(entry)}; export default OrbitControls;`,
+  }[name];
+  await build({...wrapped?{stdin:{contents:wrapped,resolveDir:root}}:{entryPoints:[entry]},bundle:true,format:'esm',platform:'browser',minify:true,
     outfile:fileURLToPath(new URL(name+'.js',out)),absWorkingDir:root,
     plugins:name==='orbit-controls'?[{name:'shared-three',setup(builder){builder.onResolve({filter:/^three$/},()=>({path:'./three.js',external:true}));}}]:[]});
 }
 await writeFile(new URL('manifest.json',out),JSON.stringify({version:1,modules,network:'local-only'},null,2));
+// Server-side runtime verification mounts candidates with the same frame,
+// program and script order as the chat card. Not served to learners.
+const verification=new URL('../.visual-verification/',import.meta.url);
+await mkdir(verification,{recursive:true});
+await build({entryPoints:[fileURLToPath(new URL('../components/generated-visual/verification-kit.ts',import.meta.url))],bundle:true,format:'esm',platform:'browser',minify:true,
+  outfile:fileURLToPath(new URL('verification-kit.js',verification)),absWorkingDir:root,alias:{'@':root.replace(/[\/]$/,'')}});
 console.log('Local visual library assets built.');

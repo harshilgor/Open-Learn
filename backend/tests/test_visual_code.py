@@ -20,3 +20,10 @@ def test_missing_dom_targets_only_repair_exact_unique_class():
     assert 'id="map-container"' in result['html'][0]
     with pytest.raises(ValueError,match='visual_missing_dom_target'):
         validate_visual_code({'html':['<div></div>'],'jsFunctions':"document.getElementById('absent').value=5"})
+
+
+def test_non_ascii_visual_text_is_validated_on_every_platform():
+    # Greek letters, arrows and emoji are common in educational visuals.
+    content = {'html': ['<p id="out">Γ → θ ✓</p>'], 'jsFunctions': 'function f(){document.getElementById("out").textContent="Γ = 0.5 → ✓ 🙂";}',
+               'jsExpressions': ['f()']}
+    assert validate_visual_code(content)['jsFunctions'].endswith('🙂";}')

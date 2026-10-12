@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def sidecar_environment():
     allowed = {'PATH','HOME','TMP','TEMP','SYSTEMROOT','LANG','PYTHONPATH',
-               'OPENLEARN_VISUAL_INTERNAL_SECRET','OPENLEARN_VISUAL_MODEL','OPENLEARN_VISUAL_JEV_MODEL','OPENROUTER_MODEL'}
+               'OPENLEARN_VISUAL_INTERNAL_SECRET','OPENLEARN_VISUAL_MODEL','OPENLEARN_VISUAL_JEV_MODEL','OPENROUTER_MODEL',
+               'OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS'}
     result = {key:value for key,value in os.environ.items() if key in allowed}
     result['OPENLEARN_OPENINTELLIGENTUI_ROOT'] = str(Path(__file__).parent/'upstream')
     result['OPENLEARN_VISUAL_NODE_PACKAGE'] = str(Path(__file__).parent/'package.json')

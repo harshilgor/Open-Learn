@@ -55,6 +55,16 @@ def has_multimodal_input(payload):
     return False
 
 
+def visual_input_limit():
+    """Serialized input bound for the visual producer (repairs and edits carry
+    prior artifact source). Reservations still assume four tokens per byte."""
+    try:
+        value=int(os.getenv('OPENLEARN_VISUAL_MAX_INPUT_BYTES','160000'))
+    except ValueError:
+        value=160000
+    return max(48000,min(256000,value))
+
+
 def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=False):
     from .context import current_store, current_root
     policy=Policy.load()
@@ -91,7 +101,8 @@ def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=
     if has_multimodal_input(payload):
         raise UsageError('usage_provider_unavailable','Multimodal billing needs a configured bounded tariff.',503)
     tokens=len(encoded.encode('utf-8'))
-    if tokens>48000:raise UsageError('usage_input_limit','Narrow this request or its supporting material.',422)
+    input_limit=visual_input_limit() if visual_profile else 48000
+    if tokens>input_limit:raise UsageError('usage_input_limit','Narrow this request or its supporting material.',422)
     ledger=Ledger(store or current_store.get() or storage(database_url()),policy)
     from ..execution import active_job
     job=active_job.get()
@@ -112,7 +123,7 @@ def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=
         input_bound=tokens + 1024 if sol_assessment else tokens*4
         liability=_liability_nano(input_bound,maximum,input_rate,output_rate)
         rates={**{key:str(value) for key,value in configured.items()},'input_token_bound_multiplier':1 if sol_assessment else 4,
-               'serialized_byte_limit':48000,'provider':(assessment_profile or {}).get('provider','openrouter'),'model':model}
+               'serialized_byte_limit':input_limit,'provider':(assessment_profile or {}).get('provider','openrouter'),'model':model}
         if sol_assessment:
             rates['input_framing_reserve']=1024
     row=ledger.reserve(principal.owner_id,uuid.uuid4().hex,'model',{'input_tokens':tokens,'output_tokens':maximum},

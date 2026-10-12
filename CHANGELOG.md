@@ -6,6 +6,11 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Generated visuals are runtime-verified before learners see them: a headless sandbox mounts each candidate exactly like the chat card at desktop and mobile widths, checks for errors, blank or empty renders, invalid readouts, clipped layouts and dead controls, and feeds specific findings back to the model for bounded repair.
+- Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
+- Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.
+- `backend/scripts/visual_benchmark.py`: a live generative-visual benchmark with task-specific scientific and interaction checks.
+
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.
 - Fullscreen Settings with General, API keys, Notifications, Data & privacy, and About; browser clients can save provider keys to the local service configuration.
@@ -19,6 +24,15 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 - Signed-beta release automation for Windows x64 and macOS Intel/Apple Silicon, with signing/notarization gates, release checksums, beta release notes, and an upgrade-validation runbook.
 
 ### Changed
+
+- Visual generation limits are configurable (`OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS`, default 16000; `OPENLEARN_VISUAL_DEADLINE_SECONDS`, default 600; `OPENLEARN_VISUAL_MAX_ATTEMPTS`, default 3; `OPENLEARN_VISUAL_MAX_INPUT_BYTES`, default 160000).
+- Turns where no visual is useful end without a visual-model call.
+
+### Fixed
+
+- Visual code validation crashed on Windows for any visual containing non-ASCII text (Greek letters, arrows, emoji).
+- Valid visuals that create elements in JavaScript were rejected as missing DOM targets.
+- `(await import('three')).default`, `d3` defaults and the `three/examples/jsm` OrbitControls path now resolve in visual frames.
 
 - Updated the repository README and installation guide around the local desktop beta and GitHub Releases distribution.
 

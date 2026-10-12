@@ -16,7 +16,14 @@ const base = z.object({version:z.literal(2),type:z.literal('generated_ui'),id:z.
   blockIndex:z.number().int().min(0).max(20).default(0),afterParagraph:z.number().int().min(0).max(20).default(0)});
 const controlSchema=z.object({id:z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),label:z.string().min(1).max(120),minimum:z.number().finite(),maximum:z.number().finite(),initial:z.number().finite()})
   .refine(value=>value.minimum<value.maximum&&value.initial>=value.minimum&&value.initial<=value.maximum);
-const generatedBase=base.extend({controls:z.array(controlSchema).max(8).default([]),controlValues:z.record(z.number().finite()).default({})});
+const visualId=z.string().regex(/^[A-Za-z0-9_-]+$/).max(120);
+// An edit is a new artifact derived from an earlier one; the parent is never mutated.
+const lineageSchema=z.object({rootId:visualId,parentId:visualId,parentRevision:z.number().int().positive(),version:z.number().int().min(2).max(1000)});
+// Compact runtime verification summary persisted with each artifact.
+const verificationSchema=z.object({status:z.enum(['passed','failed','unavailable']).nullish(),reason:z.string().max(80).nullish(),
+  findings:z.array(z.object({severity:z.enum(['error','warning','info']),code:z.string().max(80)})).max(24).default([])}).passthrough();
+const generatedBase=base.extend({controls:z.array(controlSchema).max(8).default([]),controlValues:z.record(z.number().finite()).default({}),
+  lineage:lineageSchema.nullish().transform(value=>value||undefined),verification:verificationSchema.nullish().transform(value=>value||undefined)});
 export const generatedVisualSchema = z.discriminatedUnion('renderer',[
   generatedBase.extend({renderer:z.literal('open_generative_ui'),content:contentSchema}),
   generatedBase.extend({renderer:z.literal('a2ui'),content:tableSchema}),

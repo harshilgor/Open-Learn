@@ -30,7 +30,7 @@ class VisualRuns:
         brief['sources'] = [{'spanId': s.get('spanId'), 'title': str(s.get('title', ''))[:160],
                             'text': str(s.get('text', ''))[:1600]} for s in brief['sources']]
         from .visual_context import visual_grounding
-        brief.update(visual_grounding(conn,self.records,owner,session_id,lesson_id))
+        brief.update(visual_grounding(conn,self.records,owner,session_id,lesson_id,question))
         data = {'id': run_id, 'sessionId': session_id, 'lessonId': lesson_id, 'phase': 'queued',
                 'question': question[:4000], 'brief': brief, 'snapshots': [], 'artifactRefs': [],
                 'createdAt': time.time()}
@@ -81,6 +81,8 @@ class VisualRuns:
             visual = GeneratedVisual.model_validate(value)
             visual.id = 'visual_' + hashlib.sha256(f"{run['id']}:{index}".encode()).hexdigest()[:24]
             visual.source_lesson_id = artifact.id
+            if visual.lineage is not None and not self._owned_parent(conn, owner, visual.lineage.parent_id, artifact.session_id):
+                visual.lineage = None  # Edits are only recorded against this learner's visual in this conversation.
             spec = visual.model_dump(mode='json', by_alias=True)
             record = {'id': visual.id, 'lessonId': artifact.id, 'sessionId': artifact.session_id, 'spec': spec, 'runId': run['id']}
             self.records.put(conn, owner, 'generated_visual', record, artifact.id)
@@ -112,6 +114,11 @@ class VisualRuns:
         self.records.put(conn, owner, 'visual_run', run | {'phase': 'completed' if references else 'skipped',
             'snapshots': [], 'candidates': [], 'artifactRefs': references}, artifact.id, expected=run['revision'])
         return {'visualRunId': run['id'], 'lessonId': artifact.id, 'artifactRefs': references}
+
+    def _owned_parent(self, conn, owner, visual_id, session_id):
+        exists = conn.execute(text("SELECT 1 FROM practice_records WHERE id=:id AND owner_id=:owner AND kind='generated_visual'"),
+                              {'id': visual_id, 'owner': owner}).first()
+        return bool(exists) and self.records.read(owner, visual_id, 'generated_visual', conn)['sessionId'] == session_id
 
     def change(self, owner, lesson_id, visual_id, change):
         """Persist a typed control revision, never arbitrary replacement code."""
@@ -197,7 +204,9 @@ def run_visual_job(store, provider, job_id):
                         service.update(job, snapshots=[value.model_dump(mode='json', by_alias=True)])
                     async def emit_plan(value):
                         service.update(job,plan=value)
-                    return await generate(job['owner_id'], job_id, run['brief'] | {'_visualLease': job['lease']}, run['question'], emit,emit_plan)
+                    async def emit_progress(value):
+                        service.update(job,progress=value)
+                    return await generate(job['owner_id'], job_id, run['brief'] | {'_visualLease': job['lease']}, run['question'], emit, emit_plan, emit_progress)
                 values = [value.model_dump(mode='json', by_alias=True) for value in asyncio.run(collect())]
                 service.update(job, phase='generated', candidates=values, snapshots=[])
             with store.transaction() as conn:

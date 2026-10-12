@@ -6,7 +6,7 @@ if (-not (Test-Path -LiteralPath $pythonRuntime)) { throw 'Run setup-openintelli
 # Only the internal ticket signing secret and nonsecret model selection go to
 # the visual sidecars. Provider secrets stay in the Open Learn backend.
 foreach ($line in [IO.File]::ReadAllLines((Join-Path $projectRoot 'backend\.env'))) {
-    if ($line -match '^\s*(OPENLEARN_VISUAL_INTERNAL_SECRET|OPENLEARN_VISUAL_MODEL|OPENLEARN_VISUAL_JEV_MODEL|OPENROUTER_MODEL)\s*=(.*)$') {
+    if ($line -match '^\s*(OPENLEARN_VISUAL_INTERNAL_SECRET|OPENLEARN_VISUAL_MODEL|OPENLEARN_VISUAL_JEV_MODEL|OPENROUTER_MODEL|OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS)\s*=(.*)$') {
         [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim().Trim('"').Trim("'"), 'Process')
     }
 }
