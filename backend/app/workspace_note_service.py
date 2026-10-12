@@ -134,6 +134,12 @@ def write_frontmatter(frontmatter: dict[str, Any], body: str) -> str:
 
 
 class WorkspaceNoteService:
+    @staticmethod
+    def _invalidate_courses(learner_id: str) -> None:
+        """Course summaries count notes; flushed after the transaction commits."""
+        from .cache import invalidate, owner_scope
+        invalidate("course", owner_scope(learner_id))
+
     def __init__(self, store: Store):
         self.store = store
         # The packaged Electron runtime already supplies FORMA_DB_PATH inside
@@ -300,7 +306,12 @@ class WorkspaceNoteService:
                     if existing['revision']==record.revision and existing['content_hash']==index_values['content_hash']:return
                     if existing['revision']!=record.revision-1:
                         raise WorkspaceNoteError('revision_conflict','The note changed; reload before saving.',409)
-            prior=connection.execute(text('SELECT content_hash FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'),index_values).scalar_one_or_none()
+            prior_row=connection.execute(text('SELECT content_hash,course_id FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'),index_values).first()
+            prior=prior_row[0] if prior_row else None
+            if prior_row is None or prior_row[1]!=index_values['course_id']:
+                # New note or moved between courses: course note counts changed.
+                # Ordinary autosaves leave the course cache alone.
+                self._invalidate_courses(record.learner_id)
             result = connection.execute(text("""
                 UPDATE workspace_notes SET relative_path=:relative_path, title=:title, revision=:revision,
                 frontmatter_json=:frontmatter_json, search_text=:search_text, content_hash=:content_hash,
@@ -631,6 +642,7 @@ class WorkspaceNoteService:
         if stale:
             with self.store.transaction() as connection:
                 for note_id in stale:
+                    self._invalidate_courses(learner_id)
                     connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id})
         return results
 
@@ -694,6 +706,7 @@ class WorkspaceNoteService:
                     raise
         if stale:
             with self.store.transaction() as connection:
+                self._invalidate_courses(learner_id)
                 connection.execute(text("DELETE FROM workspace_notes WHERE learner_id=:learner_id AND id IN :ids").bindparams(
                     bindparam("ids", expanding=True)),
                     {"learner_id": learner_id, "ids": stale})
@@ -763,6 +776,7 @@ class WorkspaceNoteService:
             raise WorkspaceNoteError("revision_conflict", "The note changed; reload before deleting.", 409)
         self.note_path(learner_id, note_id).unlink()
         with self.store.transaction() as connection:
+            self._invalidate_courses(learner_id)
             changed=connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id AND revision=:revision"), {"id": note_id, "learner_id": learner_id,'revision':expected_revision})
             if changed.rowcount!=1:raise WorkspaceNoteError('revision_conflict','The note changed; reload before deleting.',409)
             from .flashcards.class_adapter import invalidate_source
@@ -799,6 +813,7 @@ class WorkspaceNoteService:
                 if note_id not in observed:
                     from .flashcards.class_adapter import invalidate_source
                     invalidate_source(self.store,connection,learner_id,note_id)
+                    self._invalidate_courses(learner_id)
                     removed += connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id}).rowcount
         return WorkspaceNoteReindexResponse(indexed=indexed, skipped=skipped, removed=removed)
 

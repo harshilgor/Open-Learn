@@ -208,6 +208,9 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
             for row in rows.get(name, []):
                 grant_resource(conn, name, mapping[row['id']], owner)
         conn.execute(text("UPDATE identity_imports SET status='completed' WHERE id=:id"), {'id': import_id})
+        # Bulk-copied rows bypass domain services; drop every owner-scoped cache view.
+        from .cache import invalidate_owner
+        invalidate_owner(owner)
     return {'id': import_id, 'status': 'completed', 'sourcePreserved': True, 'mappingCount': len(mapping)}
 
 

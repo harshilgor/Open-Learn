@@ -46,6 +46,7 @@ jobs:
           backend/tests/test_context_provenance.py backend/tests/test_selected_material_context.py
           backend/tests/test_learner_memory_phase_a.py backend/tests/test_learner_memory_phase_b.py
           backend/tests/test_learner_memory_phase_c.py
+          backend/tests/test_cache.py
       - name: Learner memory evaluation gates (recorded extraction outputs; no provider)
         run: python -m backend.app.evaluation_runner --memory
       - name: Deterministic staging benchmark (not provider latency)
@@ -54,6 +55,35 @@ jobs:
         with:
           name: backend-performance-baseline
           path: outputs/performance/ci-baseline.json
+  backend-redis:
+    # Cache-aside layer against a real Valkey server (other jobs use fakeredis).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      AI_TUTOR_PROVIDER: deterministic_baseline
+      AI_TUTOR_ENV: development
+      OPENLEARN_WORKER_MODE: external
+      OPENLEARN_TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    services:
+      redis:
+        image: valkey/valkey:8.1
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Cache-aside regressions against real Redis
+        run: python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_cache.py
   frontend:
     runs-on: ubuntu-24.04
     defaults:
