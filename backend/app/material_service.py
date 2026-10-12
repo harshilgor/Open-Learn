@@ -250,6 +250,9 @@ class MaterialService:
                 text("INSERT INTO materials(id,owner_id,title,role,deleted,course_id) VALUES(:id,:owner,:title,:role,false,:course_id)"),
                 {"id": mid, "owner": owner, "title": request.title, "role": request.role, "course_id": course_id},
             )
+            if course_id:
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(owner))
             c.execute(
                 text("INSERT INTO material_versions(id,material_id,version,object_key,media_type,byte_count,status,payload) VALUES(:id,:mid,1,:key,:media,:size,'uploaded',:payload)"),
                 {"id": vid, "mid": mid, "key": uid("object"), "media": request.media_type, "size": request.byte_count, "payload": encoded({"issues": [], "parser": "text-v1"})},
@@ -694,10 +697,23 @@ class MaterialService:
                 invalidate_material_access(c,session_id=sid,owner=owner)
 
     def blocks(self, owner, vid):
-        self.version(owner, vid)
-        with self.store.engine.connect() as c:
-            rows = c.execute(text("SELECT * FROM material_blocks WHERE version_id=:id ORDER BY ordinal"), {"id": vid}).mappings().all()
-        return [{"id": r["id"], "versionId": vid, "pageIndex": r["page_index"], "kind": r["kind"], "text": r["text"], **json.loads(r["payload"])} for r in rows]
+        # Ownership/deletion check stays uncached so a deleted material 404s at once.
+        version = self.version(owner, vid)
+
+        def load():
+            with self.store.engine.connect() as c:
+                rows = c.execute(text("SELECT * FROM material_blocks WHERE version_id=:id ORDER BY ordinal"), {"id": vid}).mappings().all()
+            return [{"id": r["id"], "versionId": vid, "pageIndex": r["page_index"], "kind": r["kind"], "text": r["text"], **json.loads(r["payload"])} for r in rows]
+        if version["status"] != "ready":
+            return load()
+        from .cache import get_or_load, json_codec, owner_child_scope
+        return get_or_load("material_blocks", owner_child_scope(owner, vid), {}, load, ttl_seconds=24 * 3600, **json_codec())
+
+    @staticmethod
+    def invalidate_blocks(owner, vid):
+        """Call inside the transaction that rewrites a version's material_blocks."""
+        from .cache import invalidate, owner_child_scope
+        invalidate("material_blocks", owner_child_scope(owner, vid))
 
     def pdf_manifest(self, owner, vid, version=None):
         version = version or self.version(owner, vid)
@@ -966,6 +982,7 @@ class MaterialService:
             from .material_index import MaterialIndexService
             MaterialIndexService(self.store).erase(c, v["id"])
             c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
+            self.invalidate_blocks(job["owner_id"], v["id"])
             for ordinal, b in enumerate(blocks):
                 c.execute(text("INSERT INTO material_blocks(id,version_id,page_index,ordinal,kind,text,payload) VALUES(:id,:vid,:page,:ordinal,:kind,:text,:payload)"), {"id": b["id"], "vid": v["id"], "page": b["page"], "ordinal": ordinal, "kind": b["kind"], "text": b["text"], "payload": encoded({"extractionStatus": b["extractionStatus"], "textHash": hashlib.sha256(b["text"].encode()).hexdigest(), "pageLabel": b.get("pageLabel"), "geometry": b.get("geometry"), "ocrConfidence": b.get("ocrConfidence")})})
             parser = "pypdf-text-v1" if v["media_type"] == "application/pdf" else "vision-context-v1" if v["media_type"].startswith("image/") else "utf8-v1"
@@ -1028,12 +1045,15 @@ class MaterialService:
             from .agent_execution.sandbox_inputs import erase_versions
             erase_versions(c,owner,{v['id'] for v in versions})
             c.execute(text("UPDATE materials SET deleted=true WHERE id=:id AND owner_id=:owner"), {"id": mid, "owner": owner})
+            from .cache import invalidate, owner_scope
+            invalidate("course", owner_scope(owner))
             from .flashcards.class_adapter import invalidate_source
             for v in versions:
                 invalidate_source(self.store,c,owner,v["id"])
                 from .material_index import MaterialIndexService
                 MaterialIndexService(self.store).erase(c, v['id'])
                 c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
+                self.invalidate_blocks(owner, v["id"])
                 c.execute(text("DELETE FROM material_attachments WHERE version_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_jobs SET status='cancelled' WHERE target_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_versions SET status='deleted',payload='{}' WHERE id=:id"), {"id": v["id"]})

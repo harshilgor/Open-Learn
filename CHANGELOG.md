@@ -6,6 +6,7 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Optional Redis cache-aside layer (`backend/app/cache.py`) for polled and repeated reads: web evidence results, material blocks, concept graph, courses, calendar, and usage display aggregates. Off by default (`OPENLEARN_CACHE_ENABLED`, `REDIS_URL`); fail-open with a circuit breaker; per-namespace enable and shadow modes; generation-based invalidation flushed after commit; erasure on account deletion; Render Key Value in the Blueprints and Redis connection budget. See `docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md`.
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.
 - Fullscreen Settings with General, API keys, Notifications, Data & privacy, and About; browser clients can save provider keys to the local service configuration.

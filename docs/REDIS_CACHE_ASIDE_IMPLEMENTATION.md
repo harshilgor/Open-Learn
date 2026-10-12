@@ -288,4 +288,31 @@ Decisions for the project owner (record answers here):
 
 Implementation log (agent appends: date, phase, PR, deviations from this spec and why):
 
--
+- 2026-10-11, Phases 0–3 on branch `feature/redis-cache-aside`. All namespaces ship disabled; enable via §5 flags.
+  Deviations and decisions:
+  - **Transaction ownership:** pending invalidations belong to the innermost `Store.transaction` (a stack), not the
+    outermost. A nested `Store.transaction` is its own database transaction and commits independently, so it flushes on
+    its own commit; borrowed connections (`nullcontext(connection)`) still flush with the transaction that owns them.
+  - **Metrics:** `cache_get` / `cache_load` timing stages use the request's existing resource label (the timing registry
+    only accepts a fixed resource set); per-namespace counts are reported under `cache.namespaces` in the operations
+    snapshot.
+  - **Scopes:** `material_blocks` uses `owner_scope + "." + hash(version)` so account erasure also removes blocks.
+    `web_evidence` is scoped by hashed tenant, because its results are public search hits shared within a tenant (as in
+    the existing SQL cache).
+  - **Concept graph:** keyed by revision *and* a generation bumped in `_save`, because `report()` writes
+    `concept_mapping_reports` without bumping the revision. Only the current graph is cached; historical revisions
+    are single-row reads.
+  - **Course:** `CourseService._invalidate` also bumps `calendar`, since occurrences join on non-archived courses.
+    New sessions are detected through the existing `buddy_chats` lookup in `save_session` (no extra query). Note
+    saves detect create/move through the existing `prior` query (no extra query). Canvas course import
+    (`browser_assistant/reconciliation.map_course`) bumps on insert.
+  - **Calendar:** invalidated by `CalendarService.write` (all calendar tables), undo override deletes, Google
+    disconnect, academic entity saves, course changes, and user-initiated reminder actions (create, cancel, snooze,
+    reschedule, routine control, browser reminder policies). Background reminder delivery transitions and sync
+    freshness are bounded by the 30 s TTL rather than invalidated. Agent occurrence reads are never cached.
+  - **Identity import** bumps every owner namespace after a completed import.
+  - **Blueprints:** both use a `free` Key Value plan (25 MB, 50 connections per Render's compute-plans page) with
+    `REDIS_URL` wired per service via `fromService`; caching stays off until the flags are set. `check_connection_budget`
+    skips Key Value services and validates the new `redis` budget section.
+  - **CI:** `test_cache.py` runs with fakeredis in the backend job and against a real Valkey service in the new
+    `backend-redis` job.
