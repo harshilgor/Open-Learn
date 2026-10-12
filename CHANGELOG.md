@@ -6,6 +6,7 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase A (flagged, default off): `OPENLEARN_MEMORY_CHAT_CONTEXT` adds a bounded `learnerMemory` context block to default chat with explicit saved preferences, course dates in the next 30 days, and a five-item learner-state snapshot; `OPENLEARN_MEMORY_SKIP_UNUSED_COMPILE` skips the shared context compile that streamed chat turns discarded.
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.
 - Fullscreen Settings with General, API keys, Notifications, Data & privacy, and About; browser clients can save provider keys to the local service configuration.
@@ -20,6 +21,7 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Changed
 
+- The shared context compiler estimates tokens as UTF-8 bytes / 3 (matching the generation context engine) instead of one token per byte, so compiled packets admit about three times more content within the same budget. Remembered items are ranked course-scoped, explicit, newest first and capped at 12.
 - Updated the repository README and installation guide around the local desktop beta and GitHub Releases distribution.
 
 ### Known limitations

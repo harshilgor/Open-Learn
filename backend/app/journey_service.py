@@ -445,9 +445,18 @@ class JourneyService:
         manifest = save_manifest(self.store, owner, sid, command.message, sources)
         evidence = canonical_evidence(self.store, owner, graph)
         from .learning_control_plane import LearningControlPlane
-        control = LearningControlPlane(self.store).prepare(owner, sid, command.mode, command.gear.value,
+        from .learner_memory import policy as memory_policy
+        selected_span_ids = tuple(getattr(command, "selected_span_ids", []) or [])
+        # Streamed conversation turns never commit or prompt with the compiled
+        # packet (see commit_stream), so the compile and its manifest write are
+        # wasted work. Selected spans still compile: the compiler is what
+        # rejects a selection whose source is unavailable.
+        skip_compile = (memory_policy.skip_unused_compile_enabled() and is_conversation
+                        and generation_id is not None and not selected_span_ids)
+        control = None if skip_compile else LearningControlPlane(self.store).prepare(
+            owner, sid, command.mode, command.gear.value,
             command.message or journey["goal"], concept_id,
-            required_source_ids=tuple(getattr(command, "selected_span_ids", []) or []), token_budget=6000)
+            required_source_ids=selected_span_ids, token_budget=6000)
         journey["_controlPlane"] = control
         # Bounded evidence tool loop (feature-flagged). Retrieval success is
         # determined by durable tool state, never by model prose alone.
@@ -578,9 +587,17 @@ class JourneyService:
                     key: value for key, value in tool_result.items()
                     if key in {"retrievalOccurred", "evidenceOutcome", "evidence"}
                 }
+            learner_memory = None
+            if memory_policy.chat_context_enabled():
+                from .learner_memory.service import LearnerMemoryService
+                from .performance import span
+                with span("memory_retrieve"):
+                    learner_memory = LearnerMemoryService(self.store).chat_block(
+                        owner, sid, session.course_id, command.message or "")
             context_data = {
                 "selectedPassage": selection,
                 "gear": command.gear.value,
+                "learnerMemory": learner_memory,
                 "sources": safe_sources,
                 "learnerNotes": {"notes": safe_notes} if safe_notes else None,
                 "course": safe_course,
@@ -602,7 +619,7 @@ class JourneyService:
             }
         from .context_engine import ContextBlock, ContextEngine
         priorities = {"goal": 1, "step": 1, "gear": 1, "plan": 1, "lessonState": 1, "selectedPassage": 1,
-                      "evidence": 2, "course": 3, "assessments": 4, "sources": 5,
+                      "evidence": 2, "learnerMemory": 2, "course": 3, "assessments": 4, "sources": 5,
                       "learnerNotes": 5, "evidenceTools": 5, "attachedImages": 5}
         required_keys = {"selectedPassage", "learnerNotes"} if is_conversation else {
             "controlDecision", "sharedContext", "goal", "step", "gear", "plan", "selectedPassage", "learnerNotes"
