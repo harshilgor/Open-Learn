@@ -566,6 +566,19 @@ class JourneyService:
             )
         from .buddy_service import BuddyService
         prompt_instructions += BuddyService(self.store).instructions(owner,sid,command.message)
+        learner_memory, memory_context = None, None
+        if memory_policy.chat_context_enabled():
+            from .learner_memory.service import LearnerMemoryService
+            from .performance import span
+            with span("memory_retrieve"):
+                memory_service = LearnerMemoryService(self.store)
+                if memory_policy.retrieval_v2_enabled():
+                    memory_context = memory_service.context(
+                        owner, session.course_id, command.message or "", purpose="teaching",
+                        concept_ids=(concept_id,), timezone_name=getattr(command, "client_timezone", None))
+                    learner_memory = memory_context.text if memory_context else None
+                elif is_conversation:
+                    learner_memory = memory_service.chat_block(owner, sid, session.course_id, command.message or "")
         if is_conversation:
             safe_sources = [{key: source.get(key) for key in ("title", "pageLabel", "text") if source.get(key)}
                             for source in sources]
@@ -587,13 +600,6 @@ class JourneyService:
                     key: value for key, value in tool_result.items()
                     if key in {"retrievalOccurred", "evidenceOutcome", "evidence"}
                 }
-            learner_memory = None
-            if memory_policy.chat_context_enabled():
-                from .learner_memory.service import LearnerMemoryService
-                from .performance import span
-                with span("memory_retrieve"):
-                    learner_memory = LearnerMemoryService(self.store).chat_block(
-                        owner, sid, session.course_id, command.message or "")
             context_data = {
                 "selectedPassage": selection,
                 "gear": command.gear.value,
@@ -615,7 +621,7 @@ class JourneyService:
                 "lessonState": lesson_state, "evidence": evidence.model_dump(mode="json"),
                 "assessments": attempts, "sources": sources, "attachedImages": [image.title for image in images],
                 "learnerNotes": note_manifest.model_dump(mode="json"), "course": course_context,
-                "evidenceTools": evidence_section,
+                "evidenceTools": evidence_section, "learnerMemory": learner_memory,
             }
         from .context_engine import ContextBlock, ContextEngine
         priorities = {"goal": 1, "step": 1, "gear": 1, "plan": 1, "lessonState": 1, "selectedPassage": 1,
@@ -706,6 +712,10 @@ class JourneyService:
             conversation_state = next_state
         else:
             raise ModelProviderError("Earlier conversation could not be fitted into the context budget.")
+        # Use is recorded at commit only for memories that reached the prompt.
+        memory_included = any(block.kind == "learnerMemory" for block in generation_context.blocks)
+        memory_fact_ids = list(memory_context.fact_ids) if memory_context and memory_included else []
+        memory_trace = {**memory_context.trace, "blockIncluded": memory_included} if memory_context else None
         transition_suggestion = None
         if not command.classification_bypass_id:
             try:
@@ -736,7 +746,8 @@ class JourneyService:
             "compactionTriggered": conversation_state["version"] > previous_state["version"],
             "webEvidenceBundleId": web_bundle.response_bundle_id if web_bundle else None,
             "webRetrievalOccurred": bool(web_bundle and web_bundle.retrieval_occurred),
-            "transitionSuggestion": transition_suggestion, "decision": (control or {}).get("decision")}
+            "transitionSuggestion": transition_suggestion, "decision": (control or {}).get("decision"),
+            "memoryFactIds": memory_fact_ids, "memoryTrace": memory_trace}
 
     def commit_stream(self, conn, owner, prepared, command: JourneyCommand, body: str, visualizations=None):
         """Persist the authoritative artifact and Journey within the caller transaction."""

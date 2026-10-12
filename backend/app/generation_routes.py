@@ -217,6 +217,7 @@ def build_generation_router(store_provider, provider_getter):
             "providerInputStored": False,
             "blockDecisions": parsed_metric("contextDecisions", []),
             "omissionReasons": parsed_metric("contextOmissionReasons", []),
+            "memoryTrace": parsed_metric("memoryTrace", None),
             "conversationStateVersion": metrics.get("conversationStateVersion"),
             "included": (metrics.get("contextIncluded") or "").split(",") if metrics.get("contextIncluded") else [],
             "omitted": (metrics.get("contextOmitted") or "").split(",") if metrics.get("contextOmitted") else [],

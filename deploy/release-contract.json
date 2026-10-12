@@ -1,7 +1,7 @@
 {
   "protocolVersion": 1,
-  "schemaHeads": ["0086_learner_memory"],
-  "compatibleSchemaHeads": [["0086_learner_memory"]],
+  "schemaHeads": ["0087_memory_fact_versions"],
+  "compatibleSchemaHeads": [["0087_memory_fact_versions"]],
   "requiredCapabilities": ["durable-generation-v1", "branch-revisions-v1", "workspace-note-revisions-v1", "performance-timing-v1", "generation-worker-v1", "generation-shared-wakeups-v1", "fair-generation-admission-v1", "object-cleanup-queue-v1"],
   "migrationPolicy": "expand-contract",
   "migrationOwner": "single-release-job"

@@ -765,6 +765,8 @@ class GenerationManager:
                 "providerInputSerialization": "canonical_json_utf8_v1",
                 "contextDecisions": json.dumps(block_decisions, ensure_ascii=False),
                 "contextOmissionReasons": json.dumps(context.omission_reasons, ensure_ascii=False),
+                # Learner-memory IDs, scores, and omissions only; never memory text.
+                "memoryTrace": json.dumps(prepared.get("memoryTrace"), ensure_ascii=False),
                 "providerInputSha256": wire_digest,
                 "estimatedInputTokens": context.estimated_input_tokens,
                 "contextBudgetTokens": context.budget_tokens,
@@ -866,6 +868,9 @@ class GenerationManager:
                     from .learner_memory.jobs import enqueue_extraction
                     enqueue_extraction(self.store, connection, owner, session_id=journey["sessionId"],
                                        generation_id=generation_id, request=request)
+                    if prepared.get("memoryFactIds"):
+                        from .learner_memory import store as memory_store
+                        memory_store.record_use(connection, owner, prepared["memoryFactIds"])
                     if use_generated_visuals:
                         from .visual_runs import VisualRuns
                         visual_run = VisualRuns(self.store).admit(connection, owner, artifact.session_id, artifact.id,

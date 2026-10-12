@@ -94,6 +94,7 @@ def run(path: Path = SCENARIOS) -> dict:
         db = Store(Path(directory) / "memory-eval.db")
         try:
             outcomes = [run_case(db, case, today) for case in data["cases"]]
+            retrieval_report = run_retrieval(db)
         finally:
             db.close()
     categories = {}
@@ -117,6 +118,81 @@ def run(path: Path = SCENARIOS) -> dict:
         "abstentionCorrect": round(sum(item["passed"] for item in abstention) / len(abstention), 4) if abstention else 1.0,
     }
     gates = {name: (metrics[name] <= limit if name == "falseMemoryRate" else metrics[name] >= limit) for name, limit in GATES.items()}
+    # Extraction cases must all pass; retrieval is gated on aggregate recall,
+    # so a documented hard case (e.g. a synonym) can miss without failing CI.
     return {"suite": "openlearn-memory-evaluation", "scenarioVersion": data["version"], "provenance": data["provenance"],
-            "metrics": metrics, "gates": gates, "passed": all(gates.values()) and all(item["passed"] for item in outcomes),
-            "categories": categories, "outcomes": outcomes}
+            "metrics": metrics, "gates": gates,
+            "passed": all(gates.values()) and all(item["passed"] for item in outcomes) and retrieval_report["passed"],
+            "categories": categories, "outcomes": outcomes, "retrieval": retrieval_report}
+
+
+# --- Phase D: retrieval categories (§11.3 categories 1–4 and abstention) -------
+
+RETRIEVAL_SCENARIOS = Path(__file__).resolve().parents[2] / "evaluation" / "memory_retrieval_scenarios.json"
+RETRIEVAL_GATES = {"recallAt5.single_fact_recall": 0.8, "recallAt5.knowledge_update_recall": 0.8,
+                   "recallAt5.temporal": 0.8, "retrievalAbstentionCorrect": 0.95}
+
+
+def _seed_fact(conn, owner, item, now):
+    from sqlalchemy import text as sql
+    from . import policy as memory_policy
+    learned = now - float(item.get("days_ago", 1)) * 86400
+    importance = memory_policy.DEFAULT_IMPORTANCE.get(item["kind"], 0.5)
+    conn.execute(sql(f"""INSERT INTO memory_facts({store.FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,NULL,'[]',:event_date,
+        'user_stated',:status,:false,0.9,:importance,:learned,:learned,NULL,NULL,'[]',NULL,0,NULL,:stability,:false,'eval',1)"""),
+        {"owner": owner, "id": item["key"], "kind": item["kind"], "statement": item["statement"],
+         "subject": item.get("subject") or f"{item['kind']}:{item['key']}", "event_date": item.get("event_date"),
+         "status": item.get("status", "active"), "false": False, "importance": importance, "learned": learned,
+         "stability": 30 * (1 + 2 * importance)})
+
+
+def _seed_episode(conn, owner, item, now):
+    from sqlalchemy import text as sql
+    end = now - float(item["days_ago"]) * 86400
+    conn.execute(sql("""INSERT INTO memory_episodes(owner_id,id,session_id,course_id,period_start,period_end,turn_range,summary,topics,method,basis,status,created_at,revision)
+        VALUES(:owner,:id,'eval',NULL,:start,:end,'{}',:summary,'[]','extractive-v1','[]','active',:end,1)"""),
+        {"owner": owner, "id": item["key"], "start": end - 3600, "end": end, "summary": item["summary"]})
+
+
+def run_retrieval(db, path: Path = RETRIEVAL_SCENARIOS) -> dict:
+    from datetime import datetime
+    from ..context_engine import estimate_tokens
+    from .service import LearnerMemoryService
+    data = json.loads(path.read_text(encoding="utf-8"))
+    now = datetime.fromisoformat(data["now"]).timestamp()
+    service = LearnerMemoryService(db)
+    outcomes = []
+    for case in data["cases"]:
+        owner = "eval_retrieval_" + case["id"]
+        with db.transaction() as conn:
+            for item in data["commonFacts"] + case.get("facts", []):
+                _seed_fact(conn, owner, item, now)
+            for item in case.get("episodes", []):
+                _seed_episode(conn, owner, item, now)
+        result = service.context(owner, None, case["query"], now=now, timezone_name=data["timezone"])
+        included = sorted((result.trace["included"] if result else []), key=lambda item: -item["score"])
+        top = [item["id"] for item in included[:5]]
+        relevant = set(case["relevant"])
+        forbidden = set(case.get("forbidden", []))
+        hits = len(relevant & set(top))
+        outcome = {"id": case["id"], "category": case["category"], "relevant": len(relevant), "hitsAt5": hits,
+                   "included": len(included), "relevantIncluded": len(relevant & {item["id"] for item in included}),
+                   "forbiddenIncluded": len(forbidden & {item["id"] for item in included}),
+                   "memoryTokens": estimate_tokens(result.text) if result else 0, "hard": case.get("hard")}
+        outcome["passed"] = (hits == len(relevant) and not outcome["forbiddenIncluded"]) if relevant else outcome["included"] == 0
+        outcomes.append(outcome)
+    categories = {}
+    for name in sorted({item["category"] for item in outcomes}):
+        rows = [item for item in outcomes if item["category"] == name]
+        relevant_total = sum(item["relevant"] for item in rows)
+        included_total = sum(item["included"] for item in rows)
+        categories[name] = {"cases": len(rows), "passed": sum(item["passed"] for item in rows),
+                            "recallAt5": round(sum(item["hitsAt5"] for item in rows) / relevant_total, 4) if relevant_total else None,
+                            "precision": round(sum(item["relevantIncluded"] for item in rows) / included_total, 4) if included_total else None,
+                            "meanMemoryTokens": round(sum(item["memoryTokens"] for item in rows) / len(rows), 1)}
+    abstention = [item for item in outcomes if item["category"] == "retrieval_abstention"]
+    metrics = {f"recallAt5.{name}": row["recallAt5"] for name, row in categories.items() if row["recallAt5"] is not None}
+    metrics["retrievalAbstentionCorrect"] = round(sum(item["passed"] for item in abstention) / len(abstention), 4) if abstention else 1.0
+    gates = {name: (metrics.get(name) or 0) >= limit for name, limit in RETRIEVAL_GATES.items()}
+    return {"scenarioVersion": data["version"], "provenance": data["provenance"], "metrics": metrics, "gates": gates,
+            "passed": all(gates.values()), "categories": categories, "outcomes": outcomes}

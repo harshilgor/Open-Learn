@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import replace
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from . import policy
 
@@ -47,6 +47,13 @@ def _decode(row) -> dict:
     return fact
 
 
+def bump_version(conn, owner, *, now=None):
+    """Mark the owner's active fact/episode set as changed (same transaction as the change)."""
+    conn.execute(text("""INSERT INTO memory_fact_versions(owner_id,version,updated_at) VALUES(:owner,1,:now)
+        ON CONFLICT(owner_id) DO UPDATE SET version=memory_fact_versions.version+1,updated_at=:now"""),
+        {"owner": owner, "now": now or time.time()})
+
+
 def get_fact(conn, owner, fact_id):
     row = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND id=:id"),
                        {"owner": owner, "id": fact_id}).mappings().first()
@@ -79,6 +86,7 @@ def record_explicit_preference(conn, owner, *, derived_id, statement, course_id,
         conn.execute(text("""UPDATE memory_facts SET basis=:basis,confirmed_at=:now,stability_days=:stability,revision=revision+1
             WHERE owner_id=:owner AND id=:id"""),
             {"basis": json.dumps(merged), "now": now, "stability": policy.CONFIRMED_STABILITY_DAYS, "owner": owner, "id": existing["id"]})
+        bump_version(conn, owner, now=now)
         return existing["id"]
     if existing:
         # Same subject key, different text (a hash collision): never supersede
@@ -91,6 +99,7 @@ def record_explicit_preference(conn, owner, *, derived_id, statement, course_id,
         {"owner": owner, "id": fact_id, "statement": statement.strip()[:2000], "subject": subject_key, "course": course_id,
          "status": status, "false": False, "importance": policy.DEFAULT_IMPORTANCE["preference"], "now": now,
          "basis": json.dumps(refs), "stability": policy.CONFIRMED_STABILITY_DAYS, "policy": policy.MEMORY_POLICY_VERSION})
+    bump_version(conn, owner, now=now)
     return fact_id
 
 
@@ -106,6 +115,7 @@ def delete_fact(conn, owner, fact_id):
     """Hard delete a fact and its embeddings (§9.1)."""
     conn.execute(text("DELETE FROM memory_embeddings WHERE owner_id=:owner AND item_type='fact' AND item_id=:id"), {"owner": owner, "id": fact_id})
     conn.execute(text("DELETE FROM memory_facts WHERE owner_id=:owner AND id=:id"), {"owner": owner, "id": fact_id})
+    bump_version(conn, owner)
 
 
 def _drop_basis(conn, owner, facts, key, value, *, on_empty):
@@ -114,6 +124,7 @@ def _drop_basis(conn, owner, facts, key, value, *, on_empty):
         if any(ref.get("type") == "memory_source" for ref in remaining) or any(ref.get("type") == "turn" for ref in remaining):
             conn.execute(text("UPDATE memory_facts SET basis=:basis,revision=revision+1 WHERE owner_id=:owner AND id=:id"),
                          {"basis": json.dumps(remaining), "owner": owner, "id": fact["id"]})
+            bump_version(conn, owner)
         else:
             on_empty(fact)
 
@@ -134,6 +145,7 @@ def source_changed(conn, owner, source_id, *, removed, now=None):
         elif fact["status"] in {"active", "tentative"}:
             conn.execute(text("""UPDATE memory_facts SET status='archived',invalid_at=:now,revision=revision+1
                 WHERE owner_id=:owner AND id=:id"""), {"now": now, "owner": owner, "id": fact["id"]})
+            bump_version(conn, owner, now=now)
     _drop_basis(conn, owner, _facts_referencing(conn, owner, "sourceId", source_id), "sourceId", source_id, on_empty=unsupported)
 
 
@@ -195,7 +207,10 @@ def list_episodes(conn, owner, *, course_id=None, limit=100):
 
 def delete_episode(conn, owner, episode_id):
     conn.execute(text("DELETE FROM memory_embeddings WHERE owner_id=:owner AND item_type='episode' AND item_id=:id"), {"owner": owner, "id": episode_id})
-    return conn.execute(text("DELETE FROM memory_episodes WHERE owner_id=:owner AND id=:id"), {"owner": owner, "id": episode_id}).rowcount
+    deleted = conn.execute(text("DELETE FROM memory_episodes WHERE owner_id=:owner AND id=:id"), {"owner": owner, "id": episode_id}).rowcount
+    if deleted:
+        bump_version(conn, owner)
+    return deleted
 
 
 def get_settings(conn, owner):
@@ -272,6 +287,7 @@ def write_extracted(conn, owner, accepted, *, turn_basis, origin="user_stated", 
         if same and normalized(same["statement"]) == normalized(accepted.statement):
             conn.execute(text("""UPDATE memory_facts SET basis=:basis,confirmed_at=:now,revision=revision+1
                 WHERE owner_id=:owner AND id=:id"""), {"basis": json.dumps(same["basis"] + basis), "now": now, "owner": owner, "id": same["id"]})
+            bump_version(conn, owner, now=now)
             return "deduplicated", same["id"], []
     superseded = []
     if accepted.status == "active":
@@ -302,6 +318,8 @@ def write_extracted(conn, owner, accepted, *, turn_basis, origin="user_stated", 
          "basis": json.dumps(basis), "confirmed": now if accepted.explicit and not shadow else None,
          "stability": policy.CONFIRMED_STABILITY_DAYS if accepted.explicit and not shadow else stability,
          "needs_review": False, "policy": policy.MEMORY_POLICY_VERSION})
+    if not shadow:
+        bump_version(conn, owner, now=now)
     return "created", fact_id, superseded
 
 
@@ -332,6 +350,7 @@ def undo_fact(conn, owner, fact_id, *, now=None, window_seconds=86400):
                 WHERE owner_id=:owner AND id=:id"""), {"owner": owner, "id": row["id"]})
             restored.append(row["id"])
     conn.execute(text("UPDATE memory_facts SET superseded_by=NULL WHERE owner_id=:owner AND superseded_by=:id"), {"owner": owner, "id": fact_id})
+    bump_version(conn, owner, now=now)
     return restored
 
 
@@ -348,3 +367,102 @@ def purge_expired_shadow(conn, before, *, limit=500):
     for owner, fact_id in ids:
         delete_fact(conn, owner, fact_id)
     return len(ids)
+
+
+# --- Phase D: retrieval candidates and use tracking ----------------------------
+
+RANKING_COLUMNS = ("id", "kind", "statement", "subject_key", "course_id", "concept_ids", "event_date", "origin", "importance",
+                   "learned_at", "last_used_at", "confirmed_at", "stability_days")
+
+
+def candidate_facts(conn, owner, course_id, *, kinds=None, limit=policy.CANDIDATE_CAP):
+    """Active, non-sensitive facts for this course or global, most recently used first (§8.2 step 2).
+
+    Hot path: only the columns ranking needs, as plain rows. ``basis`` is not
+    read, and ``concept_ids`` is decoded only when present.
+    """
+    params = {"owner": owner, "course": course_id or "", "false": False, "limit": limit}
+    sql = f"""SELECT {','.join(RANKING_COLUMNS)} FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false
+        AND (course_id IS NULL OR course_id=:course)"""
+    if kinds:
+        names = sorted(kinds)
+        sql += " AND kind IN (" + ",".join(f":kind{index}" for index in range(len(names))) + ")"
+        params.update({f"kind{index}": name for index, name in enumerate(names)})
+    sql += " ORDER BY COALESCE(last_used_at, 0) DESC, learned_at DESC, id LIMIT :limit"
+    facts = []
+    for row in conn.execute(text(sql), params).all():
+        fact = dict(zip(RANKING_COLUMNS, row))
+        fact["concept_ids"] = json.loads(fact["concept_ids"]) if fact["concept_ids"] and fact["concept_ids"] != "[]" else []
+        fact["status"] = "active"
+        facts.append(fact)
+    return facts
+
+
+def candidate_episodes(conn, owner, course_id, since, *, limit=policy.EPISODE_CANDIDATE_CAP):
+    params = {"owner": owner, "since": since, "limit": limit}
+    sql = "SELECT * FROM memory_episodes WHERE owner_id=:owner AND status='active' AND period_end>=:since"
+    if course_id:
+        sql += " AND (course_id IS NULL OR course_id=:course)"; params["course"] = course_id
+    rows = conn.execute(text(sql + " ORDER BY period_end DESC, id LIMIT :limit"), params).mappings().all()
+    return [{**dict(row), "topics": json.loads(row["topics"] or "[]"), "turn_range": json.loads(row["turn_range"] or "{}")} for row in rows]
+
+
+def course_names(conn, owner) -> dict:
+    return {row[0]: row[1] for row in conn.execute(text("SELECT id,name FROM courses WHERE owner_id=:owner"), {"owner": owner})}
+
+
+def record_use(conn, owner, fact_ids, *, now=None):
+    """At turn commit: last_used_at and use_count always; stability at most once a day (§8.2 step 8, §9.2)."""
+    now = now or time.time()
+    for fact_id in dict.fromkeys(fact_ids or ()):
+        row = conn.execute(text("SELECT last_used_at,stability_days FROM memory_facts WHERE owner_id=:owner AND id=:id AND status='active'"),
+                           {"owner": owner, "id": fact_id}).first()
+        if not row:
+            continue
+        reinforce = row[0] is None or now - row[0] >= policy.USE_REINFORCEMENT_INTERVAL_SECONDS
+        conn.execute(text("""UPDATE memory_facts SET last_used_at=:now,use_count=use_count+1,stability_days=:stability
+            WHERE owner_id=:owner AND id=:id"""),
+            {"now": now, "owner": owner, "id": fact_id,
+             "stability": policy.stability_after_use(row[1]) if reinforce else row[1]})
+
+
+# Static ranking fields never change without a revision bump or a change in
+# the active set; per-use fields (last_used_at, stability_days) are read fresh.
+STATIC_COLUMNS = ("id", "kind", "statement", "subject_key", "course_id", "concept_ids", "event_date", "origin", "importance",
+                  "learned_at", "confirmed_at")
+
+
+def memory_version(conn, owner) -> int:
+    return conn.execute(text("SELECT version FROM memory_fact_versions WHERE owner_id=:owner"), {"owner": owner}).scalar_one_or_none() or 0
+
+
+def facts_watermark(conn, owner):
+    """The owner's memory version, plus a count as a guard for writers outside store.py."""
+    count = conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false"),
+                         {"owner": owner, "false": False}).scalar_one()
+    return memory_version(conn, owner), count
+
+
+def static_facts(conn, owner, *, limit=policy.CANDIDATE_CAP):
+    rows = conn.execute(text(f"""SELECT {','.join(STATIC_COLUMNS)} FROM memory_facts
+        WHERE owner_id=:owner AND status='active' AND sensitive=:false ORDER BY learned_at DESC, id LIMIT :limit"""),
+        {"owner": owner, "false": False, "limit": limit}).all()
+    facts = []
+    for row in rows:
+        fact = dict(zip(STATIC_COLUMNS, row))
+        fact["concept_ids"] = tuple(json.loads(fact["concept_ids"])) if fact["concept_ids"] and fact["concept_ids"] != "[]" else ()
+        fact["status"] = "active"
+        facts.append(fact)
+    return facts
+
+
+def volatile_for(conn, owner, fact_ids):
+    if not fact_ids:
+        return {}
+    query = text("SELECT id,last_used_at,stability_days FROM memory_facts WHERE owner_id=:owner AND status='active' AND id IN :ids").bindparams(bindparam("ids", expanding=True))
+    return {row[0]: {"last_used_at": row[1], "stability_days": row[2]} for row in conn.execute(query, {"owner": owner, "ids": list(fact_ids)})}
+
+
+def episodes_watermark(conn, owner):
+    count = conn.execute(text("SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active'"), {"owner": owner}).scalar_one()
+    return memory_version(conn, owner), count
