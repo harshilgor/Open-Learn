@@ -72,6 +72,7 @@ jobs:
         run: |
           git fetch origin main:refs/remotes/origin/main
           python -m backend.scripts.release_preflight --out outputs/release/configuration.json
+          python -m backend.scripts.check_release_topology
           python -m backend.scripts.check_release_contract
       # Authenticate and fetch the Vercel project configuration before the
       # migration or backend deployment can change production state.

@@ -99,7 +99,7 @@ jobs:
       - run: npm ci
       - name: Transport, notes, context, and stream regressions
         run: >-
-          npx vitest run tests/performance.test.tsx tests/product-service.test.tsx
+          npx vitest run tests/tutor-fast-path.test.tsx tests/performance.test.tsx tests/product-service.test.tsx
           tests/account-transport.test.tsx tests/api-loading.test.tsx tests/chat-outbox.test.tsx
           tests/generation-connection.test.tsx tests/generation-activity.test.tsx
           tests/conversation-admission.test.tsx tests/notes-sidebar.test.tsx

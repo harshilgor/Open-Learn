@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$SidecarPath,
-    [switch]$KeepRuntimeData
+    [switch]$KeepRuntimeData,
+    [ValidateRange(5, 180)][int]$StartupTimeoutSeconds = 90
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,21 +25,42 @@ function Get-FreeLoopbackPort {
 
 function Start-Sidecar([int]$Port) {
     $env:FORMA_DB_PATH = Join-Path $dataRoot 'forma.db'
+    # A developer's inherited hosted URL must never override this disposable DB.
+    $env:DATABASE_URL = 'sqlite+pysqlite:///' + $env:FORMA_DB_PATH.Replace('\', '/')
+    $env:OPENLEARN_MIGRATE_ON_START = 'true'
+    $env:OPENLEARN_WORKER_MODE = 'embedded'
     $env:AI_TUTOR_MATERIAL_DIR = $materialRoot
     $env:AI_TUTOR_ENV = 'development'
     $env:FORMA_API_TOKEN = 'runtime-smoke-token'
-    return Start-Process -FilePath $resolvedSidecar -ArgumentList @('--host', '127.0.0.1', '--port', "$Port") -WorkingDirectory $runtimeRoot -WindowStyle Hidden -PassThru
+    return Start-Process -FilePath $resolvedSidecar -ArgumentList @('--host', '127.0.0.1', '--port', "$Port") -WorkingDirectory $runtimeRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $runtimeRoot "$Port.stdout.log") -RedirectStandardError (Join-Path $runtimeRoot "$Port.stderr.log") -PassThru
+}
+
+function Write-StartupDiagnostics([int]$Port) {
+    foreach ($suffix in @('stdout', 'stderr')) {
+        $logPath = Join-Path $runtimeRoot "$Port.$suffix.log"
+        if (Test-Path -LiteralPath $logPath) {
+            Write-Host "Bundled runtime $suffix (last 30 lines):"
+            Get-Content -LiteralPath $logPath -Tail 30 | ForEach-Object { Write-Host $_ }
+        }
+    }
 }
 
 function Wait-ForHealth([int]$Port, [System.Diagnostics.Process]$Process) {
-    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+    # Attempts gave only ~10 seconds when connections were refused immediately.
+    # Use one predictable deadline for cold import/migration on shared runners.
+    $startupWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($startupWatch.Elapsed.TotalSeconds -lt $StartupTimeoutSeconds) {
         try {
-            if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri "http://127.0.0.1:$Port/health").StatusCode -eq 200) { return }
+            if ((Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri "http://127.0.0.1:$Port/health").StatusCode -eq 200) {
+                Write-Host "Bundled runtime healthy after $([Math]::Round($startupWatch.Elapsed.TotalSeconds, 2)) seconds."
+                return
+            }
         } catch {}
-        if ($Process.HasExited) { throw "The bundled API sidecar exited with code $($Process.ExitCode)." }
+        if ($Process.HasExited) { Write-StartupDiagnostics $Port; throw "The bundled API sidecar exited with code $($Process.ExitCode)." }
         Start-Sleep -Milliseconds 250
     }
-    throw 'The bundled API sidecar did not become healthy.'
+    Write-StartupDiagnostics $Port
+    throw "The bundled API sidecar did not become healthy within $StartupTimeoutSeconds seconds."
 }
 
 function Stop-Sidecar([System.Diagnostics.Process]$Process) {
@@ -78,5 +100,13 @@ finally {
     foreach ($process in @($first, $second)) {
         if ($null -ne $process -and -not $process.HasExited) { Stop-Sidecar $process }
     }
-    if (-not $KeepRuntimeData -and (Test-Path -LiteralPath $runtimeRoot)) { Remove-Item -LiteralPath $runtimeRoot -Recurse -Force }
+    if (-not $KeepRuntimeData -and (Test-Path -LiteralPath $runtimeRoot)) {
+        $resolvedRuntime = (Resolve-Path -LiteralPath $runtimeRoot).Path
+        $expectedRuntime = [System.IO.Path]::GetFullPath($runtimeRoot)
+        $tempParent = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+        if ($resolvedRuntime -ne $expectedRuntime -or [System.IO.Path]::GetDirectoryName($resolvedRuntime) -ne $tempParent -or [System.IO.Path]::GetFileName($resolvedRuntime) -notmatch '^forma-runtime-smoke-[a-f0-9]{32}$') {
+            throw 'Refusing cleanup outside the exact temporary smoke directory.'
+        }
+        Remove-Item -LiteralPath $resolvedRuntime -Recurse -Force
+    }
 }
