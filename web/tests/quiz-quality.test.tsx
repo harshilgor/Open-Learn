@@ -9,7 +9,7 @@ let root: Root;
 let container: HTMLDivElement;
 const item: Presentation = { id: 'question', quizId: 'quiz', concept_id: 'force', kind: 'single', stem: 'A cart moves at constant speed. What is its net force?', options: [{ id: 'a', label: 'Zero' }, { id: 'b', label: 'Rightward' }], hints: [], attemptId: null, difficulty: 'standard', hintCount: 1, questionPlan: { objective: 'transfer_check', capability: 'explain', reason_codes: [], public_objective: 'Explain why the idea works.' } };
 const attempt: Attempt = { id: 'attempt', presentationId: item.id, conceptId: 'force', response: '', selectedIds: ['a'], score: 1, feedback: 'The forces balance.', solution: 'Constant velocity implies zero net force.', correctIds: ['a'], status: 'evaluated', outcome: 'answer', assisted: false, conceptState: null };
-beforeEach(() => { localStorage.clear(); container = document.createElement('div'); document.body.append(container); root = createRoot(container); });
+beforeEach(() => { localStorage.clear(); container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); });
 afterEach(() => { act(() => root.unmount()); container.remove(); });
 function render(overrides: Partial<Presentation> = {}, result?: Attempt) {
   const onAnswer = vi.fn();

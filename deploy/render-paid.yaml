@@ -52,6 +52,8 @@ projects:
             healthCheckPath: /live
             autoDeployTrigger: off
             envVars:
+              - key: OPENLEARN_DB_POOL_SIZE
+                value: '3'
               - fromGroup: openlearn-production
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
@@ -71,6 +73,8 @@ projects:
             dockerCommand: python -m backend.app.hosted_runtime generation
             autoDeployTrigger: off
             envVars:
+              - key: OPENLEARN_DB_POOL_SIZE
+                value: '3'
               - fromGroup: openlearn-production
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'

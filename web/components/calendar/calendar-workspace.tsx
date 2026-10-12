@@ -59,14 +59,19 @@ export function CalendarWorkspace({ courses, onCourse, onStudy }: { courses: Cou
   useEffect(() => {
     if (!operation || !['queued', 'dispatching'].includes(operation.status)) return;
     const controller = new AbortController();
-    const timer = window.setInterval(() => {
+    let loading = false;
+    const refreshOperation = () => {
+      if (document.hidden || loading || controller.signal.aborted) return;
+      loading = true;
       void request<CalendarOperation & { reasonCode?: string }>(`/v1/calendar/operations/${encodeURIComponent(operation.id)}`, { signal: controller.signal }).then(receipt => {
         if (controller.signal.aborted) return;
         if (receipt.status === 'applied') { setOperation(receipt); setNotice('Google confirmed your calendar change.'); data.refresh(); }
         else if (['failed', 'outcome_unknown'].includes(receipt.status)) { setOperation(receipt); setNotice(receipt.status === 'outcome_unknown' ? 'Google may have applied this change. Its outcome needs reconciliation; it will not be sent again automatically.' : 'Google could not apply this change. Refresh the event before retrying.'); }
-      }).catch(() => {});
-    }, 3000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+      }).catch(() => {}).finally(() => { loading = false; });
+    };
+    const timer = window.setInterval(refreshOperation, 3000);
+    document.addEventListener('visibilitychange', refreshOperation);
+    return () => { controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshOperation); };
   }, [operation, data.refresh]);
   function updateDate(value: string, nextView = view) {
     setDay(value); setView(nextView);

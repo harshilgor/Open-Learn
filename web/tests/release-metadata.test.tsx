@@ -7,7 +7,7 @@ describe('immutable release metadata', () => {
   it('uses the explicit release commit over inherited Vercel Git metadata', async () => {
     vi.stubEnv('OPENLEARN_RELEASE_SHA', 'a'.repeat(40));
     vi.stubEnv('VERCEL_GIT_COMMIT_SHA', 'b'.repeat(40));
-    const metadata = await GET(new Request('https://frontend.example/api/release')).json();
+    const metadata = await GET(new Request('https://frontend.example/api/release')).json() as { commit: string };
     expect(metadata.commit).toBe('a'.repeat(40));
   });
 
@@ -15,7 +15,7 @@ describe('immutable release metadata', () => {
     vi.stubEnv('OPENLEARN_RELEASE_SHA', '');
     vi.stubEnv('VERCEL_GIT_COMMIT_SHA', 'b'.repeat(40));
     const response = GET(new Request('https://frontend.example/api/release'));
-    expect((await response.json()).commit).toBe('b'.repeat(40));
+    expect((await response.json() as { commit: string }).commit).toBe('b'.repeat(40));
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 });

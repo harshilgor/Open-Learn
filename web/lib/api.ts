@@ -1,6 +1,7 @@
 import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
 import { ACCOUNT_CHANGED, authenticatedFetch, sessionToken } from './account-session';
 import { ApiReadCache, readFreshness } from './api-read-cache';
+import { crossTabRead, invalidateCrossTabReads } from './cross-tab-reads';
 import { createPerformanceTraceId, recordApiTiming } from './api-performance';
 import { uploadMaterialParts, type MaterialUploadSession } from './material-upload';
 /**
@@ -404,8 +405,9 @@ export async function authenticatedResource(path:string):Promise<{url:string;htt
 
 const readCache = new ApiReadCache();
 let cacheEpoch = 0;
-function invalidateReads() { cacheEpoch++; readCache.clear(); }
+function invalidateReads() { cacheEpoch++; readCache.clear(); invalidateCrossTabReads(); }
 if (typeof window !== 'undefined') {
+  window.addEventListener('openlearn-read-invalidated', () => { cacheEpoch++; readCache.clear(); });
   window.addEventListener(ACCOUNT_CHANGED, invalidateReads);
   window.addEventListener('focus', invalidateReads);
   window.addEventListener('online', invalidateReads);
@@ -430,7 +432,10 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (epoch !== cacheEpoch) return request<T>(path, init);
   const headers = [...new Headers(init.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
   const key = JSON.stringify([epoch, identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
-  return readCache.read(key, () => requestUncached<T>(path, init), init.cache === 'no-cache' ? 0 : readFreshness(path));
+  const freshness = init.cache === 'no-cache' ? 0 : readFreshness(path);
+  const sharedKey = JSON.stringify([identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
+  return readCache.read(key, () => crossTabRead(sharedKey, () => requestUncached<T>(path, init),
+    identity || desktopToken() ? freshness : 0, () => epoch === cacheEpoch), freshness);
 }
 
 export type ChatOutboxMetrics = {

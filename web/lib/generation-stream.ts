@@ -2,6 +2,7 @@ import { authenticatedFetch } from './account-session';
 import { apiBaseUrl, request, type Gear } from './api';
 import type { VisualType } from './visualization-spec';
 import { beginGenerationTiming, bindGenerationTiming, recordGenerationTiming } from './api-performance';
+import { sharedGenerationResponse } from './shared-generation-response';
 
 export type GenerationMode = 'ask' | 'learn';
 export type GenerationRequest = { mode: GenerationMode; presentation?: 'conversation' | 'ask' | 'learn'; message: string; gear: Gear; expectedRevision: number; clientMessageId?: string; replyToGenerationId?: string; parentGenerationId?: string; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string };
@@ -95,11 +96,13 @@ export class GenerationStream {
     while (!this.stopped) {
       this.controller = new AbortController();
       try {
-        const response = await authenticatedFetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(generationId)}/events?after=${this.sequence}`, {
-          headers: headers(this.sequence ? { 'Last-Event-ID': String(this.sequence) } : {}), signal: this.controller.signal,
-        });
+        const response = await sharedGenerationResponse(generationId, this.sequence, this.controller.signal,
+          (cursor, signal) => authenticatedFetch(`${apiBaseUrl()}/v1/generations/${encodeURIComponent(generationId)}/events?after=${cursor}`, {
+            headers: headers(cursor ? { 'Last-Event-ID': String(cursor) } : {}), signal,
+          }), apiBaseUrl());
         if (!response.ok || !response.body) throw new Error(`Could not reconnect to generation (${response.status}).`);
         const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
+        try {
         while (!this.stopped) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -109,6 +112,7 @@ export class GenerationStream {
           for (const frame of frames) this.apply(frame, callbacks);
           if (this.isTerminal()) return;
         }
+        } finally { await reader.cancel().catch(() => undefined); }
         if (!this.stopped && !this.isTerminal()) throw new Error('The response stream ended before completion.');
       } catch (cause) {
         if (this.stopped || (cause instanceof DOMException && cause.name === 'AbortError')) return;

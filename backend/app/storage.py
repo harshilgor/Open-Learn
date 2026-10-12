@@ -62,6 +62,17 @@ class Store:
 
     @staticmethod
     def _put(connection: Connection, table: str, key_column: str, key: str, values: dict[str, Any]) -> None:
+        if connection.dialect.name == 'postgresql':
+            # All callers use the table's primary key. Keep owner/revocation
+            # checks in the surrounding transaction; remove the existence RTT.
+            insert_values = {key_column: key, **values}
+            quote = connection.dialect.identifier_preparer.quote
+            columns = ', '.join(quote(column) for column in insert_values)
+            parameters = ', '.join(f':{column}' for column in insert_values)
+            assignments = ', '.join(f'{quote(column)} = EXCLUDED.{quote(column)}' for column in values)
+            connection.execute(text(f'INSERT INTO {quote(table)} ({columns}) VALUES ({parameters}) '
+                f'ON CONFLICT ({quote(key_column)}) DO UPDATE SET {assignments}'), insert_values)
+            return
         exists = connection.execute(
             text(f"SELECT 1 FROM {table} WHERE {key_column} = :key"), {"key": key}
         ).first()
@@ -85,9 +96,7 @@ class Store:
 
     def get_scope(self, scope_id: str) -> TopicScope | None:
         with self.engine.connect() as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "topic_scopes", scope_id)
-            row = connection.execute(text("SELECT payload FROM topic_scopes WHERE id = :id"), {"id": scope_id}).mappings().first()
+            row = self._owned_payload(connection, 'topic_scopes', scope_id)
         return TopicScope.model_validate_json(row["payload"]) if row else None
 
     def save_job(self, job: GraphJob) -> None:
@@ -98,9 +107,7 @@ class Store:
 
     def get_job(self, job_id: str) -> GraphJob | None:
         with self.engine.connect() as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "graph_jobs", job_id)
-            row = connection.execute(text("SELECT payload FROM graph_jobs WHERE id = :id"), {"id": job_id}).mappings().first()
+            row = self._owned_payload(connection, 'graph_jobs', job_id)
         return GraphJob.model_validate_json(row["payload"]) if row else None
 
     def save_graph(self, graph: GraphVersion) -> None:
@@ -111,10 +118,24 @@ class Store:
 
     def get_graph(self, graph_id: str, connection: Connection | None = None) -> GraphVersion | None:
         with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "graph_versions", graph_id)
-            row = connection.execute(text("SELECT payload FROM graph_versions WHERE id = :id"), {"id": graph_id}).mappings().first()
+            row = self._owned_payload(connection, 'graph_versions', graph_id)
         return GraphVersion.model_validate_json(row["payload"]) if row else None
+
+    @staticmethod
+    def _owned_payload(connection, table, identifier):
+        """Keep resource authorization in the same SQL read as its payload."""
+        from .identity import principal_context, fail
+        principal = principal_context.get()
+        quoted = connection.dialect.identifier_preparer.quote(table)
+        if principal is None:
+            return connection.execute(text(f'SELECT payload FROM {quoted} WHERE id=:id'), {'id': identifier}).mappings().first()
+        row = connection.execute(text(f'''
+            SELECT data.payload FROM identity_resources rights LEFT JOIN {quoted} data ON data.id=rights.id
+            WHERE rights.kind=:kind AND rights.id=:id AND rights.owner_id=:owner
+        '''), {'kind': table, 'id': identifier, 'owner': principal.owner_id}).mappings().first()
+        if row is None:
+            fail('resource_not_found', 'Resource not found.', 404)
+        return row if row['payload'] is not None else None
 
     def save_session(self, session: LearningSession) -> None:
         with self.transaction() as connection:

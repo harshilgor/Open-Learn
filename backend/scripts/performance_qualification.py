@@ -28,6 +28,8 @@ def main() -> None:
     parser.add_argument("--profile-timeout-seconds", type=int, default=600,
                         help="Stop a stalled local profile instead of leaving a fixture process running")
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument('--database-url-env', help='Forward isolated local PostgreSQL variable to each profile')
+    parser.add_argument('--external-worker', action='store_true', help='Qualify an independent local generation worker')
     args = parser.parse_args()
     names = [part.strip() for part in args.profiles.split(",") if part.strip()]
     unknown = sorted(set(names) - set(profiles))
@@ -35,8 +37,8 @@ def main() -> None:
         parser.error("Unknown or empty profiles: " + ", ".join(unknown or names))
     if len(set(names)) != len(names):
         parser.error("Profiles must not be repeated")
-    if not 1 <= args.samples_per_scenario <= 1000:
-        parser.error("--samples-per-scenario must be between 1 and 1000")
+    if not 1 <= args.samples_per_scenario <= 500:
+        parser.error("--samples-per-scenario must be between 1 and 500 (two scenarios, at most 1000 attempts)")
     if not 10 <= args.profile_timeout_seconds <= 3600:
         parser.error("--profile-timeout-seconds must be between 10 and 3600")
 
@@ -52,6 +54,10 @@ def main() -> None:
                    "--runs", str(args.samples_per_scenario * 2),
                    "--concurrency", str(concurrency), "--out", str(report_path),
                    "--temp-dir", str(output.parent)]
+        if args.database_url_env:
+            command.extend(['--database-url-env', args.database_url_env])
+        if args.external_worker:
+            command.append('--external-worker')
         timed_out = False
         try:
             completed = subprocess.run(command, cwd=ROOT, check=False,
@@ -67,6 +73,9 @@ def main() -> None:
             except (OSError, json.JSONDecodeError):
                 detail = None
         timings = (detail or {}).get("timings", {})
+        scenario_counts = {scenario: sum(row.get('scenario') == scenario and row.get('status') == 'completed'
+            and row.get('revisionProtected') is True for row in (detail or {}).get('results', []))
+            for scenario in ('greeting', 'short-tutoring')}
         profile_results.append({
             "profile": name,
             "targetConcurrentUsers": concurrency,
@@ -76,18 +85,21 @@ def main() -> None:
             "phaseAtTimeoutOrCompletion": (detail or {}).get("phase"),
             "requestedAttempts": (detail or {}).get("requestedAttempts"),
             "timings": timings,
+            "successfulSamplesPerScenario": scenario_counts,
             "processExitCode": return_code,
             "timedOut": timed_out,
             "artifact": report_path.name,
         })
 
-    sample_gate_met = args.samples_per_scenario >= int(workload["minimumSamplesForPercentileGate"])
+    sample_gate_met = all(count >= int(workload['minimumSamplesForPercentileGate'])
+        for profile in profile_results for count in profile['successfulSamplesPerScenario'].values())
     report = {
         "version": 1,
         "observedAt": datetime.now(timezone.utc).isoformat(),
-        "scope": "local disposable SQLite with deterministic fixture provider; no hosted requests or provider charges",
+        "scope": "isolated local PostgreSQL with deterministic fixture provider" if args.database_url_env else "local disposable SQLite with deterministic fixture provider; no hosted requests or provider charges",
         "productionQualification": False,
-        "productionQualificationReason": "This fixture does not exercise PostgreSQL, browsers/tabs, real providers, separate workers, deployment overlap, or production resource limits.",
+        "productionQualificationReason": "This fixture does not exercise browsers/tabs, real providers, deployment overlap or production resource limits. PostgreSQL and separate workers are used only when explicitly selected.",
+        "executionMode": "separate-generation-process" if args.external_worker else "embedded",
         "sampleGateMetForFixture": sample_gate_met,
         "profiles": profile_results,
         "allFixtureProfilesPassed": all(row["processExitCode"] == 0 and row["failures"] == 0 for row in profile_results),

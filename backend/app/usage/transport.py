@@ -24,7 +24,9 @@ def haiku55_rates():
             'usd_per_million_output':Decimal(os.environ['OPENLEARN_HAIKU55_OUTPUT_USD_PER_MILLION']),
             'usd_per_million_cache_read':Decimal(os.environ['OPENLEARN_HAIKU55_CACHE_READ_USD_PER_MILLION']),
         }
-        if any(rate<=0 for rate in rates.values()):raise ValueError()
+        if os.getenv('OPENLEARN_PROVIDER_PREFIX_CACHE_ENABLED') == 'true':
+            rates['usd_per_million_cache_write'] = Decimal(os.environ['OPENLEARN_HAIKU55_CACHE_WRITE_USD_PER_MILLION'])
+        if any(not rate.is_finite() or rate<=0 for rate in rates.values()):raise ValueError()
         return rates
     except Exception:
         raise UsageError('usage_provider_unavailable','Haiku 5.5 has no verified provider rate configured.',503) from None
@@ -135,7 +137,8 @@ def finish_model(ticket,raw=None):
                 # OpenRouter usage receipts may omit cost on some routed
                 # endpoints. Charge a conservative estimate at the pinned rate.
                 rates=json.loads(row['payload']).get('providerRates',{})
-                input_rate=Decimal(rates.get('usd_per_million_input','0'))
+                input_rate=max(Decimal(rates.get('usd_per_million_input','0')),
+                    Decimal(rates.get('usd_per_million_cache_write', rates.get('usd_per_million_input','0'))))
                 output_rate=Decimal(rates.get('usd_per_million_output','0'))
                 liability=_liability_nano(prompt,output,input_rate,output_rate)
             else:

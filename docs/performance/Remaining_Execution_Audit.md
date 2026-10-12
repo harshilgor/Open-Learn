@@ -1,5 +1,7 @@
 # Remaining performance plan execution audit
 
+> Historical snapshot: local-only and unapplied-migration status statements below are superseded by [the current audit](Performance_Plan_Audit_2026-10-11.md). Production release #21 deployed bc6f3b7 and schema 0085. Performance acceptance remains unmet.
+
 Reviewed: 2026-10-11 against the task-wise plan, checked-in implementation
 notes, local measurement artifacts, and the current workspace state.
 

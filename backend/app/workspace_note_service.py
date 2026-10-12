@@ -234,6 +234,17 @@ class WorkspaceNoteService:
             raise WorkspaceNoteError("invalid_note_file", "Note identifier does not match its file name.", 422)
         return record
 
+    def _record_from_index(self, learner_id: str, row) -> WorkspaceNoteRecord:
+        """Decode one authoritative hosted row without another checkout or cache write."""
+        prefix = row['title'] + '\n'
+        if not row['search_text'].startswith(prefix):
+            raise WorkspaceNoteError('invalid_note_file', 'Stored note content is unavailable.', 409)
+        record = self._to_record(learner_id, row['id'] + '.md',
+            write_frontmatter(json.loads(row['frontmatter_json']), row['search_text'][len(prefix):]))
+        if record.id != row['id']:
+            raise WorkspaceNoteError('invalid_note_file', 'Note identifier does not match its stored row.', 422)
+        return record
+
     def _indexed_hash(self, learner_id: str, note_id: str) -> str | None:
         with self.store.engine.connect() as connection:
             return connection.execute(text("""
@@ -602,9 +613,12 @@ class WorkspaceNoteService:
         self._validate_learner(learner_id)
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
-                SELECT id FROM workspace_notes WHERE learner_id=:learner_id ORDER BY updated_at DESC, title ASC
+                SELECT id,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id ORDER BY updated_at DESC, title ASC
             """), {"learner_id": learner_id}).mappings().all()
         results: list[WorkspaceNoteSummary] = []
+        from .identity import hosted
+        if hosted():
+            return [self._summary(self._record_from_index(learner_id, row)) for row in rows]
         stale: list[str] = []
         for row in rows:
             try:
@@ -649,7 +663,7 @@ class WorkspaceNoteService:
         limit = max(1, min(int(limit), 100))
         params: dict[str, Any] = {"learner_id": learner_id, "limit": limit + 1}
         statement = """
-            SELECT id,updated_at FROM workspace_notes WHERE learner_id=:learner_id
+            SELECT id,updated_at,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id
         """
         if cursor:
             cursor_updated, cursor_id = self._decode_note_cursor(cursor)
@@ -663,6 +677,11 @@ class WorkspaceNoteService:
             rows = connection.execute(query, params).mappings().all()
         page_rows = rows[:limit]
         has_more = len(rows) > limit
+        from .identity import hosted
+        if hosted():
+            summaries = [self._summary(self._record_from_index(learner_id, row)) for row in page_rows]
+            next_cursor = self._encode_note_cursor(page_rows[-1]['updated_at'], page_rows[-1]['id']) if has_more and page_rows else None
+            return WorkspaceNotePage(notes=summaries, next_cursor=next_cursor)
         summaries: list[WorkspaceNoteSummary] = []
         stale: list[str] = []
         for row in page_rows:
@@ -685,18 +704,19 @@ class WorkspaceNoteService:
         self._validate_learner(learner_id)
         term = query.strip()
         if not term:
-            return self.list(learner_id)[:limit]
+            return self.list_page(learner_id, limit).notes
         # Read only index data here; `reindex` is available after user file edits.
         pattern = f"%{term.lower()}%"
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
-                SELECT id FROM workspace_notes WHERE learner_id=:learner_id
+                SELECT id,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id
                 AND LOWER(search_text) LIKE :pattern ORDER BY updated_at DESC, title ASC LIMIT :limit
             """), {"learner_id": learner_id, "pattern": pattern, "limit": limit}).mappings().all()
         notes: list[WorkspaceNoteSummary] = []
+        from .identity import hosted
         for row in rows:
             try:
-                notes.append(self._summary(self._read_file(learner_id, row["id"])))
+                notes.append(self._summary(self._record_from_index(learner_id, row) if hosted() else self._read_file(learner_id, row["id"])))
             except WorkspaceNoteError:
                 continue
         return notes

@@ -79,11 +79,13 @@ export function useBrowserAssistant(sessionId:string|null, courseId?:string|null
     // Explicit task commands still report their own errors below.
     const update=()=>{if(loading)return;loading=true;void refresh().catch(()=>undefined).finally(()=>{loading=false;});};
     const timer=window.setTimeout(()=>{setTasks([]);setError('');setNotice('');update();},0);
-    const interval=window.setInterval(update,5000);
+    const visibleUpdate=()=>{if(!document.hidden)update();};
+    const interval=window.setInterval(visibleUpdate,5000);
+    document.addEventListener('visibilitychange',visibleUpdate);
     const clear=()=>{generation.current++;eventCursors.current.clear();dismissedRequests.current.clear();setDismissedRequestIds([]);setReplyTarget(null);setTasks([]);setError('');setNotice('');update();};
     window.addEventListener(ACCOUNT_CHANGED,clear);
     window.addEventListener('openlearn-browser-task-changed',update);
-    return()=>{alive.current=false;window.clearTimeout(timer);window.clearInterval(interval);window.removeEventListener(ACCOUNT_CHANGED,clear);window.removeEventListener('openlearn-browser-task-changed',update);};
+    return()=>{alive.current=false;window.clearTimeout(timer);window.clearInterval(interval);document.removeEventListener('visibilitychange',visibleUpdate);window.removeEventListener(ACCOUNT_CHANGED,clear);window.removeEventListener('openlearn-browser-task-changed',update);};
   },[refresh,setReplyTarget]);
 
   const activeTaskKey=tasks.filter(task=>!finishedTask(task.status)).map(task=>task.id).sort().join('|');

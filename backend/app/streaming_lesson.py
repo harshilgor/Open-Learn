@@ -72,6 +72,7 @@ class ProgressiveLessonParser:
         self.block_id = ""
         self.kind = "explanation"
         self.heading = default_heading
+        self.line_start = True
 
     def _start(self, heading: str, kind: str) -> LessonStreamOperation:
         self.block_index += 1
@@ -84,7 +85,8 @@ class ProgressiveLessonParser:
         operations: list[LessonStreamOperation] = []
         while "\n" in self.pending:
             line, self.pending = self.pending.split("\n", 1)
-            match = re.match(r"^#{1,3}\s+(.+?)\s*$", line)
+            match = re.match(r"^#{1,3}\s+(.+?)\s*$", line) if self.line_start else None
+            self.line_start = True
             if match:
                 if self.block_id:
                     operations.append(LessonStreamOperation("complete", self.block_id))
@@ -95,9 +97,13 @@ class ProgressiveLessonParser:
                 operations.append(self._start("", "explanation"))
             operations.append(LessonStreamOperation("delta", self.block_id, text=line + "\n"))
         # Once a line cannot be a heading, stream it without waiting for a newline.
-        if self.pending and self.block_id and not self.pending.startswith("#"):
+        could_be_heading = self.line_start and re.match(r'^#{1,3}(?:\s|$)', self.pending) is not None
+        if self.pending and not could_be_heading:
+            if not self.block_id:
+                operations.append(self._start('', 'explanation'))
             operations.append(LessonStreamOperation("delta", self.block_id, text=self.pending))
             self.pending = ""
+            self.line_start = False
         return operations
 
     def finish(self) -> list[LessonStreamOperation]:

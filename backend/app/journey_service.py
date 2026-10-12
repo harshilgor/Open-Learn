@@ -360,6 +360,26 @@ class JourneyService:
         from .buddy_service import BuddyService
         presentation = BuddyService(self.store).presentation(owner, sid)
         is_conversation = command.mode == "ask" and presentation == "conversation"
+        if command.mode == "ask" and presentation == "conversation" and command.action == "message":
+            reply = None
+            if not getattr(command, 'selected_text', None) and not getattr(command, 'selected_span_ids', []) and not command.note_context:
+                reply = social_reply(command.message)
+            if reply:
+                self._set_mode(journey, command.mode, command.gear.value)
+                return {
+                    "journey": journey,
+                    "generationId": generation_id,
+                    "conceptId": session.current_concept_id or (graph.concepts[0].id if graph.concepts else "conversation"),
+                    "title": short_title(command.message),
+                    "directReply": reply,
+                    "responseKind": "social",
+                    "generatedBy": "deterministic_social",
+                    "sources": [],
+                    "noteReceipt": {"label": "learner_provided_unverified_context", "notes": [], "totalCharacters": 0},
+                    "contextId": None,
+                    "actionId": uid("action"),
+                    "question": command.message,
+                }
         context_turns_source = journey["turns"]
         if is_conversation and generation_id:
             from sqlalchemy import text
@@ -389,26 +409,6 @@ class JourneyService:
                     pending_context_turns.append(pending)
         else:
             context_turns = completed_turns
-        if command.mode == "ask" and presentation == "conversation" and command.action == "message":
-            reply = None
-            if not getattr(command, 'selected_text', None) and not getattr(command, 'selected_span_ids', []) and not command.note_context:
-                reply = social_reply(command.message)
-            if reply:
-                self._set_mode(journey, command.mode, command.gear.value)
-                return {
-                    "journey": journey,
-                    "generationId": generation_id,
-                    "conceptId": session.current_concept_id or (graph.concepts[0].id if graph.concepts else "conversation"),
-                    "title": short_title(command.message),
-                    "directReply": reply,
-                    "responseKind": "social",
-                    "generatedBy": "deterministic_social",
-                    "sources": [],
-                    "noteReceipt": {"label": "learner_provided_unverified_context", "notes": [], "totalCharacters": 0},
-                    "contextId": None,
-                    "actionId": uid("action"),
-                    "question": command.message,
-                }
         task_graph_scope = self._apply_task_scope(owner, journey, command, graph)
         self._set_mode(journey, command.mode, command.gear.value)
         if command.mode == "learn":

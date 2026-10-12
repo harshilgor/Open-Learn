@@ -18,11 +18,16 @@ def canonical_evidence(store, owner, graph):
     from .stable_concept_service import StableConceptService
     with store.engine.connect() as conn:
         shared = UnifiedLearnerState(store).read(conn, owner)
+        mappings = StableConceptService(store).resolve_legacy_many(owner, graph.id, graph.version,
+            [concept.id for concept in graph.concepts], connection=conn)
+        states_by_concept = {}
+        for row in shared['states']:
+            states_by_concept.setdefault(row['conceptId'], []).append(row)
         concepts = []
         for concept in graph.concepts:
-            mapping = StableConceptService(store).resolve_legacy(owner, graph.id, graph.version, concept.id, connection=conn)
+            mapping = mappings[concept.id]
             identifier = mapping.get("concept_id") or concept.id
-            rows = [row for row in shared["states"] if row["conceptId"] == identifier]
+            rows = states_by_concept.get(identifier, [])
             evidence_ids = sorted({key for row in rows for key in row["effectiveEventIds"]})
             statuses = {row["state"] for row in rows}
             # A success on one measured capability cannot establish whole-concept mastery.

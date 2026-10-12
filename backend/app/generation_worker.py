@@ -42,6 +42,8 @@ class GenerationWorker:
                     await asyncio.to_thread(manager._schedule_queued)
         finally:
             manager.shutting_down = True
+            if manager._queue_schedule_task is not None:
+                await asyncio.gather(manager._queue_schedule_task, return_exceptions=True)
             recovery.cancel()
             await asyncio.gather(recovery, return_exceptions=True)
             active = list(manager.tasks.values())

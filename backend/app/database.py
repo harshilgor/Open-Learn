@@ -86,6 +86,9 @@ def run_migrations(url: str | None = None) -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", resolved.replace("%", "%%"))
+    # Programmatic migrations must use the caller's database, not a different
+    # inherited DATABASE_URL. CLI Alembic retains its environment override.
+    config.attributes['openlearn_explicit_url'] = True
     command.upgrade(config, "head")
 
 

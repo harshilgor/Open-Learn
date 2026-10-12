@@ -592,6 +592,11 @@ class GenerationStore:
             """), {"owner": owner, "session": session_id, "limit": limit}).mappings().all()
         return [self._row(row) for row in rows]
 
+    def available_global_capacity(self, configured_limit: int) -> int:
+        with self.store.engine.connect() as connection:
+            row = connection.execute(text("SELECT active_count,limit_count FROM generation_capacity WHERE scope_type='global' AND scope_id='deployment'")).first()
+        return max(0, min(configured_limit, int(row[1])) - int(row[0])) if row else configured_limit
+
     def queued_global(self, limit: int = 2000) -> list[dict]:
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
@@ -856,6 +861,23 @@ class GenerationStore:
             rows = conn.execute(text("SELECT sequence,event_type,data_json FROM generation_events WHERE generation_id=:id AND sequence>:after ORDER BY sequence"),
                                 {"id": generation_id, "after": after}).mappings().all()
         return [GenerationEvent(generation_id=generation_id, sequence=row["sequence"], type=row["event_type"], data=json.loads(row["data_json"])) for row in rows]
+
+    def replay_snapshot(self, generation_id: str, after: int) -> tuple[list[GenerationEvent], str | None]:
+        """Read replay and terminal status together, from one committed SQL snapshot.
+
+        Internal transport helper; public callers authorize the generation before
+        subscribing. No different owner or generation can enter the join.
+        """
+        with self.store.engine.connect() as connection:
+            rows = connection.execute(text('''
+                SELECT r.status,e.sequence,e.event_type,e.data_json
+                FROM generation_records r LEFT JOIN generation_events e
+                ON e.generation_id=r.id AND e.sequence>:after
+                WHERE r.id=:id ORDER BY e.sequence
+            '''), {'id': generation_id, 'after': after}).mappings().all()
+        events = [GenerationEvent(generation_id=generation_id, sequence=row['sequence'],
+            type=row['event_type'], data=json.loads(row['data_json'])) for row in rows if row['sequence'] is not None]
+        return events, rows[0]['status'] if rows else None
 
     def interrupt_active(self) -> None:
         from .journey_service import JourneyService

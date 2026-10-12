@@ -1,0 +1,17 @@
+# Disposable local qualification database. No production credentials or host mounts.
+services:
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_USER: qualification
+      POSTGRES_PASSWORD: local-disposable-qualification
+      POSTGRES_DB: openlearn_qualification_local
+    ports:
+      - '127.0.0.1:55432:5432'
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U qualification -d openlearn_qualification_local']
+      interval: 2s
+      timeout: 2s
+      retries: 20
