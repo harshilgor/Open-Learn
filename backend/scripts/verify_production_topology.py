@@ -37,6 +37,8 @@ def main():
         'frontendOriginMatches': f.get('apiOriginFingerprint') == hashlib.sha256(target['apiOrigin'].encode()).hexdigest(),
         'activeExecutionMatches': b.get('workerMode') == target['executionMode'],
         'rollbackApiExternal': old.json().get('workerMode') == 'external',
+        'rollbackSchemaCompatible': (old.json().get('schema', {}).get('compatible') is True
+            and old.json().get('schema', {}).get('expectedHeads') == b.get('schema', {}).get('actualHeads')),
         'externalMigrationOwnership': b.get('migrationOwner') == 'single-release-job',
         'readiness': ready.status_code == 200,
     }
