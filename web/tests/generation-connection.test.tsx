@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from 'vitest';
 import {GenerationStream,GenerationConnectionError} from '@/lib/generation-stream';
 const {fetch,request}=vi.hoisted(()=>({fetch:vi.fn(),request:vi.fn()}));
-vi.mock('@/lib/account-session',()=>({authenticatedFetch:fetch}));
+vi.mock('@/lib/account-session',()=>({authenticatedFetch:fetch,ACCOUNT_CHANGED:'openlearn-account-changed',sessionToken:async()=>null}));
 vi.mock('@/lib/api',()=>({apiBaseUrl:()=>'',request}));
 afterEach(()=>{vi.useRealTimers();vi.resetAllMocks();});
 it('retains terminal completion and sequence when the stream closes', async()=>{
