@@ -20,6 +20,16 @@ _last_voice_cleanup = 0.0
 _last_object_cleanup = 0.0
 
 
+def cleanup_identity_objects_if_due(store):
+    from .identity_data import cleanup_objects
+    now = time.monotonic()
+    # Track the cadence on the Store, keeping separate stores independent.
+    if now - getattr(store, '_identity_cleanup_checked_at', float('-inf')) < 30:
+        return
+    store._identity_cleanup_checked_at = now
+    cleanup_objects(store)
+
+
 def cleanup_voice_if_due(store):
     global _last_voice_cleanup
     now = time.monotonic()
@@ -150,7 +160,6 @@ def tick(store, provider_getter):
     from .learning_routes import run_job
     from .lecture_pipeline import LectureWorker
     from .material_service import MaterialService
-    from .identity_data import cleanup_objects
     cleanup_voice_if_due(store)
     cleanup_upload_objects_if_due(store)
     try:
@@ -158,7 +167,7 @@ def tick(store, provider_getter):
     except Exception as exc:
         log.warning("Usage reconciliation iteration failed (%s)", type(exc).__name__)
         reconciled_usage = 0
-    cleanup_objects(store)
+    cleanup_identity_objects_if_due(store)
     reconcile_recordings(store)
     did_work = bool(reconciled_usage) or Outbox(store).deliver_one({"learning.command.completed": dispatch_learning_completion, "execution.job.requested": dispatch_job(store)})
     with store.engine.connect() as conn:

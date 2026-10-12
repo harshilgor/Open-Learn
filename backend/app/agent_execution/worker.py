@@ -53,7 +53,7 @@ class AgentWorker:
         from .responsibilities import Responsibilities
         Responsibilities(self.store).tick(limit)
         self.repo.outbox.drain({'agent.step':self.enqueue},limit)
-        self.cleanup()
+        self.cleanup_if_due()
         ids=self.repo.jobs.ready_ids('interactive',{'agent_step'},limit)
         for identifier in ids: self.execute(identifier)
         from .learning import LearningContinuation
@@ -244,6 +244,14 @@ class AgentWorker:
             self.repo.event(conn,fresh,'task.completed',artifacts=artifacts,completion=completion)
             self.repo.activity(conn,fresh,'final:'+fresh['id'],'task.completed',text=result['summary'],artifacts=artifacts,completion=completion)
             self.repo.jobs.finish(conn,job,{'status':status,'taskId':fresh['id']})
+
+    def cleanup_if_due(self):
+        now = time.monotonic()
+        if now - getattr(self, '_cleanup_checked_at', float('-inf')) < 30:
+            return
+        # Bound retries on failure; explicit stale-output cleanup stays immediate.
+        self._cleanup_checked_at = now
+        self.cleanup()
 
     def cleanup(self):
         from .sandbox import SandboxService
