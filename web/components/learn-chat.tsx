@@ -5,6 +5,7 @@ import { reportVoiceFocus, VOICE_FOCUS, VOICE_REFRESH, voiceApi } from "@/lib/vo
 
 import { OutgoingMessages } from './outgoing-messages';
 import { isSocialTurn } from '@/lib/social-turn';
+import { canUseTutorFastPath } from '@/lib/tutor-fast-path';
 import { useChatOutbox } from '@/hooks/use-chat-outbox';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -1221,7 +1222,8 @@ export function LearnChat({
     // Existing Ask conversations can accept follow-ups immediately. Keep the
     // browser upload and advisory mode-classification work out of the receipt
     // path; the server persists this message before provider generation starts.
-    if (fromOutbox && sessionId) {
+    if (fromOutbox && sessionId && canUseTutorFastPath(text, chatMode,
+      !!(attachments.length || noteMentions.length || passageContext || browserAssistant.replyTarget))) {
       setClassActionReply(''); setError('');
       return await streamTurn({ action: 'message', message: text, question: text }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
     }
