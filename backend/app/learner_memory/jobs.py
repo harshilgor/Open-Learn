@@ -116,7 +116,9 @@ def extract_turn(store_, owner, payload, *, extractor=None, now=None):
 
 def run_memory_extract(store_, provider, job_id, *, extractor=None):
     """Worker entry point; follows the lease conventions of run_hypothesis."""
+    from sqlalchemy.exc import IntegrityError
     from ..execution import LeaseHeartbeat, failure_policy, job_scope
+    from ..performance import span
     from ..usage.context import usage_scope
     from ..workflow_store import WorkflowStore
     jobs = WorkflowStore(store_)
@@ -127,11 +129,17 @@ def run_memory_extract(store_, provider, job_id, *, extractor=None):
     try:
         with job_scope(job), usage_scope(store_, job["owner_id"], job["target_id"]):
             try:
-                result = extract_turn(store_, job["owner_id"], job["payload"], extractor=extractor)
+                with span("memory_extract_job"):
+                    result = extract_turn(store_, job["owner_id"], job["payload"], extractor=extractor)
             except extraction.ExtractionUnavailable:
                 result = {"status": "skipped", "reason": "model_unavailable"}
             with store_.transaction() as conn:
                 jobs.finish(conn, job, result)
+    except IntegrityError:
+        # A concurrent job won the one-active-fact-per-subject index (§11.2).
+        # Retrying sees that fact and supersedes or deduplicates instead.
+        log.warning("memory extraction raced another job; retrying")
+        jobs.fail(job, "worker_failed", retryable=True)
     except Exception as exc:
         code, retry = failure_policy(exc)
         log.warning("memory extraction failed (%s)", type(exc).__name__)

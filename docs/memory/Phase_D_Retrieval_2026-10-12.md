@@ -11,8 +11,9 @@ Command: `python -m backend.app.evaluation_runner --memory`. Fixture: `backend/e
 | temporal | 10 / 10 | 1.00 | 0.67 | 103 |
 | multi_session | 10 / 10 | 1.00 | 0.80 | 115 |
 | retrieval_abstention | 10 / 10 | — | — | 62 |
+| assessment_isolation (added in the audit) | 10 / 10 | — | — | 67 |
 
-Gates from §11.3 (recall@5 ≥ 0.8 on categories 1–3, abstention ≥ 0.95) all pass, and the extraction gates from Phase C still pass.
+Gates from §11.3 (recall@5 ≥ 0.8 on categories 1–3, abstention ≥ 0.95, assessment isolation = 1.0) all pass, and the extraction gates from Phase C still pass.
 
 - **The one miss is deliberate.** "Quiz me for orgo" against "Has an organic chemistry exam…" needs synonym matching, which only the semantic signal can provide.
 - **Precision is not gated.** Roughly 1 in 2 to 1 in 5 included items are topical neighbours (for example, a history-essay deadline alongside "When is my essay due?"). They stay within the 900-token retrieved budget.

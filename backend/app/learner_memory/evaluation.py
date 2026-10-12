@@ -130,7 +130,10 @@ def run(path: Path = SCENARIOS) -> dict:
 
 RETRIEVAL_SCENARIOS = Path(__file__).resolve().parents[2] / "evaluation" / "memory_retrieval_scenarios.json"
 RETRIEVAL_GATES = {"recallAt5.single_fact_recall": 0.8, "recallAt5.knowledge_update_recall": 0.8,
-                   "recallAt5.temporal": 0.8, "retrievalAbstentionCorrect": 0.95}
+                   "recallAt5.temporal": 0.8, "retrievalAbstentionCorrect": 0.95,
+                   # §2 rule 5 is a hard rule: every assessment case must pass.
+                   "assessmentIsolationCorrect": 1.0}
+ASSESSMENT_KINDS = {"preference", "constraint"}
 
 
 def _seed_fact(conn, owner, item, now):
@@ -169,7 +172,8 @@ def run_retrieval(db, path: Path = RETRIEVAL_SCENARIOS) -> dict:
                 _seed_fact(conn, owner, item, now)
             for item in case.get("episodes", []):
                 _seed_episode(conn, owner, item, now)
-        result = service.context(owner, None, case["query"], now=now, timezone_name=data["timezone"])
+        purpose = case.get("purpose", "teaching")
+        result = service.context(owner, None, case["query"], purpose=purpose, now=now, timezone_name=data["timezone"])
         included = sorted((result.trace["included"] if result else []), key=lambda item: -item["score"])
         top = [item["id"] for item in included[:5]]
         relevant = set(case["relevant"])
@@ -179,7 +183,14 @@ def run_retrieval(db, path: Path = RETRIEVAL_SCENARIOS) -> dict:
                    "included": len(included), "relevantIncluded": len(relevant & {item["id"] for item in included}),
                    "forbiddenIncluded": len(forbidden & {item["id"] for item in included}),
                    "memoryTokens": estimate_tokens(result.text) if result else 0, "hard": case.get("hard")}
-        outcome["passed"] = (hits == len(relevant) and not outcome["forbiddenIncluded"]) if relevant else outcome["included"] == 0
+        if purpose == "assessment":
+            kinds = {item["key"]: item["kind"] for item in data["commonFacts"] + case.get("facts", [])}
+            text = result.text if result else ""
+            outcome["passed"] = not result or (not result.episode_ids and all(kinds.get(identifier) in ASSESSMENT_KINDS for identifier in result.fact_ids)
+                                                 and "Relevant memories:" not in text and "Earlier sessions:" not in text
+                                                 and "Upcoming course dates:" not in text and "Learner progress:" not in text)
+        else:
+            outcome["passed"] = (hits == len(relevant) and not outcome["forbiddenIncluded"]) if relevant else outcome["included"] == 0
         outcomes.append(outcome)
     categories = {}
     for name in sorted({item["category"] for item in outcomes}):
@@ -193,6 +204,8 @@ def run_retrieval(db, path: Path = RETRIEVAL_SCENARIOS) -> dict:
     abstention = [item for item in outcomes if item["category"] == "retrieval_abstention"]
     metrics = {f"recallAt5.{name}": row["recallAt5"] for name, row in categories.items() if row["recallAt5"] is not None}
     metrics["retrievalAbstentionCorrect"] = round(sum(item["passed"] for item in abstention) / len(abstention), 4) if abstention else 1.0
+    isolation = [item for item in outcomes if item["category"] == "assessment_isolation"]
+    metrics["assessmentIsolationCorrect"] = round(sum(item["passed"] for item in isolation) / len(isolation), 4) if isolation else 0.0
     gates = {name: (metrics.get(name) or 0) >= limit for name, limit in RETRIEVAL_GATES.items()}
     return {"scenarioVersion": data["version"], "provenance": data["provenance"], "metrics": metrics, "gates": gates,
             "passed": all(gates.values()), "categories": categories, "outcomes": outcomes}
