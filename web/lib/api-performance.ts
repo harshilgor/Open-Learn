@@ -7,7 +7,7 @@ const samples: ApiTiming[] = [];
 const generationSamples: GenerationTiming[] = [];
 const generations = new Map<string, { started: number; traceId: string; origin: 'submission' | 'resume'; received: boolean; committed: boolean }>();
 const pendingCommits = new Set<string>();
-const stages = new Set(['api_headers', 'admission', 'identity', 'database_checkout', 'database_query', 'database_hold', 'proxy_upstream']);
+const stages = new Set(['api_headers', 'admission', 'identity', 'database_checkout', 'database_connect', 'database_pool_acquire', 'database_query', 'database_hold', 'proxy_upstream']);
 
 export function createPerformanceTraceId(): string { return crypto.randomUUID().replaceAll('-', ''); }
 export function apiResource(path: string): string {
