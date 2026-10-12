@@ -8,6 +8,12 @@ on:
         required: true
         type: choice
         options: [staging, production]
+      operation:
+        description: Preflight performs read-only probes and a local compiler build; release also changes production
+        required: true
+        default: preflight
+        type: choice
+        options: [preflight, release]
 
 permissions:
   contents: read
@@ -17,11 +23,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  freshness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the candidate to include current main
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor origin/main HEAD || { echo 'Candidate is missing fixes from current main. Reconcile before release.'; exit 1; }
   quality:
+    needs: freshness
     uses: ./.github/workflows/platform-quality.yml
   release:
     needs: quality
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: ${{ inputs.environment }}
     env:
@@ -29,6 +46,7 @@ jobs:
       RENDER_API_TOKEN: ${{ secrets.RENDER_API_TOKEN }}
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
       OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+      OPENLEARN_FRONTEND_ORIGIN: ${{ vars.OPENLEARN_FRONTEND_ORIGIN }}
       RENDER_SERVICE_ID: ${{ vars.RENDER_SERVICE_ID }}
       API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -37,8 +55,12 @@ jobs:
       VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       LIVE_BRANCHING_METRICS_TOKEN: ${{ secrets.PERFORMANCE_METRICS_TOKEN }}
       RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+      RELEASE_SHA: ${{ github.sha }}
+      OPENLEARN_RELEASE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -48,9 +70,9 @@ jobs:
       - run: pip install -r backend/requirements.txt
       - name: Validate prerequisites before changing external state
         run: |
-          python -c 'import os; keys=["DATABASE_MIGRATION_URL","RENDER_SERVICE_ID","API_ORIGIN","VERCEL_TOKEN","VERCEL_ORG_ID","VERCEL_PROJECT_ID"]; missing=[key for key in keys if not os.getenv(key)]; assert not missing, "Missing release configuration: " + ", ".join(missing); assert os.getenv("RENDER_DEPLOY_HOOK_URL") or os.getenv("RENDER_API_TOKEN"), "Missing Render deployment credential"'
+          git fetch origin main:refs/remotes/origin/main
+          python -m backend.scripts.release_preflight --out outputs/release/configuration.json
           python -m backend.scripts.check_release_contract
-          echo "RELEASE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
       # Authenticate and fetch the Vercel project configuration before the
       # migration or backend deployment can change production state.
       - name: Install deployment CLI
@@ -66,44 +88,69 @@ jobs:
           else
             vercel pull --yes --environment=preview --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
-      - name: Verify protected frontend access before changing production
-        run: vercel curl / --yes --fail --silent --show-error --max-time 30 --output "$RUNNER_TEMP/frontend-access-preflight.html"
-      - name: Run the single release migration
-        run: python -m backend.scripts.release_migrate
-      - name: Deploy the compatible backend commit
-        run: python -m backend.scripts.render_release --commit "$RELEASE_SHA"
-      - name: Gate backend schema, capabilities, commit, and migration ownership
-        run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --require-external-migrations
-      - name: Build frontend for the matching environment
+      - name: Audit current hosted state and target configuration without writes
+        id: preflight
+        run: python -m backend.scripts.release_preflight --online --out outputs/release/preflight.json
+      - name: Compile matching frontend before production writes
+        id: build
         env:
           OPENLEARN_ENFORCE_RELEASE_GATE: '1'
-          OPENLEARN_API_ORIGIN: ${{ vars.OPENLEARN_API_ORIGIN }}
+          OPENLEARN_RELEASE_PHASE: preflight
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             vercel build --prod --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           else
             vercel build --scope="$VERCEL_ORG_ID" --token="$VERCEL_TOKEN"
           fi
+      - name: Run the single release migration
+        id: migrate
+        if: inputs.operation == 'release'
+        run: python -m backend.scripts.release_migrate
+      - name: Deploy the compatible backend commit
+        id: backend
+        if: inputs.operation == 'release'
+        run: python -m backend.scripts.render_release --commit "$RELEASE_SHA"
+      - name: Gate backend schema, capabilities, commit, and migration ownership
+        if: inputs.operation == 'release'
+        run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --require-external-migrations
       - name: Stage frontend without production alias promotion
+        id: stage
+        if: inputs.operation == 'release'
         run: |
           if [ "$RELEASE_ENVIRONMENT" = production ]; then
             candidate=$(vercel deploy --prebuilt --prod --skip-domain --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
           else
             candidate=$(vercel deploy --prebuilt --yes --env "OPENLEARN_RELEASE_SHA=$RELEASE_SHA" --env "OPENLEARN_API_ORIGIN=$API_ORIGIN" --token="$VERCEL_TOKEN")
           fi
+          FRONTEND_CANDIDATE="$candidate" python -c 'import os; from backend.scripts.frontend_release_metadata import validate_origin; assert validate_origin(os.environ["FRONTEND_CANDIDATE"]), "Invalid candidate URL; stop before verification or promotion"'
           echo "FRONTEND_CANDIDATE=$candidate" >> "$GITHUB_ENV"
       - name: Verify staged frontend/backend pair
+        if: inputs.operation == 'release'
         run: |
-          vercel curl /api/release --deployment "$FRONTEND_CANDIDATE" --yes --fail --silent --show-error --max-time 30 > "$RUNNER_TEMP/frontend-release.json"
-          python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata "$RUNNER_TEMP/frontend-release.json" --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
+          python -m backend.scripts.frontend_release_metadata --frontend "$FRONTEND_CANDIDATE" --expected-sha "$RELEASE_SHA" --out outputs/release/candidate.json
+          python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$FRONTEND_CANDIDATE" --frontend-metadata outputs/release/candidate.json --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
       - name: Promote validated production candidate
-        if: inputs.environment == 'production'
+        id: promote
+        if: inputs.operation == 'release' && inputs.environment == 'production'
         run: vercel promote "$FRONTEND_CANDIDATE" --yes --token="$VERCEL_TOKEN"
+      - name: Verify promoted production backend/frontend pair
+        id: alias
+        if: inputs.operation == 'release' && inputs.environment == 'production'
+        run: |
+          python -m backend.scripts.frontend_release_metadata --frontend "$OPENLEARN_FRONTEND_ORIGIN" --expected-sha "$RELEASE_SHA" --out outputs/release/promoted.json
+          python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$RELEASE_SHA" --frontend "$OPENLEARN_FRONTEND_ORIGIN" --frontend-metadata outputs/release/promoted.json --expected-frontend-sha "$RELEASE_SHA" --require-external-migrations
       - name: Capture protected production diagnostics
-        if: inputs.environment == 'production'
+        if: inputs.operation == 'release' && inputs.environment == 'production'
         run: python -m backend.scripts.performance_report --api "$API_ORIGIN" --out outputs/performance/production-operations.html
+      - name: Report production state even on failure
+        if: always()
+        env:
+          RELEASE_STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: python -m backend.scripts.release_summary
       - uses: actions/upload-artifact@v4
-        if: inputs.environment == 'production'
+        if: always()
         with:
-          name: production-performance-diagnostics
-          path: outputs/performance/production-operations.*
+          name: release-evidence-${{ github.run_id }}
+          path: |
+            outputs/release/*.json
+            outputs/performance/production-operations.*

@@ -14,6 +14,7 @@ def main():
     try:
         service = MaterialService(store)
         while True:
+            service.process_object_cleanup()
             processed = service.process_one()
             if args.once:
                 break

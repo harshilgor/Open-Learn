@@ -19,15 +19,22 @@ if (process.env.VERCEL_ENV === 'production' || process.env.OPENLEARN_ENFORCE_REL
       throw new Error('Compiled public API configuration differs from the release backend. Update the matching environment before building.');
     }
   }
-  const response = await fetch(new URL('/release', origin), { signal: AbortSignal.timeout(15000), redirect: 'error' });
-  if (!response.ok) throw new Error('Backend release metadata is unavailable. Deploy the compatible backend first.');
-  const release = await response.json();
-  if (release.protocolVersion !== contract.protocolVersion || release.schema?.compatible !== true ||
-      JSON.stringify([...release.schema.actualHeads].sort()) !== JSON.stringify([...contract.schemaHeads].sort()) ||
-      !contract.requiredCapabilities.every(value => release.capabilities?.includes(value))) {
-    throw new Error('Backend protocol, schema, or capabilities are incompatible with this frontend.');
+  // Compile against the pulled target environment before any production writes.
+  // Future schema compatibility is checked by the mandatory backend/candidate
+  // gates after migration. A compiler check cannot prove that future state.
+  if (process.env.OPENLEARN_RELEASE_PHASE === 'preflight') {
+    console.log('Release preflight compiler: routing validated; hosted pair qualification remains required.');
+  } else {
+    const response = await fetch(new URL('/release', origin), { signal: AbortSignal.timeout(15000), redirect: 'error' });
+    if (!response.ok) throw new Error('Backend release metadata is unavailable. Deploy the compatible backend first.');
+    const release = await response.json();
+    if (release.protocolVersion !== contract.protocolVersion || release.schema?.compatible !== true ||
+        JSON.stringify([...release.schema.actualHeads].sort()) !== JSON.stringify([...contract.schemaHeads].sort()) ||
+        !contract.requiredCapabilities.every(value => release.capabilities?.includes(value))) {
+      throw new Error('Backend protocol, schema, or capabilities are incompatible with this frontend.');
+    }
+    console.log('Backend release gate passed.');
   }
-  console.log('Backend release gate passed.');
 } else {
   console.log('Offline production compiler check; live release qualification is separate.');
 }

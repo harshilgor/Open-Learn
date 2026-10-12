@@ -25,10 +25,12 @@ export function CalendarActionCards({ sessionId }: { sessionId?: string | null }
       catch { /* Do not put background service errors into otherwise unrelated chats. */ }
       finally { loading = false; }
     }
-    reload.current = () => void load(); const timer = window.setInterval(() => void load(), 5000); void load();
+    const visibleLoad = () => { if (!document.hidden) void load(); };
+    reload.current = () => void load(); const timer = window.setInterval(visibleLoad, 5000); void load();
+    document.addEventListener('visibilitychange', visibleLoad);
     const reset = () => { controller.abort(); setItems([]); setCalendars([]); setReceipts({}); setRemember({}); setReadModes({}); keys.current = {}; };
     window.addEventListener(ACCOUNT_CHANGED, reset);
-    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener(ACCOUNT_CHANGED, reset); };
+    return () => { controller.abort(); window.clearInterval(timer); window.removeEventListener(ACCOUNT_CHANGED, reset); document.removeEventListener('visibilitychange', visibleLoad); };
   }, [sessionId]);
   async function decide(item: Proposal, decision: 'allow' | 'cancel') {
     setBusy(item.id); setError('');

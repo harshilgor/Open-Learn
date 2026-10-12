@@ -319,6 +319,32 @@ class StableConceptService:
         row = connection.execute(text("SELECT concept_id FROM legacy_concept_mappings WHERE owner_id=:owner AND graph_id=:graph AND graph_revision=:revision AND node_id=:node"), {"owner": owner, "graph": graph_id, "revision": graph_revision, "node": node_id}).scalar_one_or_none()
         return self.canonical(owner, row, connection) if row else {"status": "unmapped", "original_id": node_id, "concept_id": None}
 
+    def resolve_legacy_many(self, owner, graph_id, graph_revision, node_ids, connection=None):
+        """Resolve one exact graph revision in a single mapping read.
+
+        Canonical merge/split handling stays in canonical(); its results are
+        reused only inside this call, never across owners or later requests.
+        """
+        if connection is None:
+            with self.store.engine.connect() as conn:
+                assert_owner_active(conn, owner)
+                return self.resolve_legacy_many(owner, graph_id, graph_revision, node_ids, conn)
+        rows = connection.execute(text('''SELECT node_id,concept_id FROM legacy_concept_mappings
+            WHERE owner_id=:owner AND graph_id=:graph AND graph_revision=:revision'''),
+            {'owner': owner, 'graph': graph_id, 'revision': graph_revision}).all()
+        mappings = {row[0]: row[1] for row in rows}
+        canonical = {}
+        result = {}
+        for node_id in node_ids:
+            identifier = mappings.get(node_id)
+            if identifier is None:
+                result[node_id] = {'status': 'unmapped', 'original_id': node_id, 'concept_id': None}
+            else:
+                if identifier not in canonical:
+                    canonical[identifier] = self.canonical(owner, identifier, connection)
+                result[node_id] = canonical[identifier]
+        return result
+
     def resolve_quiz_scope(self, owner, graph, requested_ids, connection):
         """Map stable task concepts to nodes in this exact session graph revision.
 

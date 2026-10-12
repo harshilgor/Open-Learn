@@ -7,7 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool, text
 
 config = context.config
-if os.getenv("DATABASE_URL"):
+if os.getenv("DATABASE_URL") and not config.attributes.get('openlearn_explicit_url'):
     config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"].replace("%", "%%"))
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

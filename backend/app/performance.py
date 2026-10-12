@@ -9,6 +9,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import hashlib
 import math
 import os
 import re
@@ -28,6 +29,55 @@ STAGES = frozenset({"api_headers", "api_total", "database_checkout", "database_q
     "event_persist", "event_loop_lag"})
 logger = logging.getLogger("openlearn.performance")
 logger.setLevel(logging.INFO)
+
+
+def configure_performance_logging():
+    """Own a single content-free sink independently of Uvicorn/root settings."""
+    logger.disabled = False
+    if not any(getattr(handler, 'openlearn_sink', False) for handler in logger.handlers):
+        handler = logging.StreamHandler()
+        handler.openlearn_sink = True
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(handler)
+    logger.propagate = False
+
+
+class QueryRegistry:
+    """Bounded query-shape aggregates; SQL and bound parameters never leave here."""
+    def __init__(self, capacity=128):
+        self.capacity = capacity
+        self.rows = {}
+        self.lock = threading.Lock()
+
+    def observe(self, statement, milliseconds, failed=False):
+        # Strip literals even if a caller used literal SQL instead of binds.
+        shape = re.sub(r"'(?:''|[^'])*'", '?', statement)
+        shape = re.sub(r'\b\d+(?:\.\d+)?\b', '?', shape)
+        shape = ' '.join(shape.split())
+        fingerprint = hashlib.sha256(shape.encode()).hexdigest()[:16]
+        operation = shape.split(' ', 1)[0].upper() if shape else 'OTHER'
+        if operation not in {'SELECT', 'INSERT', 'UPDATE', 'DELETE'}:
+            operation = 'OTHER'
+        with self.lock:
+            if fingerprint not in self.rows:
+                if len(self.rows) >= self.capacity:
+                    fingerprint = 'overflow'
+                    operation = 'OTHER'
+                self.rows.setdefault(fingerprint, {'fingerprint': fingerprint, 'operation': operation,
+                    'count': 0, 'failures': 0, 'totalMs': 0.0, 'maxMs': 0.0})
+            row = self.rows[fingerprint]
+            row['count'] += 1
+            row['failures'] += int(failed)
+            row['totalMs'] += milliseconds
+            row['maxMs'] = max(row['maxMs'], milliseconds)
+
+    def snapshot(self):
+        with self.lock:
+            return [dict(row, totalMs=round(row['totalMs'], 3), maxMs=round(row['maxMs'], 3))
+                for row in sorted(self.rows.values(), key=lambda row: row['totalMs'], reverse=True)]
+
+
+queries = QueryRegistry()
 
 
 class TimingRegistry:
@@ -68,7 +118,7 @@ class TimingRegistry:
                     "p99Ms": percentile(values, .99)})
         return {"scope": "process", "pid": os.getpid(), "startedAt": self.started_at,
             "retention": "last 512 durations per series; counters since process start",
-            "series": rows}
+            "series": rows, "queryShapes": queries.snapshot()}
 
 
 registry = TimingRegistry()
@@ -149,7 +199,7 @@ def emit_trace(trace, outcome, *, status=None):
         if status is not None and status < 400 and elapsed < 750 and int(trace.trace_id[:8], 16) / 0xffffffff >= rate:
             return
         # Alembic's fileConfig disables pre-existing application loggers.
-        logger.disabled = False
+        configure_performance_logging()
         with trace.lock:
             stages = {key: {"count": value["count"], "durationMs": round(value["durationMs"], 3)}
                 for key, value in trace.stages.items()}
@@ -219,6 +269,7 @@ def instrument_engine(engine):
         if start is not None:
             context._openlearn_query_start = None
             observe("database_query", (time.perf_counter() - start) * 1000)
+            queries.observe(statement, (time.perf_counter() - start) * 1000)
 
     @event.listens_for(engine, "handle_error")
     def query_error(context):
@@ -227,6 +278,7 @@ def instrument_engine(engine):
         if start is not None:
             execution._openlearn_query_start = None
             observe("database_query", (time.perf_counter() - start) * 1000, failed=True)
+            queries.observe(context.statement or '', (time.perf_counter() - start) * 1000, failed=True)
 
     @event.listens_for(engine, "checkout")
     def checkout(connection, record, proxy):

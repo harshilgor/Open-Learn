@@ -1,125 +1,156 @@
-# Paid proposal: review costs before applying. Supabase DATABASE_URL comes from the shared group.
-services:
-  - type: worker
-    name: openlearn-notifications
-    region: virginia
-    runtime: docker
-    plan: starter
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime notifications
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: cron
-    name: openlearn-reminders-backup
-    region: virginia
-    runtime: docker
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    schedule: '* * * * *'
-    dockerCommand: python -m backend.app.reminder_cron
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_PROCESS_ROLE
-        value: cron
-      - key: OPENLEARN_DB_POOL_SIZE
-        value: '1'
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: web
-    name: openlearn-api-virginia
-    region: virginia
-    runtime: docker
-    plan: standard
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime api
-    healthCheckPath: /live
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: worker
-    name: openlearn-learning
-    region: virginia
-    runtime: docker
-    plan: starter
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime learning
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: worker
-    name: openlearn-agent
-    region: virginia
-    runtime: docker
-    plan: starter
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime agent
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: worker
-    name: openlearn-class
-    region: virginia
-    runtime: docker
-    plan: starter
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime class
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
-  - type: worker
-    name: openlearn-browser
-    region: virginia
-    runtime: docker
-    plan: starter
-    dockerfilePath: deploy/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m backend.app.hosted_runtime browser
-    autoDeployTrigger: off
-    envVars:
-      - fromGroup: openlearn-production
-      - key: OPENLEARN_MIGRATE_ON_START
-        value: 'false'
-      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
-        value: 'true'
-      - key: OPENLEARN_WORKER_MODE
-        value: external
+# Paid proposal only. Review cost and environment wiring before syncing.
+projects:
+  - name: Open Learn
+    environments:
+      - name: virginia-prepared-cutover
+        services:
+          - type: worker
+            name: openlearn-notifications
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime notifications
+            autoDeployTrigger: off
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+          - type: cron
+            name: openlearn-reminders-backup
+            region: virginia
+            runtime: docker
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            schedule: '* * * * *'
+            dockerCommand: python -m backend.app.reminder_cron
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_PROCESS_ROLE
+                value: cron
+              - key: OPENLEARN_DB_POOL_SIZE
+                value: '1'
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+          - type: web
+            name: openlearn-api-virginia
+            region: virginia
+            runtime: docker
+            plan: standard
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime api
+            healthCheckPath: /live
+            autoDeployTrigger: off
+            envVars:
+              - key: OPENLEARN_DB_POOL_SIZE
+                value: '3'
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+              - key: OPENLEARN_GENERATION_NOTIFY_ENABLED
+                value: 'true'
+          - type: worker
+            name: openlearn-generation
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime generation
+            autoDeployTrigger: off
+            envVars:
+              - key: OPENLEARN_DB_POOL_SIZE
+                value: '3'
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+              - key: OPENLEARN_GENERATION_NOTIFY_ENABLED
+                value: 'true'
+              - key: GENERATION_WORKER_DRAIN_SECONDS
+                value: '20'
+          - type: worker
+            name: openlearn-learning
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime learning
+            autoDeployTrigger: off
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+          - type: worker
+            name: openlearn-agent
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime agent
+            autoDeployTrigger: off
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+          - type: worker
+            name: openlearn-class
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime class
+            autoDeployTrigger: off
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external
+          - type: worker
+            name: openlearn-browser
+            region: virginia
+            runtime: docker
+            plan: starter
+            dockerfilePath: deploy/Dockerfile
+            dockerContext: .
+            dockerCommand: python -m backend.app.hosted_runtime browser
+            autoDeployTrigger: off
+            envVars:
+              - fromGroup: openlearn-production
+              - key: OPENLEARN_MIGRATE_ON_START
+                value: 'false'
+              - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+                value: 'true'
+              - key: OPENLEARN_WORKER_MODE
+                value: external

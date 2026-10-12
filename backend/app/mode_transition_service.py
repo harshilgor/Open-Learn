@@ -556,6 +556,28 @@ class ModeTransitionService:
             conn.execute(text("UPDATE practice_records SET payload=:payload WHERE id=:id AND owner_id=:owner"),
                 {"payload": json.dumps(payload), "id": key, "owner": owner})
 
+    def supersede_suggestion(self, owner, session_id, suggestion_id):
+        """Close a concurrently-created duplicate offer when its receipt lost."""
+        if not self.store or not suggestion_id:
+            return
+        key = f"transition_{suggestion_id}"
+        with self.store.transaction() as conn:
+            row = conn.execute(text("""SELECT payload,revision FROM practice_records
+                WHERE id=:id AND owner_id=:owner AND parent_id=:sid AND kind='mode_transition'"""),
+                {"id": key, "owner": owner, "sid": session_id}).first()
+            if not row:
+                return
+            payload = json.loads(row[0])
+            if payload.get("status") != "pending":
+                return
+            payload["status"] = "superseded"
+            suggestion = payload.get("suggestion")
+            if isinstance(suggestion, dict):
+                suggestion["status"] = "superseded"
+            conn.execute(text("""UPDATE practice_records SET payload=:payload,revision=revision+1
+                WHERE id=:id AND owner_id=:owner AND revision=:revision"""),
+                {"payload": json.dumps(payload), "id": key, "owner": owner, "revision": row[1]})
+
     def valid_bypass(self, owner, session_id, suggestion_id):
         if not self.store:
             return False

@@ -14,6 +14,11 @@ if (typeof window !== 'undefined') window.addEventListener(ACCOUNT_CHANGED, () =
   identityEpoch++;
 });
 
+/** Return the owner resolved for the current authenticated session, if available. */
+export function cachedAccountOwnerId(): string | undefined {
+  return account?.ownerId;
+}
+
 // A cancelled caller must not cancel authentication for every other caller.
 function withCallerSignal<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   if (!signal) return promise;

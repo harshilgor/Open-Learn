@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Bell, CalendarClock, RefreshCw } from 'lucide-react';
+import { Bell, CalendarClock, RefreshCw, Repeat2 } from 'lucide-react';
 import { request } from '@/lib/api';
 import { useBuddies } from './buddies';
 import styles from './reminder-sidebar.module.css';
@@ -26,6 +26,10 @@ function describeSchedule(routine: Routine) {
   const numericTime = /^\d+$/.test(minute) && /^\d+$/.test(hour);
   const clock = numericTime ? `${String(Number(hour) % 12 || 12)}:${String(minute).padStart(2, '0')} ${Number(hour) >= 12 ? 'PM' : 'AM'}` : null;
   return `${days[day] || `Cron: ${cron}`}${clock ? ` · ${clock}` : ''} · ${routine.timezone}`;
+}
+
+function formatOccurrence(timestamp: number) {
+  return new Date(timestamp * 1000).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
 }
 
 export function ReminderSidebar() {
@@ -54,33 +58,35 @@ export function ReminderSidebar() {
   }
 
   const routines = data?.routines || [];
+  const activeRoutines = routines.filter(item=>item.active).length;
   const reminders = (data?.reminders || []).filter(item => item.kind !== 'routine').sort((a,b) => {
     const pendingA = a.status === 'pending' ? 0 : 1, pendingB = b.status === 'pending' ? 0 : 1;
     return pendingA - pendingB || a.dueAt - b.dueAt;
   });
 
   return <section className={styles.panel} aria-label="Reminders and routines">
-    <header className={styles.header}><span className={styles.icon}><Bell size={16}/></span><div><h2>Reminders</h2><p>Routines and reminders from your study partners</p></div></header>
+    <header className={styles.header}><span className={styles.icon}><Bell size={17}/></span><div><h2>Reminders</h2><p>Your routines and upcoming study reminders</p></div></header>
     {error ? <div className={styles.error} role="alert"><span>{error}</span><button type="button" onClick={()=>void load()} aria-label="Retry loading reminders"><RefreshCw size={15}/></button></div> : null}
     {!data && !error ? <p className={styles.state} role="status">Loading your reminders…</p> : null}
     {data ? <>
       <section className={styles.section} aria-labelledby="saved-routines-heading">
-        <div className={styles.sectionHeading}><h3 id="saved-routines-heading">Routines</h3><span>{routines.length}</span></div>
-        {routines.length ? <ul className={styles.list}>{routines.map(item => {
+        <div className={styles.sectionHeading}><h3 id="saved-routines-heading">Routines</h3><span>{activeRoutines} active</span></div>
+        {routines.length ? <ul className={`${styles.list} ${styles.routineList}`}>{routines.map(item => {
           const next = data.reminders.filter(reminder=>reminder.policyId===item.id&&reminder.status==='pending').sort((a,b)=>a.dueAt-b.dueAt)[0];
           return <li className={styles.card} key={item.id}>
-            <div className={styles.copy}><strong>{item.message}</strong><span>{item.active ? (next ? `Next · ${new Date(next.dueAt*1000).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}` : 'On') : 'Paused'}</span><small>{item.buddyId ? `${snapshot?.profiles.find(profile=>profile.id===item.buddyId)?.name || 'Buddy'} · ` : ''}{describeSchedule(item)}</small></div>
+            <span className={styles.routineIcon}><Repeat2 size={16}/></span>
+            <div className={styles.copy}><strong>{item.message}</strong><span>{item.active ? (next ? `Next · ${formatOccurrence(next.dueAt)}` : 'Active') : 'Paused'}</span><small>{item.buddyId ? `${snapshot?.profiles.find(profile=>profile.id===item.buddyId)?.name || 'Buddy'} · ` : ''}{describeSchedule(item)}</small></div>
             <button type="button" role="switch" aria-checked={item.active} aria-label={`${item.active ? 'Pause' : 'Resume'} ${item.message}`} disabled={busyId===item.id} className={`${styles.switch} ${item.active ? styles.switchOn : ''}`} onClick={()=>void toggle(item)}><span/></button>
           </li>;
-        })}</ul> : <p className={styles.empty}>When a study partner saves a recurring routine, it will appear here.</p>}
+        })}</ul> : <div className={styles.empty}><span className={styles.emptyIcon}><Repeat2 size={16}/></span><div><strong>No routines yet</strong><p>Recurring study routines from your Buddies will show up here.</p></div></div>}
       </section>
       <section className={styles.section} aria-labelledby="saved-reminders-heading">
         <div className={styles.sectionHeading}><h3 id="saved-reminders-heading">One-time reminders</h3><span>{reminders.filter(item=>item.status==='pending').length} upcoming</span></div>
-        {reminders.length ? <ul className={styles.list}>{reminders.map(item=><li className={styles.card} key={item.id}>
-          <CalendarClock className={styles.reminderIcon} size={17}/><div className={styles.copy}><strong>{item.title || item.message || 'Study reminder'}</strong><span>{new Date(item.dueAt*1000).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span><small>{item.status.replaceAll('_',' ')}{item.buddyId ? ` · ${snapshot?.profiles.find(profile=>profile.id===item.buddyId)?.name || 'Buddy'}` : ''}</small></div>
-        </li>)}</ul> : <p className={styles.empty}>No one-time reminders saved.</p>}
+        {reminders.length ? <ul className={`${styles.list} ${styles.reminderList}`}>{reminders.map(item=><li className={styles.card} key={item.id}>
+          <span className={styles.reminderIcon}><CalendarClock size={16}/></span><div className={styles.copy}><strong>{item.title || item.message || 'Study reminder'}</strong><span>{formatOccurrence(item.dueAt)}</span><small>{item.status.replaceAll('_',' ')}{item.buddyId ? ` · ${snapshot?.profiles.find(profile=>profile.id===item.buddyId)?.name || 'Buddy'}` : ''}</small></div>
+        </li>)}</ul> : <div className={styles.empty}><span className={styles.emptyIcon}><CalendarClock size={16}/></span><div><strong>No one-time reminders</strong><p>One-time study reminders will appear here.</p></div></div>}
       </section>
     </> : null}
-    <p className={styles.footnote}>Pause a routine here and your study partner will stop scheduling it until you turn it back on.</p>
+    {data&&routines.length?<p className={styles.footnote}>Paused routines won’t create new reminders. Turn one back on whenever you’re ready.</p>:null}
   </section>;
 }

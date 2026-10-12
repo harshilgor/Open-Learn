@@ -7,6 +7,7 @@ import pytest
 from backend.app.generation_models import GenerationRequest
 from backend.app.generation_service import EventBuffer
 from backend.app.generation_store import GenerationStore
+from backend.app.generation_command_receipts import get_mode_choice, save_mode_choice, clear_mode_choice
 from backend.app.graph_generator import GraphGenerator
 from backend.app.models import TopicScope, utc_now
 from backend.app.session_models import LearningSession
@@ -68,6 +69,29 @@ def test_generation_idempotency_and_lifecycle(tmp_path):
     assert GenerationStore.descriptor(records.get("local", first["id"])).metrics["applicationTtftSeconds"] == 0.25
     with pytest.raises(Exception):
         records.create("local", "session-1", request("Different request"), "same-key", "test", "test-model")
+    store.close()
+
+
+def test_mode_choice_receipt_replays_for_same_command_and_clears_on_resume(tmp_path):
+    from fastapi import HTTPException
+
+    store = Store(tmp_path / "generation-mode-choice.db")
+    command = {"clientMessageId": "client-1", "message": "Teach me this topic", "mode": "ask",
+               "presentation": "conversation", "expectedRevision": 1}
+    suggestion = {"id": "transition-1", "targetMode": "learn", "status": "pending"}
+    assert get_mode_choice(store, "local", "session-1", "client-1", command) is None
+    saved = save_mode_choice(store, "local", "session-1", "client-1", command,
+                             "request_transition", suggestion)
+    assert saved["suggestion"] == suggestion
+    assert get_mode_choice(store, "local", "session-1", "client-1", command) == saved
+
+    changed = {**command, "message": "A different message"}
+    with pytest.raises(HTTPException) as conflict:
+        get_mode_choice(store, "local", "session-1", "client-1", changed)
+    assert conflict.value.status_code == 409
+
+    clear_mode_choice(store, "local", "session-1", "client-1")
+    assert get_mode_choice(store, "local", "session-1", "client-1", command) is None
     store.close()
 
 

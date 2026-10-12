@@ -1,7 +1,7 @@
 /** Bounded local diagnostics: no bodies, query strings, owners, or credentials. */
 export type ApiTiming = { resource: string; durationMs: number; status: number; startedAt: number;
   method: string; traceId?: string; serverTimingMs?: Record<string, number>; outcome: string };
-export type GenerationTiming = { stage: 'accepted' | 'first_text_received' | 'first_text_committed' | 'completed' | 'failed' | 'cancelled' | 'disconnected';
+export type GenerationTiming = { stage: 'accepted' | 'mode_choice' | 'first_text_received' | 'first_text_committed' | 'completed' | 'failed' | 'cancelled' | 'disconnected';
   durationMs: number; traceId: string; origin: 'submission' | 'resume' };
 const samples: ApiTiming[] = [];
 const generationSamples: GenerationTiming[] = [];

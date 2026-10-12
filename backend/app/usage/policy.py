@@ -65,6 +65,8 @@ class Policy:
                     except Exception:
                         raise RuntimeError(f'Paid model routing requires a positive pinned tariff: {name}.') from None
             enabled=[]
+            if os.getenv('OPENLEARN_PROVIDER_PREFIX_CACHE_ENABLED') == 'true':
+                enabled.append('OPENLEARN_HAIKU55_CACHE_WRITE_USD_PER_MILLION')
             if os.getenv('OPENLEARN_DICTATION_ENABLED')=='true':
                 enabled.append('OPENLEARN_DICTATION_USD_PER_MINUTE')
             if os.getenv('OPENLEARN_VOICE_ENABLED')=='true':

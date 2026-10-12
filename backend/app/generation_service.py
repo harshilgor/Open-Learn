@@ -7,9 +7,11 @@ import json
 import logging
 import os
 import time
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Protocol
+from sqlalchemy import text
 
 from .generation_models import GenerationEvent, GenerationRequest
 from .generation_observability import purge_expired_outbox_snapshots
@@ -21,8 +23,10 @@ from .journey_service import JourneyService
 from .model_provider import ModelProviderError, OpenRouterLessonProvider, usage_metrics
 from .teaching_output_limits import conversation_output_limit, teaching_output_limit
 from .streaming_lesson import ProgressiveLessonParser
+from .execution import embedded_execution
+from .generation_notifications import EVENT_CHANNEL, QUEUE_CHANNEL, CANCEL_CHANNEL, GenerationNotificationHub
 
-ERRORS = {"VALIDATION_FAILED", "CONTEXT_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_ERROR", "VISION_UNSUPPORTED", "STREAM_INTERRUPTED", "REPLAY_EXPIRED", "CANCELLED", "PERSISTENCE_FAILED", "REVISION_CONFLICT"}
+ERRORS = {"VALIDATION_FAILED", "CONTEXT_FAILED", "PROVIDER_TIMEOUT", "PROVIDER_ERROR", "VISION_UNSUPPORTED", "STREAM_INTERRUPTED", "REPLAY_EXPIRED", "CANCELLED", "PERSISTENCE_FAILED", "REVISION_CONFLICT", "QUEUE_EXPIRED"}
 
 
 def error_code(exc: Exception) -> str:
@@ -110,8 +114,9 @@ EventBuffer = InMemoryReplayEventStore
 
 class DurableReplayEventStore:
     """Database backed replay, with polling so another worker can serve reconnects."""
-    def __init__(self, records: GenerationStore):
+    def __init__(self, records: GenerationStore, notifications: GenerationNotificationHub | None = None):
         self.records = records
+        self.notifications = notifications
         self.conditions: dict[str, asyncio.Condition] = {}
         self.metadata: dict[str, dict] = {}
         self.owner_tokens: dict[str, str] = {}
@@ -145,7 +150,31 @@ class DurableReplayEventStore:
         if condition:
             async with condition:
                 condition.notify_all()
+        if self.notifications:
+            self.notifications.wake_local(generation_id)
         return event
+
+    async def append_text_checkpoint(self, generation_id: str, block_id: str, body: str,
+                                     *, allow_cancelled_checkpoint: bool = False) -> tuple[GenerationEvent, GenerationEvent]:
+        """Persist visible text and its replay checkpoint atomically and in order."""
+        metadata = {key: value for key, value in self.metadata.get(generation_id, {}).items()
+                    if value is not None}
+        with span("event_persist"):
+            events = await asyncio.to_thread(
+                self.records.append_text_checkpoint, generation_id, block_id, body,
+                metadata, owner_token=self.owner_tokens.get(generation_id),
+                allow_cancelled_checkpoint=allow_cancelled_checkpoint)
+        delta, checkpoint = events
+        trace = current_trace.get()
+        if trace and "generation_first_persisted_text" not in trace.stages:
+            observe("generation_first_persisted_text", (time.perf_counter() - trace.started_at) * 1000)
+        condition = self.conditions.get(generation_id)
+        if condition:
+            async with condition:
+                condition.notify_all()
+        if self.notifications:
+            self.notifications.wake_local(generation_id)
+        return delta, checkpoint
 
     def get_after_sequence(self, generation_id: str, after: int) -> list[GenerationEvent]:
         return self.records.events_after(generation_id, after)
@@ -158,9 +187,14 @@ class DurableReplayEventStore:
 
     async def subscribe(self, generation_id: str, after: int, terminal: bool) -> AsyncIterator[GenerationEvent]:
         condition = self.conditions.setdefault(generation_id, asyncio.Condition())
+        wake_event = self.notifications.event_for(generation_id) if self.notifications else None
         last_heartbeat = time.monotonic()
         while True:
-            events = await asyncio.to_thread(self.records.events_after, generation_id, after)
+            # A commit after this clear is either visible in the SQL read or
+            # leaves the event set for the wait below.
+            if wake_event:
+                wake_event.clear()
+            events, status = await asyncio.to_thread(self.records.replay_snapshot, generation_id, after)
             for event in events:
                 after = event.sequence
                 yield event
@@ -168,20 +202,21 @@ class DurableReplayEventStore:
                     return
             if terminal:
                 return
-            # Observe status changes from another worker or a process restart.
-            def read_status():
-                with self.records.store.engine.connect() as conn:
-                    from sqlalchemy import text
-                    return conn.execute(text("SELECT status FROM generation_records WHERE id=:id"), {"id": generation_id}).first()
-            row = await asyncio.to_thread(read_status)
-            if row and row[0] in TERMINAL:
+            # Status and events came from the same committed SQL snapshot.
+            if status in TERMINAL:
                 terminal = True
                 continue
-            async with condition:
+            if wake_event:
                 try:
-                    await asyncio.wait_for(condition.wait(), timeout=0.5)
+                    await asyncio.wait_for(wake_event.wait(), timeout=self.notifications.fallback_seconds)
                 except asyncio.TimeoutError:
                     pass
+            else:
+                async with condition:
+                    try:
+                        await asyncio.wait_for(condition.wait(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        pass
             if time.monotonic() - last_heartbeat >= 15:
                 last_heartbeat = time.monotonic()
                 yield GenerationEvent(generation_id=generation_id, sequence=after, type="generation.context_ready", data={"heartbeat": True})
@@ -192,17 +227,30 @@ class GenerationManager:
         self.store = store
         self.provider = provider
         self.provider_getter = provider_getter
+        self.process_role = os.getenv("OPENLEARN_PROCESS_ROLE", "api")
+        self.can_execute = embedded_execution() or self.process_role == "generation"
+        self.shutting_down = False
+        self._schedule_gate = threading.Lock()
+        self._schedule_pending = threading.Event()
+        self._queue_schedule_task = None
         self.records = GenerationStore(store)
         self.branching = ConversationBranchStore(store)
         purge_expired_outbox_snapshots(store)
-        self.buffer: ReplayEventStore = DurableReplayEventStore(self.records)
+        notification_enabled = os.getenv("OPENLEARN_GENERATION_NOTIFY_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+        self.notifications = GenerationNotificationHub(store, enabled=notification_enabled)
+        self.buffer: ReplayEventStore = DurableReplayEventStore(self.records, self.notifications)
         self.tasks: dict[str, asyncio.Task] = {}
         self.observers: dict[str, int] = {}
-        self.flush_characters = int(os.getenv("GENERATION_STREAM_FLUSH_CHARACTERS", "120"))
-        self.flush_seconds = int(os.getenv("GENERATION_STREAM_FLUSH_MS", "300")) / 1000
+        self.flush_characters = max(32, min(2000, int(os.getenv("GENERATION_STREAM_FLUSH_CHARACTERS", "120"))))
+        self.flush_seconds = max(0.05, min(2.0, int(os.getenv("GENERATION_STREAM_FLUSH_MS", "300")) / 1000))
+        self.cancel_check_seconds = max(0.1, min(2.0, int(os.getenv("GENERATION_CANCEL_CHECK_MS", "500")) / 1000))
         self.live_branching_enabled = os.getenv("LIVE_BRANCHING_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
         self.conversation_limit = max(1, min(4, int(os.getenv("GENERATION_PER_CONVERSATION_ACTIVE_LIMIT", "2"))))
-        self.global_limit = max(1, int(os.getenv("GENERATION_GLOBAL_ACTIVE_LIMIT", "16")))
+        self.global_limit = max(1, min(128, int(os.getenv("GENERATION_GLOBAL_ACTIVE_LIMIT", "16"))))
+        self.owner_limit = max(1, min(16, int(os.getenv("GENERATION_PER_OWNER_ACTIVE_LIMIT", "2"))))
+        self.owner_queue_limit = max(1, min(100, int(os.getenv("GENERATION_PER_OWNER_QUEUE_LIMIT", "20"))))
+        self.global_queue_limit = max(self.owner_queue_limit, min(2000, int(os.getenv("GENERATION_GLOBAL_QUEUE_LIMIT", "500"))))
+        self.queue_deadline_seconds = max(60.0, min(86400.0, float(os.getenv("GENERATION_QUEUE_MAX_AGE_SECONDS", "900"))))
         self.lease_seconds = max(30.0, float(os.getenv("GENERATION_OWNER_LEASE_SECONDS", "90")))
         # Recovery is lease-based: an active execution owned by another live
         # worker is never interrupted just because this process started.
@@ -218,8 +266,10 @@ class GenerationManager:
             try:
                 await asyncio.to_thread(self.records.interrupt_expired_leases)
                 await asyncio.to_thread(self.records.interrupt_unowned_legacy)
+                await asyncio.to_thread(self.records.expire_stale_queued, self.queue_deadline_seconds)
                 await asyncio.to_thread(purge_expired_outbox_snapshots, self.store)
-                await asyncio.to_thread(self._schedule_queued, provider=self.provider_getter() if self.provider_getter else self.provider)
+                if self.can_execute and not self.shutting_down:
+                    await asyncio.to_thread(self._schedule_queued)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -231,8 +281,8 @@ class GenerationManager:
         if provider is not None:
             self.provider = provider
         from .material_service import MaterialService
-        MaterialService(self.store).session(owner, session_id)
         if request.action == "message" and classify_relation(request.message, has_previous=True) == "cancel":
+            MaterialService(self.store).session(owner, session_id)
             record = self.records.accept_cancel_message(
                 owner, session_id, request.model_dump(mode="json", by_alias=True), key,
                 getattr(provider, "provider_name", "unknown"), getattr(provider, "model", "unknown"))
@@ -242,21 +292,50 @@ class GenerationManager:
                 self._cancel_task(task)
             return record
         journey_service = JourneyService(self.store, provider)
+        def submit_turn(conn, generation_id, submission):
+            if request.presentation:
+                from .buddy_service import BuddyService
+                buddies = BuddyService(self.store)
+                session = conn.execute(text(
+                    "SELECT course_id FROM learning_sessions WHERE id=:session AND learner_id=:owner"
+                ), {"session": session_id, "owner": owner}).first()
+                if not session:
+                    from .identity import fail
+                    fail("session_not_found", "Conversation unavailable.", 404)
+                current_buddy = conn.execute(text(
+                    "SELECT buddy_id FROM buddy_chats WHERE id=:session AND owner_id=:owner"
+                ), {"session": session_id, "owner": owner}).scalar_one_or_none()
+                if current_buddy is None:
+                    buddy_id = buddies.resolve(conn, owner, session[0])
+                    conn.execute(text("""
+                        INSERT INTO buddy_chats(id,owner_id,buddy_id,presentation)
+                        VALUES(:session,:owner,:buddy,:presentation)
+                        ON CONFLICT(id) DO NOTHING
+                    """), {"session": session_id, "owner": owner, "buddy": buddy_id,
+                          "presentation": request.presentation})
+                conn.execute(text("""
+                    UPDATE buddy_chats SET presentation=:presentation
+                    WHERE id=:session AND owner_id=:owner
+                """), {"presentation": request.presentation, "session": session_id, "owner": owner})
+            return journey_service.submit_stream_turn(
+                conn, owner, session_id, request, generation_id, submission)
+
         record = self.records.create(owner, session_id, request.model_dump(mode="json", by_alias=True), key,
             getattr(provider, "provider_name", "pending"), getattr(provider, "model", "pending"),
-            on_create=lambda conn, generation_id, submission: journey_service.submit_stream_turn(
-                conn, owner, session_id, request, generation_id, submission),
+            on_create=submit_turn,
+            validate_session=True,
+            owner_queue_limit=self.owner_queue_limit, global_queue_limit=self.global_queue_limit,
             # A full slot queues durable accepted work. The feature flag controls
             # whether more than one generation may run at once, not acceptance.
             reject_if_active=False)
         created_now = bool(record.get("createdNow"))
         self.buffer.bind_generation(record["id"], record)
-        if record.get("createdNow") and provider is not None:
+        if record.get("createdNow") and provider is not None and self.can_execute:
             claimed = self._schedule_record(record, owner, request, provider)
             if claimed:
                 record = claimed
                 record["createdNow"] = created_now
-        elif record["status"] == "queued" and provider is not None:
+        elif record["status"] == "queued" and provider is not None and self.can_execute:
             self._schedule_queued(owner, session_id, provider)
         states = self.records.active_for_session(owner, session_id)
         record["scheduledGenerationIds"] = [item["id"] for item in states if item["status"] == "queued"]
@@ -274,17 +353,18 @@ class GenerationManager:
         record = self.records.retry(owner, source_generation_id, key,
             provider=getattr(provider, "provider_name", source["provider"]),
             model=getattr(provider, "model", source["model"]),
+            owner_queue_limit=self.owner_queue_limit, global_queue_limit=self.global_queue_limit,
             on_create=lambda connection, generation_id, submission: journey_service.submit_stream_turn(
                 connection, owner, source["session"], request, generation_id, submission),
         )
         self.buffer.bind_generation(record["id"], record)
         created_now = bool(record.get("createdNow"))
-        if created_now and provider is not None:
+        if created_now and provider is not None and self.can_execute:
             claimed = self._schedule_record(record, owner, request, provider)
             if claimed:
                 record = claimed
                 record["createdNow"] = True
-        elif record["status"] == "queued" and provider is not None:
+        elif record["status"] == "queued" and provider is not None and self.can_execute:
             self._schedule_queued(owner, record["session"], provider)
         states = self.records.active_for_session(owner, record["session"])
         record["scheduledGenerationIds"] = [item["id"] for item in states if item["status"] == "queued"]
@@ -297,7 +377,8 @@ class GenerationManager:
         conversation_limit = self.conversation_limit if self.live_branching_enabled else 1
         global_limit = self.global_limit if self.live_branching_enabled else max(1, self.global_limit)
         claimed = self.records.claim_capacity(record["id"], conversation_limit=conversation_limit,
-                                              global_limit=global_limit, lease_seconds=self.lease_seconds,
+                                              global_limit=global_limit, owner_limit=self.owner_limit,
+                                              lease_seconds=self.lease_seconds,
                                               provider=getattr(provider, "provider_name", "unknown"),
                                               model=getattr(provider, "model", "unknown"))
         if not claimed:
@@ -307,20 +388,67 @@ class GenerationManager:
         return claimed
 
     def _schedule_queued(self, owner: str | None = None, session_id: str | None = None, provider=None) -> None:
+        if not self.can_execute or self.shutting_down:
+            return
+        self._schedule_pending.set()
+        if not self._schedule_gate.acquire(blocking=False):
+            return
+        try:
+            self._schedule_pending.clear()
+            self._claim_queued(owner, session_id, provider)
+        finally:
+            self._schedule_gate.release()
+            loop = getattr(self, 'runtime_loop', None)
+            if self._schedule_pending.is_set() and loop and not loop.is_closed() and not self.shutting_down:
+                loop.call_soon_threadsafe(self._request_queue_scan)
+
+    def _request_queue_scan(self):
+        if not self.can_execute or self.shutting_down:
+            return
+        self._schedule_pending.set()
+        if self._queue_schedule_task is not None and not self._queue_schedule_task.done():
+            return
+        async def drain():
+            try:
+                # Coalesce a notification wave without monopolizing the loop.
+                for _ in range(2):
+                    await asyncio.to_thread(self._schedule_queued)
+                    if not self._schedule_pending.is_set() or self.shutting_down:
+                        break
+            except Exception:
+                logging.getLogger(__name__).exception('Generation queue scan failed; durable recovery remains active')
+            finally:
+                self._queue_schedule_task = None
+                if self._schedule_pending.is_set() and not self.shutting_down:
+                    asyncio.get_running_loop().call_later(.05, self._request_queue_scan)
+        self._queue_schedule_task = asyncio.create_task(drain(), name='generation-queue-scan')
+
+    def _claim_queued(self, owner: str | None = None, session_id: str | None = None, provider=None) -> None:
+        if not self.can_execute or self.shutting_down:
+            return
         chosen_provider = provider or (self.provider_getter() if self.provider_getter else self.provider)
         if not chosen_provider:
             return
-        records = self.records.queued_global() if owner is None or session_id is None else self.records.queued_for_session(owner, session_id)
+        free_slots = self.records.available_global_capacity(self.global_limit)
+        if not free_slots:
+            return
+        scan_limit = max(64, self.global_limit * 2 + free_slots)
+        records = self.records.queued_global(limit=scan_limit) if owner is None or session_id is None else self.records.queued_for_session(owner, session_id)
+        claimed_count = 0
         for record in records:
+            if claimed_count >= free_slots or self.shutting_down:
+                break
             if record["id"] in self.tasks:
                 continue
             conversation_limit = self.conversation_limit if self.live_branching_enabled else 1
             claimed = self.records.claim_capacity(record["id"], conversation_limit=conversation_limit,
-                                                  global_limit=self.global_limit, lease_seconds=self.lease_seconds,
+                                                  global_limit=self.global_limit, owner_limit=self.owner_limit,
+                                                  lease_seconds=self.lease_seconds,
                                                   provider=getattr(chosen_provider, "provider_name", "unknown"),
                                                   model=getattr(chosen_provider, "model", "unknown"))
             if not claimed:
                 continue
+            claimed_count += 1
             request = GenerationRequest.model_validate(claimed["request"])
             self.buffer.bind_generation(claimed["id"], claimed)
             self._launch_record(claimed, claimed["owner"], request, chosen_provider)
@@ -383,49 +511,99 @@ class GenerationManager:
         pending_block_id = ""
         pending_text_started = 0.0
         pending_text_length = 0
+        first_text_persisted = False
+        last_cancel_check = 0.0
+        flush_lock = asyncio.Lock()
+        deferred_metrics: list[asyncio.Task] = []
         chosen_provider = active_provider if active_provider is not None else self.provider
         provider = copy.copy(chosen_provider) if isinstance(chosen_provider, OpenRouterLessonProvider) else chosen_provider
         heartbeat = asyncio.create_task(self._renew_owner_lease(generation_id, owner_token)) if owner_token else None
 
         async def flush_text(*, final_cancelled_checkpoint: bool = False) -> None:
-            nonlocal sequence, pending_block_id, pending_text_started, pending_text_length
-            if not pending_text:
-                return
-            body = "".join(pending_text)
-            event = await self.buffer.append(generation_id, "text.delta",
-                {"blockId": pending_block_id, "text": body},
-                allow_cancelled_checkpoint=final_cancelled_checkpoint)
-            sequence = event.sequence
-            pending_text.clear()
-            pending_block_id = ""
-            pending_text_started = 0.0
-            pending_text_length = 0
-            if not final_cancelled_checkpoint:
-                record = await asyncio.to_thread(self.records.get, owner, generation_id)
-                checkpoint = await self.buffer.append(generation_id, "generation.checkpoint", {
-                    "outputSequence": record["outputSeq"],
-                    "persistedLength": len(record["partialOutput"] or ""),
-                })
-                sequence = checkpoint.sequence
+            nonlocal sequence, pending_block_id, pending_text_started, pending_text_length, first_text_persisted
+            async with flush_lock:
+                if not pending_text:
+                    return
+                body = "".join(pending_text)
+                block_id = pending_block_id
+                append_batch = getattr(self.buffer, "append_text_checkpoint", None)
+                if append_batch:
+                    write_task = asyncio.create_task(append_batch(
+                        generation_id, block_id, body,
+                        allow_cancelled_checkpoint=final_cancelled_checkpoint))
+                    try:
+                        _, checkpoint = await asyncio.shield(write_task)
+                    except asyncio.CancelledError:
+                        # A cancelled await cannot stop the synchronous DB
+                        # transaction running in its thread. Resolve its outcome
+                        # before deciding whether the buffered body can replay.
+                        try:
+                            _, checkpoint = await write_task
+                        except Exception:
+                            raise
+                        sequence = max(sequence, checkpoint.sequence)
+                        first_text_persisted = first_text_persisted or bool(body.strip())
+                        pending_text.clear()
+                        pending_block_id = ""
+                        pending_text_started = 0.0
+                        pending_text_length = 0
+                        raise
+                    sequence = max(sequence, checkpoint.sequence)
+                    first_text_persisted = first_text_persisted or bool(body.strip())
+                    pending_text.clear()
+                    pending_block_id = ""
+                    pending_text_started = 0.0
+                    pending_text_length = 0
+                else:
+                    event = await self.buffer.append(generation_id, "text.delta",
+                        {"blockId": block_id, "text": body},
+                        allow_cancelled_checkpoint=final_cancelled_checkpoint)
+                    sequence = max(sequence, event.sequence)
+                    first_text_persisted = first_text_persisted or bool(body.strip())
+                    pending_text.clear()
+                    pending_block_id = ""
+                    pending_text_started = 0.0
+                    pending_text_length = 0
+                    if not final_cancelled_checkpoint:
+                        record = await asyncio.to_thread(self.records.get, owner, generation_id)
+                        checkpoint = await self.buffer.append(generation_id, "generation.checkpoint", {
+                            "outputSequence": record["outputSeq"],
+                            "persistedLength": len(record["partialOutput"] or ""),
+                        })
+                        sequence = max(sequence, checkpoint.sequence)
+
+        async def flush_timer() -> None:
+            # This timer runs independently of provider iteration, so a quiet
+            # provider cannot strand a small buffered fragment indefinitely.
+            while True:
+                await asyncio.sleep(min(self.flush_seconds, 0.1))
+                if pending_text and time.monotonic() - pending_text_started >= self.flush_seconds:
+                    await flush_text()
 
         async def publish_stream_operation(operation) -> None:
             nonlocal pending_block_id, pending_text_started, pending_text_length, sequence
             if operation.action == "delta":
                 if pending_text and pending_block_id != operation.block_id:
                     await flush_text()
-                if not pending_text:
-                    pending_block_id = operation.block_id
-                    pending_text_started = time.monotonic()
-                pending_text.append(operation.text)
-                pending_text_length += len(operation.text)
-                if (pending_text_length >= self.flush_characters or
-                        time.monotonic() - pending_text_started >= self.flush_seconds):
+                async with flush_lock:
+                    if not pending_text:
+                        pending_block_id = operation.block_id
+                        pending_text_started = time.monotonic()
+                    pending_text.append(operation.text)
+                    pending_text_length += len(operation.text)
+                    # Commit the first meaningful fragment immediately; keep
+                    # batching subsequent tokens to limit database traffic.
+                    should_flush = ((not first_text_persisted and bool(operation.text.strip())) or
+                                    pending_text_length >= self.flush_characters or
+                                    time.monotonic() - pending_text_started >= self.flush_seconds)
+                if should_flush:
                     await flush_text()
                 return
             await flush_text()
             event = await self._publish_lesson_operation(generation_id, operation)
-            sequence = event.sequence
+            sequence = max(sequence, event.sequence)
 
+        flush_task = asyncio.create_task(flush_timer(), name=f"generation-flush-{generation_id}")
         try:
             record = await asyncio.to_thread(self.records.get, owner, generation_id)
             if record.get("ownerToken") != owner_token or record["status"] != "preparing":
@@ -442,15 +620,22 @@ class GenerationManager:
                 ))
 
             context_started = time.perf_counter()
+            # Both lookups perform synchronous SQLAlchemy I/O. Resolve them
+            # before entering the worker thread instead of evaluating their
+            # arguments on the event loop while a streamed turn is starting.
+            request_session_id = record["session"]
+            journey_snapshot = await asyncio.to_thread(
+                self.branching.context_snapshot, owner, generation_id
+            )
             prepared = await asyncio.to_thread(
                 JourneyService(self.store, provider).prepare_stream,
                 owner,
-                request_session_id := (await asyncio.to_thread(self.records.get, owner, generation_id))["session"],
+                request_session_id,
                 request,
                 lambda: self.records.cancelled(generation_id),
                 emit_event,
                 generation_id,
-                self.branching.context_snapshot(owner, generation_id),
+                journey_snapshot,
             )
             observe("generation_context", (time.perf_counter() - context_started) * 1000)
             prepared["visualType"] = request.visual_type
@@ -469,7 +654,7 @@ class GenerationManager:
                     "actionId": prepared["actionId"],
                     "decision": "social_reply",
                 })
-                sequence = event.sequence
+                sequence = max(sequence, event.sequence)
                 if await asyncio.to_thread(self.records.cancelled, generation_id):
                     await self._cancel(generation_id, owner_token)
                     return
@@ -478,18 +663,18 @@ class GenerationManager:
                 event = await self.buffer.append(generation_id, "lesson.block_started", {
                     "block": {"id": block_id, "kind": "explanation", "heading": ""},
                 })
-                sequence = event.sequence
+                sequence = max(sequence, event.sequence)
                 event = await self.buffer.append(generation_id, "text.delta", {
                     "blockId": block_id,
                     "text": prepared["directReply"],
                 })
-                sequence = event.sequence
+                sequence = max(sequence, event.sequence)
                 await self.buffer.append(generation_id, "generation.checkpoint", {
                     "outputSequence": (await asyncio.to_thread(self.records.get, owner, generation_id))["outputSeq"],
                     "persistedLength": len(prepared["directReply"]),
                 })
                 event = await self.buffer.append(generation_id, "lesson.block_completed", {"blockId": block_id})
-                sequence = event.sequence
+                sequence = max(sequence, event.sequence)
                 await asyncio.to_thread(self.records.transition, generation_id, "finalizing", sequence=sequence, owner_token=owner_token)
                 def finalize_social_reply():
                     with self.store.transaction() as connection:
@@ -557,7 +742,6 @@ class GenerationManager:
             chunks: list[str] = []
             first_delta_at = None
             provider_started_at = time.time()
-            await asyncio.to_thread(self.records.update_metrics, generation_id, {"providerStartedAt": provider_started_at}, owner_token=owner_token)
             provider_input = prepared["generationContext"] if getattr(provider, "supports_generation_context", False) else prepared["prompt"]
             context = prepared["generationContext"]
             output_limit = conversation_output_limit(request.gear, provider, context) if prepared.get("responseKind") == "conversation" else teaching_output_limit(request.gear, provider, context)
@@ -570,6 +754,7 @@ class GenerationManager:
             model_name = getattr(provider, "model", "unknown")
             wire_digest = provider_input_fingerprint(provider_name, model_name, wire_payload)
             await asyncio.to_thread(self.records.update_metrics, generation_id, {
+                "providerStartedAt": provider_started_at,
                 "contextVersion": wire_digest,
                 "contextSchemaVersion": 3,
                 "providerInputFingerprintKind": "provider_model_and_serialized_payload_sha256",
@@ -602,17 +787,28 @@ class GenerationManager:
             first_provider_delta = True
             provider_stream = provider.stream_text(provider_input, output_limit, images=prepared.get("images")) if prepared.get("images") else provider.stream_text(provider_input, output_limit)
             async for delta in provider_stream:
+                if flush_task.done():
+                    flush_task.result()
                 if first_provider_delta:
                     observe("provider_first_delta", (time.perf_counter() - provider_request_perf) * 1000)
                     first_provider_delta = False
-                if await asyncio.to_thread(self.records.cancelled, generation_id):
-                    await flush_text(final_cancelled_checkpoint=True)
-                    await self._cancel(generation_id, owner_token)
-                    return
+                if time.monotonic() - last_cancel_check >= self.cancel_check_seconds:
+                    last_cancel_check = time.monotonic()
+                    if await asyncio.to_thread(self.records.cancelled, generation_id):
+                        await flush_text(final_cancelled_checkpoint=True)
+                        await self._cancel(generation_id, owner_token)
+                        return
                 chunks.append(delta)
                 if first_delta_at is None:
                     first_delta_at = time.time()
-                    await asyncio.to_thread(self.records.update_metrics, generation_id, {"firstDeltaAt": first_delta_at, "providerTtftSeconds": first_delta_at - provider_started_at, "applicationTtftSeconds": first_delta_at - started_at}, owner_token=owner_token)
+                    # Preserve TTFT telemetry without making the first visible
+                    # text wait for a metrics transaction.
+                    deferred_metrics.append(asyncio.create_task(asyncio.to_thread(
+                        self.records.update_metrics, generation_id,
+                        {"firstDeltaAt": first_delta_at,
+                         "providerTtftSeconds": first_delta_at - provider_started_at,
+                         "applicationTtftSeconds": first_delta_at - started_at},
+                        owner_token=owner_token)))
                 for operation in parser.feed(delta):
                     await publish_stream_operation(operation)
                 if visual_task and visual_task.done() and not visual_published and parser.block_id:
@@ -624,13 +820,21 @@ class GenerationManager:
                             await self.buffer.append(generation_id, "visualization.error", {"code": "VISUAL_UNAVAILABLE", "message": "The interactive visual could not be completed. Your explanation is still available."})
                     for spec in visualizations:
                         event = await self.buffer.append(generation_id, "visualization.ready", {"spec": spec.model_dump(mode="json", by_alias=True)})
-                        sequence = event.sequence
+                        sequence = max(sequence, event.sequence)
                     if visual_reserved and not visualizations:
                         await self.buffer.append(generation_id, "visualization.skipped")
                     visual_published = True
+            if flush_task.done():
+                flush_task.result()
             for operation in parser.finish():
                 await publish_stream_operation(operation)
             await flush_text()
+            if deferred_metrics:
+                results = await asyncio.gather(*deferred_metrics, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        logging.getLogger(__name__).debug(
+                            "Could not persist first-token timing metric: %s", type(result).__name__)
             body = "".join(chunks).strip()
             if not body:
                 raise ModelProviderError("PROVIDER_ERROR")
@@ -644,7 +848,7 @@ class GenerationManager:
                         await self.buffer.append(generation_id, "visualization.error", {"code": "VISUAL_UNAVAILABLE", "message": "The interactive visual could not be completed. Your explanation is still available."})
                 for spec in visualizations:
                     event = await self.buffer.append(generation_id, "visualization.ready", {"spec": spec.model_dump(mode="json", by_alias=True)})
-                    sequence = event.sequence
+                    sequence = max(sequence, event.sequence)
                 if visual_reserved and not visualizations:
                     await self.buffer.append(generation_id, "visualization.skipped")
             def finalize_reply():
@@ -696,8 +900,13 @@ class GenerationManager:
                 else:
                     await flush_text()
                     # A process shutdown or lost lease is not a learner Stop.
-                    # Leave the checkpoint under its lease for the recovery loop.
-                    logging.getLogger(__name__).info("Generation %s stopped with its worker; recovery will reconcile its lease", generation_id)
+                    # Graceful shutdown fences the stream now; hard crashes are
+                    # reconciled after the lease expires.
+                    if self.shutting_down and owner_token:
+                        await asyncio.to_thread(self.records.interrupt_owned,
+                            generation_id, owner_token, "worker_shutdown")
+                    else:
+                        logging.getLogger(__name__).info("Generation %s stopped with its worker; recovery will reconcile its lease", generation_id)
             except RuntimeError:
                 pass
             raise
@@ -745,13 +954,22 @@ class GenerationManager:
                 # A fenced or expired owner may not publish or commit anything.
                 logging.getLogger(__name__).info("Generation %s lost its execution lease", generation_id)
         finally:
+            # Terminal events are committed directly with the Journey result.
+            # Wake local replay readers after that commit, including when PG
+            # notifications are disabled, instead of waiting five seconds.
+            self.notifications.wake_local(generation_id)
+            flush_task.cancel()
+            await asyncio.gather(flush_task, return_exceptions=True)
+            if deferred_metrics:
+                await asyncio.gather(*deferred_metrics, return_exceptions=True)
             if heartbeat:
                 heartbeat.cancel()
                 await asyncio.gather(heartbeat, return_exceptions=True)
             if visual_task and not visual_task.done():
                 visual_task.cancel()
             self.tasks.pop(generation_id, None)
-            await asyncio.to_thread(self._schedule_queued, provider=provider)
+            if self.can_execute and not self.shutting_down:
+                await asyncio.to_thread(self._schedule_queued, provider=provider)
 
     async def _publish_lesson_operation(self, generation_id, operation):
         if operation.action == "start":
@@ -803,6 +1021,19 @@ class GenerationManager:
             except RuntimeError:
                 pass
         return record
+
+    async def cancel_from_notification(self, generation_id: str) -> None:
+        task = self.tasks.get(generation_id)
+        if task and await asyncio.to_thread(self.records.cancelled, generation_id):
+            self._cancel_task(task)
+
+    def handle_notification(self, channel: str, payload: str) -> None:
+        if channel == EVENT_CHANNEL:
+            self.notifications.wake_local(payload)
+        elif channel == CANCEL_CHANNEL:
+            asyncio.create_task(self.cancel_from_notification(payload))
+        elif channel == QUEUE_CHANNEL and self.can_execute and not self.shutting_down:
+            self._request_queue_scan()
 
     def _attach(self, generation_id: str) -> None:
         self.observers[generation_id] = self.observers.get(generation_id, 0) + 1

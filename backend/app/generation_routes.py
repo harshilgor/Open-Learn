@@ -19,6 +19,9 @@ from .conversation_branching import ConversationBranchStore
 from .material_routes import material_owner
 from .material_service import MaterialService, problem
 from .visualization_service import VisualChange, VisualizationService
+from .generation_command_receipts import get_mode_choice, save_mode_choice, clear_mode_choice
+from .mode_transition_routing import classify_mode_for_session
+from .mode_transition_models import ModeClassificationRequest
 
 SSE_HEADERS = {"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
 
@@ -37,7 +40,10 @@ def build_generation_router(store_provider, provider_getter):
         nonlocal recovery_task
         if recovery_task is None or recovery_task.done():
             manager.runtime_loop = asyncio.get_running_loop()
-            await asyncio.to_thread(manager._schedule_queued, provider=provider_getter())
+            manager.notifications.start(manager.handle_notification)
+            await asyncio.to_thread(manager.records.expire_stale_queued, manager.queue_deadline_seconds)
+            if manager.can_execute:
+                await asyncio.to_thread(manager._schedule_queued, provider=provider_getter())
             recovery_task = asyncio.create_task(manager.recovery_loop(), name="generation-recovery")
 
     @router.on_event("shutdown")
@@ -47,11 +53,53 @@ def build_generation_router(store_provider, provider_getter):
             recovery_task.cancel()
             await asyncio.gather(recovery_task, return_exceptions=True)
         recovery_task = None
+        manager.notifications.close()
 
     @router.post("/sessions/{sid}/generations", status_code=202)
     async def create(sid: str, command: GenerationRequest, key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200), owner=Depends(material_owner)):
         started = time.perf_counter()
         manager.runtime_loop = asyncio.get_running_loop()
+        decision = None
+        suggestion = None
+        if command.action == "message" and command.message.strip():
+            request_payload = command.model_dump(mode="json", by_alias=True)
+            existing = await asyncio.to_thread(manager.records.by_idempotency_key,
+                owner, sid, request_payload, key)
+            if existing:
+                return GenerationStore.descriptor(existing)
+            receipt = await asyncio.to_thread(get_mode_choice, manager.store, owner, sid, key, request_payload)
+            bypass_id = command.classification_bypass_id
+            if receipt and receipt.get("suggestion"):
+                stored_suggestion = receipt["suggestion"]
+                if bypass_id != stored_suggestion.get("id"):
+                    return GenerationStore.descriptor({
+                        "id": None, "session": sid, "mode": command.mode, "status": "mode_choice",
+                        "sequence": 0, "provider": "pending", "model": "pending", "accepted": False,
+                        "modeSuggestion": stored_suggestion, "modeDecision": receipt.get("decision"),
+                        "requiresModeChoice": True,
+                    })
+                await asyncio.to_thread(clear_mode_choice, manager.store, owner, sid, key)
+
+            classifier = os.getenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid").lower()
+            classifier_provider = provider_getter() if classifier in {"provider", "hybrid"} else None
+            mode_request = ModeClassificationRequest(message=command.message,
+                current_mode=command.mode, bypass_suggestion_id=bypass_id)
+            with span("mode_classification"):
+                classification = await asyncio.to_thread(classify_mode_for_session,
+                    manager.store, owner, sid, mode_request, classifier_provider)
+            decision = classification.decision
+            if classification.suggestion:
+                suggestion_obj = classification.suggestion
+                suggestion = suggestion_obj.model_dump(mode="json", by_alias=True)
+            if decision == "request_transition" and suggestion:
+                stored = await asyncio.to_thread(save_mode_choice, manager.store, owner,
+                    sid, key, request_payload, decision, suggestion)
+                return GenerationStore.descriptor({
+                    "id": None, "session": sid, "mode": command.mode, "status": "mode_choice",
+                    "sequence": 0, "provider": "pending", "model": "pending", "accepted": False,
+                    "modeSuggestion": stored.get("suggestion"), "modeDecision": stored.get("decision"),
+                    "requiresModeChoice": True,
+                })
         with span("admission"):
             record = await asyncio.to_thread(manager.create, owner, sid, command, key)
         if record.get("createdNow") and record.get("id"):
@@ -63,7 +111,11 @@ def build_generation_router(store_provider, provider_getter):
                 # acceptance into a failed HTTP submission.
                 logging.getLogger(__name__).exception("Could not persist generation acceptance latency")
             record["metrics"] = {**(record.get("metrics") or {}), "acceptanceLatencyMs": latency_ms}
-        return GenerationStore.descriptor(record)
+        descriptor = GenerationStore.descriptor(record)
+        if decision:
+            descriptor.mode_decision = decision
+            descriptor.mode_suggestion = suggestion
+        return descriptor
 
     @router.get("/operations/live-branching/metrics")
     def live_branching_operations_metrics(

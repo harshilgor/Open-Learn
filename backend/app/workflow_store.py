@@ -83,8 +83,10 @@ class WorkflowStore:
 
     def listing(self, owner, kind):
         with self.store.engine.connect() as conn:
-            rows = conn.execute(text("SELECT id FROM practice_records WHERE owner_id=:owner AND kind=:kind ORDER BY id"), {"owner": owner, "kind": kind}).all()
-            return [self.read(owner, row[0], kind, conn) for row in rows]
+            rows = conn.execute(text("""SELECT id,revision,payload FROM practice_records
+                WHERE owner_id=:owner AND kind=:kind ORDER BY id"""),
+                {"owner": owner, "kind": kind}).all()
+            return [{**json.loads(row[2]), "id": row[0], "revision": row[1]} for row in rows]
 
     def listing_by_parent(self, owner, kind, parent_id):
         """Read only the children of one learning artifact."""

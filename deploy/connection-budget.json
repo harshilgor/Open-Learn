@@ -5,7 +5,8 @@
   "migrationConnections": 2,
   "listenerConnections": 0,
   "roles": [
-    {"role": "api", "replicas": 1, "poolSize": 5},
+    {"role": "api", "replicas": 1, "poolSize": 3},
+    {"role": "generation", "replicas": 1, "poolSize": 3},
     {"role": "learning", "replicas": 1, "poolSize": 2},
     {"role": "agent", "replicas": 1, "poolSize": 2},
     {"role": "class", "replicas": 1, "poolSize": 2},

@@ -71,9 +71,18 @@ def assert_owner_active(connection, owner: str):
     # can validate the same owner; deletion still waits for commits
     # already in flight and later work observes the durable tombstone.
     suffix = ' FOR SHARE' if connection.dialect.name == 'postgresql' else ''
+    transaction = connection.get_nested_transaction() or connection.get_transaction()
+    cached = connection.info.get('openlearn_owner_lock')
+    if suffix and transaction is not None and cached == (transaction, owner):
+        return
     status = connection.execute(text('SELECT status FROM identity_accounts WHERE id=:id' + suffix), {'id': owner}).scalar_one_or_none()
     if status == 'deleted':
         fail('account_deleted', 'This account has been deleted.', 403)
+    if suffix and status is not None:
+        # The share lock lasts until this exact transaction ends. Never reuse
+        # across transactions, accounts, or an absent/tombstoned row. Device
+        # revocation and expiry checks remain separate and uncached.
+        connection.info['openlearn_owner_lock'] = (connection.get_nested_transaction() or connection.get_transaction(), owner)
 
 
 def current_principal() -> Principal:

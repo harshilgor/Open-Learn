@@ -20,6 +20,14 @@
   display: none;
 }
 
+.featureLoading {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
 .header {
   height: 52px;
   display: flex;

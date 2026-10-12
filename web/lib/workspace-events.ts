@@ -51,8 +51,9 @@ export function openWorkspaceQuiz(input: Omit<WorkspaceQuizOpen, 'id'>): void {
   }));
 }
 
-export function requestWorkspaceQuiz(): void {
-  window.dispatchEvent(new Event(WORKSPACE_QUIZ_REQUEST_EVENT));
+export type WorkspaceQuizRequest = { requestedTopic?: string; sessionId?: string; origin?: 'ask' | 'learn' };
+export function requestWorkspaceQuiz(input?: WorkspaceQuizRequest): void {
+  window.dispatchEvent(new CustomEvent<WorkspaceQuizRequest | undefined>(WORKSPACE_QUIZ_REQUEST_EVENT, { detail: input }));
 }
 
 export function toggleWorkspacePanel(): void {

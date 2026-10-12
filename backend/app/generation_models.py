@@ -8,7 +8,7 @@ from .assessment_models import JourneyCommand
 from .session_models import ApiModel
 from .visualization_models import VisualType
 
-GenerationStatus = Literal["queued", "preparing", "streaming", "finalizing", "completed", "cancel_requested", "cancelled", "failed", "interrupted"]
+GenerationStatus = Literal["queued", "preparing", "streaming", "finalizing", "completed", "cancel_requested", "cancelled", "failed", "interrupted", "mode_choice"]
 GenerationEventType = Literal[
     "message.accepted",
     "generation.queued",
@@ -45,6 +45,9 @@ class GenerationRequest(JourneyCommand):
     selected_lesson_id: str | None = Field(default=None, max_length=160)
     selected_block_id: str | None = Field(default=None, max_length=160)
     visual_type: VisualType | Literal["auto"] = "auto"
+    # Buddy response presentation is persisted atomically with durable message
+    # acceptance, avoiding a separate browser request before every turn.
+    presentation: Literal["conversation", "ask", "learn", "quiz"] | None = None
 
 
 class GenerationDescriptor(ApiModel):
@@ -72,6 +75,9 @@ class GenerationDescriptor(ApiModel):
     scheduled_generation_ids: list[str] = Field(default_factory=list)
     active_generation_ids: list[str] = Field(default_factory=list)
     metrics: dict[str, float | int | bool | str | None] = Field(default_factory=dict)
+    mode_suggestion: dict[str, Any] | None = None
+    mode_decision: Literal["stay", "suggest", "request_transition"] | None = None
+    requires_mode_choice: bool = False
 
 
 class BranchSelectionRequest(ApiModel):

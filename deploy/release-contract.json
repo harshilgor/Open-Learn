@@ -1,8 +1,8 @@
 {
   "protocolVersion": 1,
-  "schemaHeads": ["0083_live_branching_observability"],
-  "compatibleSchemaHeads": [["0083_live_branching_observability"]],
-  "requiredCapabilities": ["durable-generation-v1", "branch-revisions-v1", "workspace-note-revisions-v1", "performance-timing-v1"],
+  "schemaHeads": ["0085_object_cleanup_queue"],
+  "compatibleSchemaHeads": [["0085_object_cleanup_queue"]],
+  "requiredCapabilities": ["durable-generation-v1", "branch-revisions-v1", "workspace-note-revisions-v1", "performance-timing-v1", "generation-worker-v1", "generation-shared-wakeups-v1", "fair-generation-admission-v1", "object-cleanup-queue-v1"],
   "migrationPolicy": "expand-contract",
   "migrationOwner": "single-release-job"
 }

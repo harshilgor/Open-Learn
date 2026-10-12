@@ -7,7 +7,7 @@ import {BrowserControlPanel} from '@/components/browser-control-panel';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import {type BrowserTask,useBrowserAssistant} from '@/lib/browser-assistant';
 import {useEffect} from 'react';
-const {request,requestStream}=vi.hoisted(()=>({request:vi.fn(async()=>({connections:[]})),requestStream:vi.fn()}));
+const {request,requestStream}=vi.hoisted(()=>({request:vi.fn(async(_path:string):Promise<unknown>=>({connections:[]})),requestStream:vi.fn()}));
 vi.mock('@/lib/api',()=>({request,requestStream,apiBaseUrl:()=>''}));
 vi.mock('@/components/rich-content',()=>({RichContent:({body}:{body:string})=><p>{body}</p>}));
 vi.mock('@/components/site-connections',()=>({SiteConnections:()=> <p>Connect a website</p>}));

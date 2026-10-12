@@ -444,6 +444,9 @@ def test_two_full_responses_can_stream_under_bounded_concurrency(live_branching_
         pytest.skip("The restricted Windows sandbox blocks asyncio's socketpair self-pipe.")
 
     monkeypatch.setenv("LIVE_BRANCHING_ENABLED", "true")
+    # The CI job defaults the app to external workers. This test owns an
+    # in-process manager and must explicitly enable embedded execution.
+    monkeypatch.setenv("OPENLEARN_WORKER_MODE", "embedded")
     monkeypatch.setenv("GENERATION_PER_CONVERSATION_ACTIVE_LIMIT", "2")
     monkeypatch.setenv("GENERATION_GLOBAL_ACTIVE_LIMIT", "2")
     both_preparing = threading.Barrier(2)

@@ -38,6 +38,22 @@ class GenerationStore:
     def __init__(self, store):
         self.store = store
 
+    def by_idempotency_key(self, owner: str, session_id: str, request: dict, key: str) -> dict | None:
+        """Resolve a durable command before running advisory routing again."""
+        identity = dict(request)
+        identity.setdefault("clientMessageId", key)
+        identity.pop("presentation", None)
+        request_hash = hashlib.sha256(_json([session_id, identity]).encode()).hexdigest()
+        with self.store.engine.connect() as connection:
+            row = connection.execute(text("""SELECT * FROM generation_records
+                WHERE owner_id=:owner AND session_id=:session AND idempotency_key=:key"""),
+                {"owner": owner, "session": session_id, "key": key}).mappings().first()
+        if not row:
+            return None
+        if row["request_hash"] != request_hash:
+            problem("idempotency_conflict", "This request key was already used for another generation.", 409)
+        return {**self._row(row), "createdNow": False}
+
     def _row(self, row) -> dict:
         if not row:
             problem("not_found", "This generation is not available.", 404)
@@ -52,8 +68,27 @@ class GenerationStore:
                 "leaseExpiresAt": row["lease_expires_at"], "capacityReserved": bool(row["capacity_reserved"]),
                 "partialOutput": row["partial_output"], "outputSeq": row["output_seq"]}
 
+    @staticmethod
+    def _check_queue_capacity(connection, owner: str, owner_limit: int, global_limit: int) -> None:
+        # Keep the short count-and-insert admission decision atomic across API
+        # replicas. Idempotency is checked first, so retries do not consume a slot.
+        if connection.dialect.name == "postgresql":
+            connection.execute(text("SELECT pg_advisory_xact_lock(7412084, 1)"))
+        owner_queued = connection.execute(text("""
+            SELECT count(*) FROM generation_records WHERE owner_id=:owner AND status='queued'
+        """), {"owner": owner}).scalar_one()
+        if owner_queued >= owner_limit:
+            problem("generation_queue_full", "Your response queue is full. Try again after one finishes.", 429)
+        global_queued = connection.execute(text("""
+            SELECT count(*) FROM generation_records WHERE status='queued'
+        """)).scalar_one()
+        if global_queued >= global_limit:
+            problem("generation_queue_full", "Open Learn is at response capacity. Please try again shortly.", 429)
+
     def create(self, owner: str, session_id: str, request: dict, key: str, provider: str, model: str,
-               on_create=None, *, reject_if_active: bool = True) -> dict:
+               on_create=None, *, reject_if_active: bool = True, session_snapshot=None,
+               validate_session: bool = False, owner_queue_limit: int = 20,
+               global_queue_limit: int = 500) -> dict:
         request = dict(request)
         client_message_id = str(request.get("clientMessageId") or key)
         if client_message_id != key:
@@ -61,7 +96,13 @@ class GenerationStore:
         request["clientMessageId"] = client_message_id
         reply_to_generation_id = request.get("replyToGenerationId")
         parent_generation_id = request.get("parentGenerationId") or reply_to_generation_id
-        request_hash = hashlib.sha256(_json([session_id, request]).encode()).hexdigest()
+        # Presentation is applied as session metadata at acceptance, but was
+        # historically saved by a separate request and therefore absent from
+        # generation idempotency identity. Keep that identity stable for an
+        # in-flight client retry across this API upgrade.
+        identity_request = dict(request)
+        identity_request.pop("presentation", None)
+        request_hash = hashlib.sha256(_json([session_id, identity_request]).encode()).hexdigest()
         now = time.time()
         message_text = request.get("message") or ("Start learning" if request.get("action") == "start" else "Continue")
         from .performance import current_trace
@@ -74,6 +115,10 @@ class GenerationStore:
                   "message": message_text}
         try:
             with self.store.transaction() as conn:
+                if validate_session:
+                    from .material_service import MaterialService
+                    session_snapshot = MaterialService(self.store).session(
+                        owner, session_id, connection=conn)
                 for referenced_generation_id in dict.fromkeys(
                     item for item in (reply_to_generation_id, parent_generation_id) if item
                 ):
@@ -89,6 +134,7 @@ class GenerationStore:
                     if existing["request_hash"] != request_hash:
                         problem("idempotency_conflict", "This request key was already used for another generation.", 409)
                     return {**self._row(existing), "createdNow": False}
+                self._check_queue_capacity(conn, owner, owner_queue_limit, global_queue_limit)
                 if reject_if_active:
                     active = conn.execute(text("""
                         SELECT id FROM generation_records WHERE owner_id=:owner AND session_id=:session
@@ -124,6 +170,7 @@ class GenerationStore:
                         "messageId": client_message_id, "conversationSeq": event["sequence"],
                         "contextRevision": event["sequence"], "branchId": branch["id"],
                         "relation": branch["relation"], "isNewMessage": is_new_message,
+                        "sessionSnapshot": session_snapshot,
                     })
                     if isinstance(receipt, dict):
                         if receipt.get("journeyRevision") is not None:
@@ -189,7 +236,8 @@ class GenerationStore:
         }
 
     def retry(self, owner: str, source_generation_id: str, key: str,
-              *, provider: str | None = None, model: str | None = None, on_create=None) -> dict:
+              *, provider: str | None = None, model: str | None = None, on_create=None,
+              owner_queue_limit: int = 20, global_queue_limit: int = 500) -> dict:
         """Create a fresh execution for a failed/interrupted accepted message."""
         from .performance import current_trace
         active_trace = current_trace.get()
@@ -211,6 +259,7 @@ class GenerationStore:
                     if existing["request_hash"] != request_hash:
                         problem("idempotency_conflict", "This retry key was already used for another request.", 409)
                     return {**self._row(existing), "createdNow": False}
+                self._check_queue_capacity(connection, owner, owner_queue_limit, global_queue_limit)
                 if source["status"] not in {"failed", "interrupted"}:
                     problem("retry_not_available", "Only failed or interrupted responses can be retried.", 409)
                 snapshot = connection.execute(text("""
@@ -337,6 +386,7 @@ class GenerationStore:
         """), {"type": scope_type, "scope": scope_id, "limit": limit_count, "now": time.time()})
 
     def claim_capacity(self, generation_id: str, *, conversation_limit: int, global_limit: int,
+                       owner_limit: int = 2,
                        lease_seconds: float = 90, provider: str | None = None,
                        model: str | None = None) -> dict | None:
         """Atomically reserve both per-conversation and deployment-wide slots."""
@@ -357,12 +407,22 @@ class GenerationStore:
             """), {"scope": conversation_id, "now": now}).first()
             if not acquired_conversation:
                 return None
+            self._ensure_capacity(connection, "owner", row["owner_id"], owner_limit)
+            acquired_owner = connection.execute(text("""
+                UPDATE generation_capacity SET active_count=active_count+1,updated_at=:now
+                WHERE scope_type='owner' AND scope_id=:owner AND active_count<limit_count
+                RETURNING active_count
+            """), {"owner": row["owner_id"], "now": now}).first()
+            if not acquired_owner:
+                self._decrement_capacity(connection, "conversation", conversation_id, now)
+                return None
             acquired_global = connection.execute(text("""
                 UPDATE generation_capacity SET active_count=active_count+1,updated_at=:now
                 WHERE scope_type='global' AND scope_id='deployment' AND active_count<limit_count
                 RETURNING active_count
             """), {"now": now}).first()
             if not acquired_global:
+                self._decrement_capacity(connection, "owner", row["owner_id"], now)
                 connection.execute(text("""
                     UPDATE generation_capacity SET active_count=CASE WHEN active_count>0 THEN active_count-1 ELSE 0 END,
                         updated_at=:now WHERE scope_type='conversation' AND scope_id=:scope
@@ -371,11 +431,13 @@ class GenerationStore:
             claimed = connection.execute(text("""
                 UPDATE generation_records SET status='preparing',owner_token=:token,
                     owner_fence=owner_fence+1,lease_expires_at=:expires,capacity_reserved=TRUE,
+                    owner_capacity_reserved=TRUE,
                     provider=COALESCE(:provider,provider),model=COALESCE(:model,model),updated_at=:now
                 WHERE id=:id AND status='queued'
             """), {"token": owner_token, "expires": now + lease_seconds, "now": now,
                    "provider": provider, "model": model, "id": generation_id})
             if claimed.rowcount != 1:
+                self._decrement_capacity(connection, "owner", row["owner_id"], now)
                 self._decrement_capacity(connection, "conversation", conversation_id, now)
                 self._decrement_capacity(connection, "global", "deployment", now)
                 return None
@@ -395,8 +457,10 @@ class GenerationStore:
         self._decrement_capacity(connection, "conversation",
                                  self._capacity_id(row["owner_id"], row["session_id"]), now)
         self._decrement_capacity(connection, "global", "deployment", now)
+        if bool(row["owner_capacity_reserved"]):
+            self._decrement_capacity(connection, "owner", row["owner_id"], now)
         connection.execute(text("""
-            UPDATE generation_records SET capacity_reserved=FALSE,lease_expires_at=NULL
+            UPDATE generation_records SET capacity_reserved=FALSE,owner_capacity_reserved=FALSE,lease_expires_at=NULL
             WHERE id=:id
         """), {"id": row["id"]})
 
@@ -439,7 +503,7 @@ class GenerationStore:
             for row in rows:
                 changed = connection.execute(text("""
                     UPDATE generation_records SET status='interrupted',error_code='STREAM_INTERRUPTED',
-                        capacity_reserved=FALSE,lease_expires_at=NULL,updated_at=:now
+                        capacity_reserved=FALSE,owner_capacity_reserved=FALSE,lease_expires_at=NULL,updated_at=:now
                     WHERE id=:id AND owner_token=:token AND lease_expires_at<=:now
                         AND status IN ('preparing','streaming','finalizing','cancel_requested')
                 """), {"id": row["id"], "token": row["owner_token"], "now": now})
@@ -448,6 +512,8 @@ class GenerationStore:
                 self._decrement_capacity(connection, "conversation",
                     self._capacity_id(row["owner_id"], row["session_id"]), now)
                 self._decrement_capacity(connection, "global", "deployment", now)
+                if bool(row["owner_capacity_reserved"]):
+                    self._decrement_capacity(connection, "owner", row["owner_id"], now)
                 ConversationBranchStore.append_generation_event(connection, row["id"], "generation.interrupted",
                     {"reason": "worker_lease_expired", "partialOutputAvailable": bool(row["partial_output"])})
                 try:
@@ -459,6 +525,34 @@ class GenerationStore:
                     pass
                 interrupted.append(row["id"])
         return interrupted
+
+    def interrupt_owned(self, generation_id: str, owner_token: str, reason: str) -> bool:
+        """Fence a cooperatively drained provider stream before releasing its slot."""
+        with self.store.transaction() as connection:
+            row = connection.execute(text("""
+                SELECT * FROM generation_records WHERE id=:id AND owner_token=:token
+                    AND capacity_reserved=TRUE
+                    AND status IN ('preparing','streaming','finalizing','cancel_requested')
+            """), {"id": generation_id, "token": owner_token}).mappings().first()
+            if not row:
+                return False
+            status = "cancelled" if row["cancellation_requested"] else "interrupted"
+            code = "CANCELLED" if status == "cancelled" else "STREAM_INTERRUPTED"
+            self.transition(generation_id, status, error_code=code, owner_token=owner_token, connection=connection)
+            if status == "cancelled":
+                event_type, event_data = "generation.cancelled", {"code": code}
+            else:
+                event_type, event_data = "generation.interrupted", {
+                    "reason": reason, "partialOutputAvailable": bool(row["partial_output"])}
+            ConversationBranchStore.append_generation_event(connection, generation_id, event_type, event_data)
+            try:
+                from .journey_service import JourneyService
+                JourneyService(self.store, None).finish_stream_turn(
+                    row["owner_id"], row["session_id"], generation_id, status, code, connection)
+            except Exception:
+                # Pre-Journey generations have no canonical turn to reconcile.
+                pass
+            return True
 
     def interrupt_unowned_legacy(self) -> list[str]:
         """Close pre-lease active rows left by the serial generation manager."""
@@ -498,13 +592,54 @@ class GenerationStore:
             """), {"owner": owner, "session": session_id, "limit": limit}).mappings().all()
         return [self._row(row) for row in rows]
 
-    def queued_global(self, limit: int = 200) -> list[dict]:
+    def available_global_capacity(self, configured_limit: int) -> int:
+        with self.store.engine.connect() as connection:
+            row = connection.execute(text("SELECT active_count,limit_count FROM generation_capacity WHERE scope_type='global' AND scope_id='deployment'")).first()
+        return max(0, min(configured_limit, int(row[1])) - int(row[0])) if row else configured_limit
+
+    def queued_global(self, limit: int = 2000) -> list[dict]:
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
-                SELECT * FROM generation_records WHERE status='queued'
-                ORDER BY created_at,id LIMIT :limit
+                WITH ranked AS (
+                    SELECT g.*, ROW_NUMBER() OVER (
+                        PARTITION BY owner_id ORDER BY created_at,id
+                    ) AS owner_queue_position
+                    FROM generation_records g WHERE status='queued'
+                )
+                SELECT * FROM ranked
+                ORDER BY owner_queue_position,created_at,id LIMIT :limit
             """), {"limit": limit}).mappings().all()
         return [self._row(row) for row in rows]
+
+    def expire_stale_queued(self, max_age_seconds: float, limit: int = 100) -> int:
+        """Fail old accepted work visibly instead of executing it much later."""
+        now = time.time()
+        cutoff = now - max(60.0, float(max_age_seconds))
+        expired = 0
+        with self.store.transaction() as connection:
+            rows = connection.execute(text("""
+                SELECT * FROM generation_records WHERE status='queued' AND created_at<=:cutoff
+                ORDER BY created_at,id LIMIT :limit
+            """), {"cutoff": cutoff, "limit": max(1, min(500, int(limit)))}).mappings().all()
+            for row in rows:
+                changed = connection.execute(text("""
+                    UPDATE generation_records SET status='failed',error_code='QUEUE_EXPIRED',updated_at=:now
+                    WHERE id=:id AND status='queued'
+                """), {"id": row["id"], "now": now})
+                if changed.rowcount != 1:
+                    continue
+                ConversationBranchStore.append_generation_event(connection, row["id"], "generation.error", {
+                    "code": "QUEUE_EXPIRED",
+                    "message": "This reply waited too long in the queue. Please send it again.",
+                })
+                try:
+                    from .journey_service import JourneyService
+                    JourneyService(self.store, None).finish_stream_turn(
+                        row["owner_id"], row["session_id"], row["id"], "failed", "QUEUE_EXPIRED", connection)
+                except Exception:
+                    pass
+                expired += 1
+        return expired
 
     def request_cancel(self, owner: str, generation_id: str) -> dict:
         with self.store.transaction() as conn:
@@ -609,6 +744,71 @@ class GenerationStore:
                            {"id": generation_id, "sequence": sequence, "type": event_type, "data": _json(data or {}), "now": time.time()})
         return GenerationEvent(generation_id=generation_id, sequence=sequence, type=event_type, data=data or {})
 
+    def append_text_checkpoint(self, generation_id: str, block_id: str, body: str,
+                               metadata: dict | None = None,
+                               connection=None, owner_token: str | None = None, *,
+                               allow_cancelled_checkpoint: bool = False) -> tuple[GenerationEvent, GenerationEvent]:
+        """Persist visible text and its replay checkpoint atomically and in order."""
+        if connection is None:
+            try:
+                with self.store.transaction() as conn:
+                    return self.append_text_checkpoint(
+                        generation_id, block_id, body, metadata, conn, owner_token,
+                        allow_cancelled_checkpoint=allow_cancelled_checkpoint)
+            except StaleGenerationWrite as exc:
+                self._record_stale_write()
+                exc.metric_recorded = True
+                raise
+        now = time.time()
+        values = {"id": generation_id, "text": body, "now": now}
+        ownership_clause = ""
+        if owner_token is not None:
+            values["owner_token"] = owner_token
+            ownership_clause = " AND owner_token=:owner_token AND capacity_reserved=TRUE AND lease_expires_at>:now"
+            if allow_cancelled_checkpoint:
+                ownership_clause += " AND status='cancel_requested' AND cancellation_requested=TRUE"
+            else:
+                ownership_clause += " AND status IN ('preparing','streaming','finalizing') AND cancellation_requested=FALSE"
+        updated = connection.execute(text(f"""
+            UPDATE generation_records
+            SET sequence=sequence+1, partial_output=COALESCE(partial_output,'')||:text,
+                output_seq=output_seq+1, updated_at=:now
+            WHERE id=:id{ownership_clause}
+            RETURNING sequence,output_seq,length(COALESCE(partial_output,''))
+        """), values).first()
+        if updated is None:
+            if owner_token is not None:
+                raise StaleGenerationWrite("Generation is missing or this worker no longer owns it")
+            raise RuntimeError("Generation is missing or this worker no longer owns it")
+        delta_sequence, output_sequence, persisted_length = map(int, updated)
+        delta_data = {"blockId": block_id, "text": body, **(metadata or {})}
+        checkpoint_data = {"outputSequence": output_sequence, "persistedLength": persisted_length}
+        connection.execute(text("""
+            INSERT INTO generation_events(generation_id,sequence,event_type,data_json,created_at)
+            VALUES(:id,:sequence,'text.delta',:data,:now)
+        """), {"id": generation_id, "sequence": delta_sequence, "data": _json(delta_data), "now": now})
+        checkpoint_sequence = delta_sequence + 1
+        checkpoint_update = connection.execute(text(f"""
+            UPDATE generation_records SET sequence=sequence+1
+            WHERE id=:id{ownership_clause} RETURNING sequence
+        """), values).first()
+        if checkpoint_update is None:
+            if owner_token is not None:
+                raise StaleGenerationWrite("Generation is missing or this worker no longer owns it")
+            raise RuntimeError("Generation changed before checkpoint was saved")
+        checkpoint_sequence = int(checkpoint_update[0])
+        connection.execute(text("""
+            INSERT INTO generation_events(generation_id,sequence,event_type,data_json,created_at)
+            VALUES(:id,:sequence,'generation.checkpoint',:data,:now)
+        """), {"id": generation_id, "sequence": checkpoint_sequence,
+               "data": _json(checkpoint_data), "now": now})
+        return (
+            GenerationEvent(generation_id=generation_id, sequence=delta_sequence,
+                            type="text.delta", data=delta_data),
+            GenerationEvent(generation_id=generation_id, sequence=checkpoint_sequence,
+                            type="generation.checkpoint", data=checkpoint_data),
+        )
+
     def validate_owner(self, connection, generation_id: str, owner_token: str) -> dict:
         row = connection.execute(text("""
             SELECT * FROM generation_records WHERE id=:id AND owner_token=:token
@@ -662,6 +862,23 @@ class GenerationStore:
                                 {"id": generation_id, "after": after}).mappings().all()
         return [GenerationEvent(generation_id=generation_id, sequence=row["sequence"], type=row["event_type"], data=json.loads(row["data_json"])) for row in rows]
 
+    def replay_snapshot(self, generation_id: str, after: int) -> tuple[list[GenerationEvent], str | None]:
+        """Read replay and terminal status together, from one committed SQL snapshot.
+
+        Internal transport helper; public callers authorize the generation before
+        subscribing. No different owner or generation can enter the join.
+        """
+        with self.store.engine.connect() as connection:
+            rows = connection.execute(text('''
+                SELECT r.status,e.sequence,e.event_type,e.data_json
+                FROM generation_records r LEFT JOIN generation_events e
+                ON e.generation_id=r.id AND e.sequence>:after
+                WHERE r.id=:id ORDER BY e.sequence
+            '''), {'id': generation_id, 'after': after}).mappings().all()
+        events = [GenerationEvent(generation_id=generation_id, sequence=row['sequence'],
+            type=row['event_type'], data=json.loads(row['data_json'])) for row in rows if row['sequence'] is not None]
+        return events, rows[0]['status'] if rows else None
+
     def interrupt_active(self) -> None:
         from .journey_service import JourneyService
         journey_service = JourneyService(self.store, None)
@@ -690,7 +907,10 @@ class GenerationStore:
             branch_revision=record.get("branchRevision"), selected_branch_id=record.get("selectedBranchId"),
             cancel_target_generation_id=record.get("cancelTargetGenerationId"),
             cancel_target_status=record.get("cancelTargetStatus"),
-            accepted=True, scheduled_generation_ids=record.get("scheduledGenerationIds") or [],
+            accepted=bool(record.get("accepted", True)), scheduled_generation_ids=record.get("scheduledGenerationIds") or [],
             active_generation_ids=record.get("activeGenerationIds") or [],
             metrics=record.get("metrics") or {},
+            mode_suggestion=record.get("modeSuggestion"),
+            mode_decision=record.get("modeDecision"),
+            requires_mode_choice=bool(record.get("requiresModeChoice", False)),
         )
