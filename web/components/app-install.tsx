@@ -1,59 +1,154 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { Download, X } from 'lucide-react';
+import { Download, Sparkles, X } from 'lucide-react';
 import { Button } from './ui/button';
+import styles from './app-install.module.css';
 
 interface InstallEvent extends Event {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
+
 const seenKey = 'openlearn-install-invitation-v1';
-function remember() { try { localStorage.setItem(seenKey, 'seen'); } catch { /* Storage may be unavailable. */ } }
+
+function remember() {
+  try {
+    localStorage.setItem(seenKey, 'seen');
+  } catch {
+    // Storage may be unavailable.
+  }
+}
 
 export function AppInstall() {
   const [open, setOpen] = useState(false);
   const [available, setAvailable] = useState<InstallEvent | null>(null);
   const [ios, setIos] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
   useEffect(() => {
-    const installed = window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone;
+    const installed = window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as Navigator & { standalone?: boolean }).standalone;
     if (installed || 'formaDesktop' in window) return;
-    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     let seen = false;
-    try { seen = !!localStorage.getItem(seenKey); } catch { /* Show once for this visit. */ }
-    const timer = window.setTimeout(() => { setIos(isIos); if (!seen) setOpen(true); }, 1500);
-    const capture = (event: Event) => { event.preventDefault(); setAvailable(event as InstallEvent); };
-    const finish = () => { remember(); setOpen(false); setAvailable(null); };
-    const reopen = () => { setIos(isIos); setOpen(true); };
+    try {
+      seen = !!localStorage.getItem(seenKey);
+    } catch {
+      // Show once for this visit when storage is unavailable.
+    }
+
+    const timer = window.setTimeout(() => {
+      setIos(isIos);
+      if (!seen) setOpen(true);
+    }, 1500);
+    const capture = (event: Event) => {
+      event.preventDefault();
+      setAvailable(event as InstallEvent);
+    };
+    const finish = () => {
+      remember();
+      setOpen(false);
+      setAvailable(null);
+    };
+    const reopen = () => {
+      setIos(isIos);
+      setInstructionsOpen(false);
+      setError('');
+      setOpen(true);
+    };
+
     window.addEventListener('beforeinstallprompt', capture);
     window.addEventListener('appinstalled', finish);
     window.addEventListener('openlearn:install', reopen);
-    return () => { clearTimeout(timer); window.removeEventListener('beforeinstallprompt', capture); window.removeEventListener('appinstalled', finish); window.removeEventListener('openlearn:install', reopen); };
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('beforeinstallprompt', capture);
+      window.removeEventListener('appinstalled', finish);
+      window.removeEventListener('openlearn:install', reopen);
+    };
   }, []);
+
+  function dismiss() {
+    remember();
+    setOpen(false);
+  }
+
   async function install() {
     if (!available || busy) return;
-    setBusy(true); setError('');
+    setBusy(true);
+    setError('');
     try {
       await available.prompt();
       const choice = await available.userChoice;
       setAvailable(null);
-      if (choice.outcome === 'accepted') { remember(); setOpen(false); }
-    } catch { setAvailable(null); setError('The installation prompt could not open. Use your browser menu to install.'); }
-    finally { setBusy(false); }
+      if (choice.outcome === 'accepted') {
+        remember();
+        setOpen(false);
+      }
+    } catch {
+      setAvailable(null);
+      setError('The install prompt could not open. Try your browser menu instead.');
+    } finally {
+      setBusy(false);
+    }
   }
+
   if (!open) return null;
-  const dismiss = () => { remember(); setOpen(false); };
-  return <aside aria-label="Install Open Learn" className="fixed bottom-4 left-4 z-50 w-[calc(100vw-2rem)] max-w-sm rounded-xl border border-border bg-background p-5 text-foreground shadow-lg">
-    <button type="button" aria-label="Dismiss install invitation" onClick={dismiss} className="absolute right-2 top-2 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"><X size={16} aria-hidden="true" /></button>
-    <h2 className="pr-6 text-sm font-semibold">Install Open Learn</h2>
-    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Open it straight from your home screen or desktop.</p>
-    {!available ? <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{ios ? 'In Safari, tap Share → Add to Home Screen.' : 'Use your browser’s install button or menu. On Mac Safari: File → Add to Dock.'}</p> : null}
-    {error ? <p role="alert" className="mt-3 text-sm">{error}</p> : null}
-    <div className="mt-4 flex items-center gap-2">
-      {available ? <Button size="sm" disabled={busy} onClick={() => void install()}><Download size={14} aria-hidden="true" />{busy ? 'Opening…' : 'Install'}</Button> : null}
-      <Button size="sm" variant="ghost" onClick={dismiss}>Not now</Button>
-    </div>
-  </aside>;
+
+  return (
+    <aside
+      className={styles.toast}
+      role="status"
+      aria-label="Install Open Learn"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <div className={styles.header}>
+        <span className={styles.icon} aria-hidden="true"><Sparkles size={17} /></span>
+        <p className={styles.title}>Take Open Learn with you</p>
+        <button className={styles.close} type="button" onClick={dismiss} aria-label="Dismiss install message">
+          <X size={17} />
+        </button>
+      </div>
+
+      <p className={styles.description}>
+        {available
+          ? 'Install for a quicker way back to your chats and notes.'
+          : 'Add Open Learn to your home screen for a quicker way back.'}
+      </p>
+
+      {error ? <p className={styles.error} role="alert">{error}</p> : null}
+
+      {instructionsOpen ? (
+        <p className={styles.instructions}>
+          {ios
+            ? 'In Safari, tap Share, then Add to Home Screen.'
+            : 'Open your browser menu and choose “Install Open Learn” or “Add to Home screen”.'}
+        </p>
+      ) : null}
+
+      <div className={styles.actions}>
+        {available ? (
+          <Button className={styles.primary} disabled={busy} onClick={() => void install()}>
+            <Download size={15} aria-hidden="true" />
+            {busy ? 'Opening…' : 'Install app'}
+          </Button>
+        ) : (
+          <Button
+            className={styles.primary}
+            aria-expanded={instructionsOpen}
+            onClick={() => setInstructionsOpen(value => !value)}
+          >
+            {instructionsOpen ? 'Hide instructions' : 'How to install'}
+          </Button>
+        )}
+        <Button variant="ghost" className={styles.dismiss} onClick={dismiss}>Not now</Button>
+      </div>
+    </aside>
+  );
 }
