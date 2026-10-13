@@ -285,6 +285,8 @@ class Store:
                 text("DELETE FROM context_records WHERE session_id = :sid AND owner_id = :owner"),
                 {"sid": session_id, "owner": owner},
             )
+            from .learner_memory.store import delete_session_episodes
+            delete_session_episodes(connection, owner, session_id)
             connection.execute(
                 text("DELETE FROM generation_records WHERE session_id = :sid AND owner_id = :owner"),
                 {"sid": session_id, "owner": owner},

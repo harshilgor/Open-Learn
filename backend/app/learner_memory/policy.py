@@ -168,3 +168,38 @@ def stability_after_use(stability_days: float) -> float:
 
 # Time-intent scores decay over at most this many days outside the window.
 TEMPORAL_DECAY_MAX_DAYS = 7
+
+
+# --- Phase E: consolidation, forgetting, core profile (spec §9) ----------------
+
+TENTATIVE_TTL_DAYS = 30
+TENTATIVE_PROMOTE_USES = 3
+ARCHIVE_THRESHOLD = 0.05
+EPISODE_ARCHIVE_DAYS = 365
+DEDUPE_JACCARD = 0.85
+# Used once embeddings are approved (§13); dedupe is lexical until then.
+DEDUPE_COSINE = 0.92
+CONFLICT_REVIEW_SECONDS = 86400
+EPISODE_IDLE_MINUTES = 120
+# Sessions touched within this window are checked for uncovered turns.
+EPISODE_SESSION_LOOKBACK_DAYS = 14
+MAX_EPISODE_SESSIONS_PER_RUN = 20
+EPISODE_SUMMARY_MAX_CHARS = 600
+EPISODE_QUESTION_CHARS = 160
+EPISODE_ANSWER_CHARS = 100
+EPISODE_MAX_TOPICS = 8
+EPISODE_MAX_BASIS = 50
+CONSOLIDATION_BATCH = 500
+# An owner is consolidated at most daily, while memory activity is recent.
+CONSOLIDATION_ACTIVITY_DAYS = 3
+CONSOLIDATIONS_PER_TICK = 50
+CONSOLIDATION_TICK_SECONDS = 60
+PROFILE_MIN_RETENTION = 0.3
+# Core profile order (§9.3 step 6). note_to_self is retrieved, never profiled.
+PROFILE_KIND_ORDER = ("deadline", "goal", "constraint", "preference", "background", "interest", "strategy_feedback")
+PROFILE_CACHE_TTL_SECONDS = 3600
+MAX_CHANGE_ENTRIES = 50
+
+
+def consolidation_enabled() -> bool:
+    return _flag("OPENLEARN_MEMORY_CONSOLIDATION")

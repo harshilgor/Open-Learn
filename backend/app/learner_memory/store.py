@@ -466,3 +466,115 @@ def volatile_for(conn, owner, fact_ids):
 def episodes_watermark(conn, owner):
     count = conn.execute(text("SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active'"), {"owner": owner}).scalar_one()
     return memory_version(conn, owner), count
+
+
+# --- Phase E: consolidation, episodes, activity --------------------------------
+
+def touch_activity(conn, owner, *, now=None):
+    """Note memory-relevant activity (a turn, a use) without changing the cache watermark.
+
+    ``memory_fact_versions.updated_at`` doubles as the owner's last memory
+    activity; the consolidation scheduler reads it (§7.1).
+    """
+    conn.execute(text("""INSERT INTO memory_fact_versions(owner_id,version,updated_at) VALUES(:owner,0,:now)
+        ON CONFLICT(owner_id) DO UPDATE SET updated_at=:now"""), {"owner": owner, "now": now or time.time()})
+
+
+def owners_due_for_consolidation(conn, *, since, day, limit=policy.CONSOLIDATIONS_PER_TICK):
+    """Owners with memory activity since ``since`` and no consolidation job for ``day`` yet."""
+    return list(conn.execute(text("""SELECT v.owner_id FROM memory_fact_versions v WHERE v.updated_at>=:since
+        AND NOT EXISTS (SELECT 1 FROM learning_jobs j WHERE j.owner_id=v.owner_id
+            AND j.command_key='memory_consolidate:' || v.owner_id || ':' || :day)
+        ORDER BY v.updated_at, v.owner_id LIMIT :limit"""), {"since": since, "day": day, "limit": limit}).scalars())
+
+
+def facts_with_status(conn, owner, statuses):
+    query = text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND status IN :statuses ORDER BY learned_at, id").bindparams(
+        bindparam("statuses", expanding=True))
+    return [_decode(row) for row in conn.execute(query, {"owner": owner, "statuses": sorted(statuses)}).mappings()]
+
+
+def set_fact_status(conn, owner, fact_id, status, *, expected_status, superseded_by=None, invalid_at=None):
+    """Guarded status change; returns True when the row changed."""
+    changed = conn.execute(text("""UPDATE memory_facts SET status=:status,superseded_by=COALESCE(:by,superseded_by),
+        invalid_at=COALESCE(:invalid,invalid_at),revision=revision+1 WHERE owner_id=:owner AND id=:id AND status=:expected"""),
+        {"status": status, "by": superseded_by, "invalid": invalid_at, "owner": owner, "id": fact_id, "expected": expected_status}).rowcount
+    if changed:
+        bump_version(conn, owner)
+    return bool(changed)
+
+
+def merge_into(conn, owner, kept, duplicate, *, now=None):
+    """Dedupe (§9.3 step 3): fold ``duplicate`` into ``kept`` and supersede it."""
+    now = now or time.time()
+    basis = kept["basis"] + [ref for ref in duplicate["basis"] if ref not in kept["basis"]]
+    # Higher rank wins; between equal ranks, a learner confirmation is kept.
+    origin = max((kept["origin"], duplicate["origin"]), key=lambda value: (policy.ORIGIN_RANK.get(value, 0), value == "user_confirmed"))
+    confirmed = max(kept["confirmed_at"] or 0.0, duplicate["confirmed_at"] or 0.0) or None
+    last_used = max(kept["last_used_at"] or 0.0, duplicate["last_used_at"] or 0.0) or None
+    conn.execute(text("""UPDATE memory_facts SET basis=:basis,origin=:origin,importance=:importance,confidence=:confidence,
+        stability_days=:stability,use_count=:uses,confirmed_at=:confirmed,last_used_at=:last_used,concept_ids=:concepts,revision=revision+1
+        WHERE owner_id=:owner AND id=:id"""),
+        {"basis": json.dumps(basis), "origin": origin, "importance": max(kept["importance"], duplicate["importance"]),
+         "confidence": max(kept["confidence"], duplicate["confidence"]), "stability": max(kept["stability_days"], duplicate["stability_days"]),
+         "uses": kept["use_count"] + duplicate["use_count"], "confirmed": confirmed, "last_used": last_used,
+         "concepts": json.dumps(list(dict.fromkeys(kept["concept_ids"] + duplicate["concept_ids"]))), "owner": owner, "id": kept["id"]})
+    conn.execute(text("""UPDATE memory_facts SET status='superseded',superseded_by=:kept,invalid_at=:now,revision=revision+1
+        WHERE owner_id=:owner AND id=:id"""), {"kept": kept["id"], "now": now, "owner": owner, "id": duplicate["id"]})
+    bump_version(conn, owner, now=now)
+
+
+def set_needs_review(conn, owner, fact_ids, value):
+    if not fact_ids:
+        return 0
+    query = text("UPDATE memory_facts SET needs_review=:value,revision=revision+1 WHERE owner_id=:owner AND id IN :ids AND needs_review<>:value").bindparams(
+        bindparam("ids", expanding=True))
+    changed = conn.execute(query, {"value": value, "owner": owner, "ids": list(fact_ids)}).rowcount
+    if changed:
+        bump_version(conn, owner)
+    return changed
+
+
+def archive_old_episodes(conn, owner, before, *, limit=policy.CONSOLIDATION_BATCH):
+    ids = list(conn.execute(text("""SELECT id FROM memory_episodes WHERE owner_id=:owner AND status='active' AND period_end<:before
+        ORDER BY period_end, id LIMIT :limit"""), {"owner": owner, "before": before, "limit": limit}).scalars())
+    if ids:
+        conn.execute(text("UPDATE memory_episodes SET status='archived',revision=revision+1 WHERE owner_id=:owner AND id IN :ids").bindparams(
+            bindparam("ids", expanding=True)), {"owner": owner, "ids": ids})
+        bump_version(conn, owner)
+    return ids
+
+
+def episode_coverage(conn, owner, session_id) -> int:
+    """Highest turn index covered by any episode of this session (any status), or -1."""
+    covered = -1
+    for raw in conn.execute(text("SELECT turn_range FROM memory_episodes WHERE owner_id=:owner AND session_id=:session"),
+                            {"owner": owner, "session": session_id}).scalars():
+        try:
+            covered = max(covered, int(json.loads(raw or "{}").get("to", -1)))
+        except (TypeError, ValueError):
+            continue
+    return covered
+
+
+def insert_episode(conn, owner, episode):
+    """Idempotent: an episode ID is derived from its session and turn range."""
+    if conn.execute(text("SELECT 1 FROM memory_episodes WHERE owner_id=:owner AND id=:id"), {"owner": owner, "id": episode["id"]}).first():
+        return False
+    conn.execute(text("""INSERT INTO memory_episodes(owner_id,id,session_id,course_id,period_start,period_end,turn_range,summary,topics,method,basis,status,created_at,revision)
+        VALUES(:owner,:id,:session,:course,:start,:end,:range,:summary,:topics,:method,:basis,'active',:created,1)"""),
+        {"owner": owner, "id": episode["id"], "session": episode["session_id"], "course": episode["course_id"],
+         "start": episode["period_start"], "end": episode["period_end"], "range": json.dumps(episode["turn_range"]),
+         "summary": episode["summary"], "topics": json.dumps(episode["topics"]), "method": episode["method"],
+         "basis": json.dumps(episode["basis"]), "created": episode["created_at"]})
+    bump_version(conn, owner)
+    return True
+
+
+def delete_session_episodes(conn, owner, session_id):
+    """A deleted conversation takes its episodes with it (§9.1, learner deletes)."""
+    ids = list(conn.execute(text("SELECT id FROM memory_episodes WHERE owner_id=:owner AND session_id=:session"),
+                            {"owner": owner, "session": session_id}).scalars())
+    for episode_id in ids:
+        delete_episode(conn, owner, episode_id)
+    return len(ids)

@@ -1,11 +1,31 @@
-"""Learner-facing memory APIs (spec §10). Read APIs and settings land in Phase B."""
+"""Learner-facing memory APIs (spec §10). Read APIs and settings land in Phase B; profile and changes in Phase E."""
 from __future__ import annotations
+
+import time
 
 from fastapi import APIRouter, Response
 
 from ..identity import assert_owner_active, current_principal, fail
-from . import policy, store
+from . import consolidation, policy, profile, store
 from .models import MemorySettingsUpdate, public_episode, public_fact, public_settings
+
+
+# Fact changes, then session summaries, which name their own noun.
+CHANGE_LABELS = (("learned", "learned"), ("updated", "updated"), ("merged", "merged"), ("promoted", "confirmed by use"),
+                 ("archived", "archived"), ("expired", "expired"), ("needsReview", "need your review"))
+
+
+def change_summary(counts: dict) -> str:
+    """"3 memories archived, 1 updated": learner-facing, content-free."""
+    parts = [(counts[key], label) for key, label in CHANGE_LABELS if counts.get(key)]
+    text = ""
+    if parts:
+        (first, label), rest = parts[0], parts[1:]
+        text = ", ".join([f"{first} {'memory' if first == 1 else 'memories'} {label}"] + [f"{count} {label}" for count, label in rest])
+    episodes = counts.get("episodesArchived")
+    if episodes:
+        text += (", " if text else "") + f"{episodes} session {'summary' if episodes == 1 else 'summaries'} archived"
+    return text
 
 
 def _private(response: Response):
@@ -57,6 +77,7 @@ def build_learner_memory_router(store_provider):
             restored = store.undo_fact(conn, owner, fact_id, window_seconds=86400 if undo else -1)
             if restored is None:
                 fail("memory_not_found", "This memory is unavailable.", 404)
+            profile.rebuild_if_enabled(conn, owner)
         return {"status": "deleted", "restored": restored}
 
     @router.get("/episodes")
@@ -77,6 +98,30 @@ def build_learner_memory_router(store_provider):
             if not store.delete_episode(conn, owner, episode_id):
                 fail("memory_not_found", "This memory is unavailable.", 404)
         return {"status": "deleted"}
+
+    @router.get("/profile")
+    def core_profile(response: Response):
+        """The core profile (§9.3 step 6): stored when consolidation runs, else a live preview."""
+        _private(response)
+        owner = current_principal().owner_id
+        with store_provider().engine.connect() as conn:
+            assert_owner_active(conn, owner)
+            active = {fact["id"]: fact for fact in store.facts_with_status(conn, owner, {"active"})}
+            saved = profile.stored(conn, owner) if policy.consolidation_enabled() else None
+        payload = saved or profile.build(list(active.values()), time.time())
+        items = [active[identifier] for identifier in payload["factIds"] if identifier in active]
+        return {"source": "stored" if saved else "preview", "policyVersion": payload["policyVersion"],
+                "text": "\n".join(profile.line(fact) for fact in items), "items": [public_fact(fact) for fact in items]}
+
+    @router.get("/changes")
+    def recent_changes(response: Response):
+        """Recent consolidation and learning changes; counts and IDs only."""
+        _private(response)
+        owner = current_principal().owner_id
+        with store_provider().engine.connect() as conn:
+            assert_owner_active(conn, owner)
+            entries = consolidation.changes(conn, owner)
+        return {"items": [{**entry, "summary": change_summary(entry["counts"])} for entry in entries]}
 
     @router.get("/settings")
     def settings(response: Response):
