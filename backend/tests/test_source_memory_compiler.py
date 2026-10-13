@@ -1,10 +1,10 @@
 import hashlib,json
 import pytest
 from fastapi import HTTPException
-from app.storage import Store
-from app.source_memory import SourceMemory
-from app.context_compiler import ContextCompiler
-from app.identity_import import import_package
+from backend.app.storage import Store
+from backend.app.source_memory import SourceMemory
+from backend.app.context_compiler import ContextCompiler
+from backend.app.identity_import import import_package
 
 @pytest.fixture
 def store():
@@ -45,7 +45,7 @@ def test_portable_package_rejects_foreign_owner(store):
     assert error.value.status_code==403
 
 def test_portable_memory_copy_is_resumable_and_remaps_source(store):
-    from app.identity_data import export_owner
+    from backend.app.identity_data import export_owner
     SourceMemory(store).revise('local','original','Personal algebra source.',expected_revision=0)
     package=export_owner(store,'local')
     digest=hashlib.sha256(json.dumps(package,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
@@ -60,8 +60,8 @@ def test_portable_memory_copy_is_resumable_and_remaps_source(store):
 def test_source_api_cross_account_access_and_revision_conflict(store,monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from app.memory_routes import build_memory_router
-    from app.identity_middleware import IdentityMiddleware
+    from backend.app.memory_routes import build_memory_router
+    from backend.app.identity_middleware import IdentityMiddleware
     monkeypatch.setenv('AI_TUTOR_ENV','development');monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true')
     app=FastAPI();app.include_router(build_memory_router(lambda:store));app.add_middleware(IdentityMiddleware,store_provider=lambda:store)
     with TestClient(app) as client:
@@ -76,7 +76,7 @@ def test_source_api_cross_account_access_and_revision_conflict(store,monkeypatch
 
 def test_account_deletion_revokes_registry_and_future_work(store):
     from sqlalchemy import text
-    from app.identity_data import erase_owner
+    from backend.app.identity_data import erase_owner
     with store.transaction() as conn:
         conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at) VALUES('alice','testsubject','Alice','active',0)"))
     SourceMemory(store).revise('alice','source','Algebra history.',expected_revision=0)
@@ -89,8 +89,8 @@ def test_account_deletion_revokes_registry_and_future_work(store):
 def test_canvas_device_grant_has_narrow_route_scope_and_revocation(store,monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from app.identity import issue_device_grant,current_principal
-    from app.identity_middleware import IdentityMiddleware
+    from backend.app.identity import issue_device_grant,current_principal
+    from backend.app.identity_middleware import IdentityMiddleware
     from sqlalchemy import text
     monkeypatch.setenv('AI_TUTOR_ENV','development');monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true')
     app=FastAPI();app.add_middleware(IdentityMiddleware,store_provider=lambda:store)
@@ -113,9 +113,9 @@ def test_canvas_device_grant_has_narrow_route_scope_and_revocation(store,monkeyp
 def test_desktop_sync_is_ordered_idempotent_and_owner_scoped(store,monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from app.identity import issue_device_grant,current_principal
-    from app.identity_middleware import IdentityMiddleware
-    from app.identity_routes import build_identity_router
+    from backend.app.identity import issue_device_grant,current_principal
+    from backend.app.identity_middleware import IdentityMiddleware
+    from backend.app.identity_routes import build_identity_router
     from sqlalchemy import text
     monkeypatch.setenv('AI_TUTOR_ENV','development');monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true')
     app=FastAPI();app.include_router(build_identity_router(lambda:store));app.add_middleware(IdentityMiddleware,store_provider=lambda:store)
