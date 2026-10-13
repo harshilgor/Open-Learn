@@ -34,12 +34,15 @@ def _score(fact, now):
 
 
 def select(facts, now):
-    """Active, non-sensitive facts with retention >= 0.3, in profile order, within the token cap."""
+    """Active facts with retention >= 0.3, in profile order, within the token cap.
+
+    A sensitive fact is included only when the learner enabled it (§2 rule 6).
+    """
     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
     order = {kind: index for index, kind in enumerate(policy.PROFILE_KIND_ORDER)}
     eligible = []
     for fact in facts:
-        if fact["status"] != "active" or fact.get("sensitive") or fact["kind"] not in order:
+        if fact["status"] != "active" or (fact.get("sensitive") and not fact.get("sensitive_enabled")) or fact["kind"] not in order:
             continue
         if fact["kind"] == "deadline" and (not fact.get("event_date") or fact["event_date"][:10] < today):
             continue  # only upcoming deadlines are profile material
@@ -103,7 +106,16 @@ def rebuild(conn, owner, *, now=None) -> bool:
                      {"payload": encoded, "id": identifier, "owner": owner})
     from ..cache import invalidate, owner_scope
     invalidate("learner_profile", owner_scope(owner))  # flushed after the caller's commit
+    # The read path caches the profile per process behind the memory version.
+    store.bump_version(conn, owner, now=now)
     return True
+
+
+def clear(conn, owner):
+    """Remove the stored profile (forget everything); the next rebuild starts empty."""
+    conn.execute(text("DELETE FROM context_records WHERE owner_id=:owner AND kind=:kind"), {"owner": owner, "kind": PROFILE_KIND})
+    from ..cache import invalidate, owner_scope
+    invalidate("learner_profile", owner_scope(owner))
 
 
 def rebuild_if_enabled(conn, owner, *, now=None) -> bool:

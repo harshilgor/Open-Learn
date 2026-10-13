@@ -204,3 +204,36 @@ def validate(candidates, *, message: str, pasted_ranges=(), today: date | None =
             importance=round(importance, 3), confidence=round(confidence, 3), sensitive=sensitive, explicit=explicit,
             supersedes=supersedes, status=status))
     return outcome
+
+
+# --- Phase F: facts the learner types in the memory page (§10) ------------------
+
+_IDENTIFIER = [re.compile(pattern, re.I) for pattern in policy.IDENTIFIER_DENYLIST]
+
+
+class LearnerInputError(ValueError):
+    """A content-free reason code for a rejected learner edit or addition."""
+
+
+def learner_statement(kind, statement, event_date, *, today: date | None = None):
+    """Check a fact the learner typed; returns (statement, event_date, sensitive).
+
+    The learner is the author, so the instruction filter doesn't apply; it
+    is still rendered as context, never as a rule (§2 rule 2). Links,
+    contact details and credentials are refused. A sensitive keyword marks
+    the fact sensitive, which is allowed because the learner asked (§13).
+    """
+    today = today or datetime.now(timezone.utc).date()
+    if kind not in policy.FACT_KINDS:
+        raise LearnerInputError("kind_not_allowed")
+    text = re.sub(r"\s+", " ", statement or "").strip()
+    if not text or len(text) > policy.STATEMENT_MAX_CHARS:
+        raise LearnerInputError("statement_length")
+    if any(pattern.search(text) for pattern in _IDENTIFIER):
+        raise LearnerInputError("identifier_or_credential")
+    parsed = _parse_event_date(event_date, today) if event_date else None
+    if event_date and parsed is None:
+        raise LearnerInputError("event_date_invalid")
+    if kind == "deadline" and parsed is None:
+        raise LearnerInputError("deadline_date_required")
+    return text, parsed, any(pattern.search(text) for pattern in _SENSITIVE)

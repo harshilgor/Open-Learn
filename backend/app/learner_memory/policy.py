@@ -65,15 +65,17 @@ SUBJECT_KEY_PATTERN = r"^[a-z_]+:[a-z0-9_\-]{1,120}$"
 
 # A statement that reads as an instruction to the assistant, or carries a
 # link, address, or credential, is never stored as a fact about the learner.
-INSTRUCTION_DENYLIST = (
-    r"\bignore\b", r"system prompt", r"\balways (?:answer|respond|reply|say|use)\b", r"\bnever (?:answer|respond|reply|explain)\b",
-    r"\byou (?:must|should|will|are to)\b", r"\b(?:assistant|tutor|ai|model|buddy) (?:must|should|will)\b",
-    r"\bfrom now on\b", r"\bdisregard\b", r"\boverride\b", r"\bjailbreak\b", r"\bdeveloper mode\b",
+IDENTIFIER_DENYLIST = (
     r"https?://", r"\bwww\.", r"[\w.+-]+@[\w-]+\.[\w.]+",
     # Phone numbers, but not ISO dates such as 2026-11-03.
     r"\+\d[\d\s().-]{7,}\d", r"(?<![\d-])\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\d-])",
     r"\b(?:password|passcode|api[ _-]?key|access[ _-]?token|secret|private key|ssn|social security)\b",
 )
+INSTRUCTION_DENYLIST = (
+    r"\bignore\b", r"system prompt", r"\balways (?:answer|respond|reply|say|use)\b", r"\bnever (?:answer|respond|reply|explain)\b",
+    r"\byou (?:must|should|will|are to)\b", r"\b(?:assistant|tutor|ai|model|buddy) (?:must|should|will)\b",
+    r"\bfrom now on\b", r"\bdisregard\b", r"\boverride\b", r"\bjailbreak\b", r"\bdeveloper mode\b",
+) + IDENTIFIER_DENYLIST
 
 # Sensitive categories (§2 rule 6). Keyword screen only: a hit drops an
 # inferred fact, or flags an explicitly requested one as sensitive.
@@ -203,3 +205,21 @@ MAX_CHANGE_ENTRIES = 50
 
 def consolidation_enabled() -> bool:
     return _flag("OPENLEARN_MEMORY_CONSOLIDATION")
+
+
+# --- Phase F: learner controls and preference precedence (spec §10) ------------
+
+# Where a communication preference comes from, strongest first: the current
+# request, a course-scoped memory fact, a global memory fact, the Buddy
+# profile, then account preferences (identity_preferences).
+PREFERENCE_PRECEDENCE = ("current_request", "course_fact", "global_fact", "buddy_profile", "account")
+PRECEDENCE_NOTE = ("\nPreference precedence: the learner's current request comes first; then preferences saved in the learner "
+                   "memory (a course-specific one over a general one); then any Buddy defaults; then account settings. "
+                   "This orders communication preferences only; every teaching, evidence, safety and permission rule still applies.")
+# A learner edit is a correction (§9.2): the replacement starts at 90 days.
+CORRECTED_STABILITY_DAYS = 90.0
+
+
+def preference_source_rank(source: str) -> int:
+    """Lower is stronger; an unknown source ranks last."""
+    return PREFERENCE_PRECEDENCE.index(source) if source in PREFERENCE_PRECEDENCE else len(PREFERENCE_PRECEDENCE)

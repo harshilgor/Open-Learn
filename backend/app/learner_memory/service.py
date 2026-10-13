@@ -187,13 +187,20 @@ class LearnerMemoryService:
             logger.warning("learner memory retrieval unavailable", exc_info=False)
             return None
 
-    def _core_profile(self, owner):
-        """The stored core profile payload, or None (fall back to the Phase D profile)."""
+    def _core_profile(self, owner, cache_key, watermark):
+        """The stored core profile payload, or None (fall back to the Phase D profile).
+
+        Cached per process behind the memory version; a failed load is not
+        cached, so the next turn retries.
+        """
         from ..performance import span
         from . import profile
-        try:
+
+        def load():
             with span("memory_profile"):
                 return profile.load(self.store, owner)
+        try:
+            return _cached(_PROFILES, cache_key, watermark, load)
         except Exception:
             logger.warning("learner core profile unavailable", exc_info=False)
             return None
@@ -204,17 +211,19 @@ class LearnerMemoryService:
         intent = retrieval.parse_time_intent(message, now, timezone_name)
         tz = retrieval.zone(timezone_name)
         with self.store.engine.connect() as conn:
-            names = store.course_names(conn, owner)
             allowed = {"preference", "constraint"} if assessment else None
             cache_key = (str(self.store.engine.url), owner)
-            all_facts, fact_index = _cached(_FACTS, cache_key, store.facts_watermark(conn, owner), lambda: _with_index(
+            facts_mark, episodes_mark = store.watermarks(conn, owner)
+            all_facts, fact_index = _cached(_FACTS, cache_key, facts_mark, lambda: _with_index(
                 store.static_facts(conn, owner), retrieval.fact_document))
+            # A profile rewrite bumps the memory version, so this never serves a stale profile.
+            core = self._core_profile(owner, cache_key, facts_mark) if policy.consolidation_enabled() else None
             facts = [fact for fact in all_facts
                      if (fact["course_id"] is None or fact["course_id"] == course_id) and (allowed is None or fact["kind"] in allowed)]
             since = now - policy.EPISODE_LOOKBACK_DAYS * policy.DAY_SECONDS
             episodes, episode_index = [], None
             if not assessment:
-                all_episodes, episode_index = _cached(_EPISODES, cache_key, store.episodes_watermark(conn, owner), lambda: _with_index(
+                all_episodes, episode_index = _cached(_EPISODES, cache_key, episodes_mark, lambda: _with_index(
                     store.candidate_episodes(conn, owner, None, 0), retrieval.episode_document))
                 episodes = [episode for episode in all_episodes
                             if episode["period_end"] >= since and (episode["course_id"] is None or not course_id or episode["course_id"] == course_id)
@@ -227,7 +236,6 @@ class LearnerMemoryService:
             ranked = retrieval.rank(facts, episodes, message=message, now=now, course_id=course_id, concept_ids=concept_ids,
                                     intent=intent, hydrate=hydrate, fact_index=fact_index, episode_index=episode_index) if retrieve else []
 
-        core = self._core_profile(owner) if policy.consolidation_enabled() else None
         if core is not None:
             # The stored core profile (§9.3 step 6), in its stored order. Only
             # facts still active, in scope and allowed for this purpose render,
@@ -254,10 +262,19 @@ class LearnerMemoryService:
         def day(epoch):
             return datetime.fromtimestamp(epoch, tz).date().isoformat()
 
+        names = {}
+
+        def course_name(identifier):
+            # Only course-scoped lines need names; most turns never query them.
+            if not names:
+                with self.store.engine.connect() as conn:
+                    names.update(store.course_names(conn, owner) or {None: None})
+            return names.get(identifier)
+
         def fact_line(fact):
             label = fact["kind"].replace("_", " ")
-            if fact.get("course_id") and names.get(fact["course_id"]):
-                label += " · " + names[fact["course_id"]]
+            if fact.get("course_id") and course_name(fact["course_id"]):
+                label += " · " + course_name(fact["course_id"])
             return f"- [{label}] {fact['statement']} (learner said, {day(fact['learned_at'])})"
 
         sections = [
@@ -307,6 +324,7 @@ class LearnerMemoryService:
 # watermark query, so a stale entry is never served (§11.4 latency target).
 _FACTS: "OrderedDict[str, tuple]" = OrderedDict()
 _EPISODES: "OrderedDict[str, tuple]" = OrderedDict()
+_PROFILES: "OrderedDict[str, tuple]" = OrderedDict()
 _CACHE_OWNERS = 64
 _CACHE_LOCK = threading.Lock()
 

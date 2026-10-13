@@ -6,6 +6,14 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase F1 (write APIs; used by the memory page in F2):
+  - `PATCH /v1/memory/facts/{id}`: an edit creates a new learner-confirmed fact that supersedes the old one (statements stay immutable). It is guarded by `expectedRevision`, and `DELETE …?undo=true` restores the original.
+  - `POST /v1/memory/facts/{id}/confirm`: confirms a memory (365-day stability; inferred becomes `user_confirmed`). Confirming one side of a `needs_review` conflict resolves it.
+  - `POST /v1/memory/facts`: the learner adds a memory by hand. Links, contact details and passwords are refused.
+  - `PUT /v1/memory/facts/{id}/sensitive`: per-fact opt-in for a sensitive memory to enter the tutor's context and the core profile. Sensitive facts are still never embedded. Adds migration `0088_memory_sensitive_enable` (release head moved).
+  - `GET`/`POST /v1/memory/forget-all`: deletes every memory and session summary, and dismisses saved Settings preferences. It needs a confirmation token that changes whenever memory changes.
+  - Learner actions now appear in `GET /v1/memory/changes` ("1 memory edited by you").
+  - One preference precedence everywhere: current request, then course memory, then global memory, then Buddy defaults, then account settings. Chat prompts that include learner memory state it.
 - Learner memory Phase E (flagged, default off): `OPENLEARN_MEMORY_CONSOLIDATION` runs a daily `memory_consolidate` job for each owner with memory activity in the last 3 days.
   - Forgetting: stale tentative inferences are deleted after 30 days; tentative statements by the learner are archived, never deleted. Reinforced tentative facts are promoted. Facts whose strength falls below 0.05 and deadlines past their 7-day grace are archived, as are episodes older than a year.
   - Near-duplicates in the same kind and scope merge into the older fact (lexical until embeddings are approved). Same-rank conflicts within 24 hours are flagged `needs_review`.
@@ -13,6 +21,8 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
   - Core profile: a deterministic, byte-stable list of the learner's most durable facts, stored in `context_records`, rewritten only when its bytes change, and cached in the new Redis `learner_profile` namespace. It replaces the Phase D profile section; forgotten facts leave it immediately.
   - New `GET /v1/memory/profile` and `GET /v1/memory/changes` (content-free counts, e.g. "3 memories archived, 1 updated").
   - Evaluation adds 15 forgetting cases (all must pass; no learner-stated fact may be deleted). Consolidation of 2,000 facts takes 0.76 s on SQLite; warm retrieval p95 with the core profile is 14.9 ms.
+  - The memory read path now makes 2 database round trips per turn instead of 7 (combined watermark query, per-process core-profile cache, lazy course names). PostgreSQL warm p95 drops from 34.8 ms to 20.8 ms with consolidation on.
+  - `backend/scripts/memory_shadow_report.py`: aggregate-only shadow-extraction review (counts, rejection reasons; small samples withheld).
 - Generated visuals are runtime-verified before learners see them: a headless sandbox mounts each candidate exactly like the chat card at desktop and mobile widths, checks for errors, blank or empty renders, invalid readouts, clipped layouts and dead controls, and feeds specific findings back to the model for bounded repair.
 - Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
 - Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.

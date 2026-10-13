@@ -579,6 +579,9 @@ class JourneyService:
                     learner_memory = memory_context.text if memory_context else None
                 elif is_conversation:
                     learner_memory = memory_service.chat_block(owner, sid, session.course_id, command.message or "")
+            if learner_memory:
+                # One precedence order for every preference store (§10).
+                prompt_instructions += memory_policy.PRECEDENCE_NOTE
         if is_conversation:
             safe_sources = [{key: source.get(key) for key in ("title", "pageLabel", "text") if source.get(key)}
                             for source in sources]
