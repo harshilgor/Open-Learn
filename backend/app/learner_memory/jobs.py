@@ -96,7 +96,11 @@ def extract_turn(store_, owner, payload, *, extractor=None, now=None):
     today = _today(now, payload.get("timezone"))
     prompt = extraction.build_request(message=message, reply=reply, existing_facts=existing, today=today.isoformat(),
                                       timezone_name=payload.get("timezone"), course_name=course_name)
-    candidates = extraction.extract(extractor or extraction.configured_extractor(), prompt)
+    from ..usage.context import billed_to
+    # Data access stays scoped to the learner; only the model call's usage
+    # moves to the platform account in shadow mode.
+    with billed_to(policy.extraction_billing_owner(owner)):
+        candidates = extraction.extract(extractor or extraction.configured_extractor(), prompt)
     outcome = validator.validate(candidates, message=message, pasted_ranges=payload.get("pastedRanges") or (), today=today,
                                  courses=courses, known_fact_ids=[fact["id"] for fact in existing],
                                  remaining_today=remaining, shadow=mode == "shadow")
