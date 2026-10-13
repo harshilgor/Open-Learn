@@ -2,8 +2,7 @@
 
 Replays recorded extraction outputs through the real validator and store.
 No provider is called, so results are stable in CI. Phase C covers the
-extraction categories; retrieval and forgetting categories arrive with
-Phases D and E.
+extraction categories, Phase D retrieval, and Phase E forgetting.
 """
 from __future__ import annotations
 
@@ -95,6 +94,7 @@ def run(path: Path = SCENARIOS) -> dict:
         try:
             outcomes = [run_case(db, case, today) for case in data["cases"]]
             retrieval_report = run_retrieval(db)
+            forgetting_report = run_forgetting(db)
         finally:
             db.close()
     categories = {}
@@ -122,8 +122,8 @@ def run(path: Path = SCENARIOS) -> dict:
     # so a documented hard case (e.g. a synonym) can miss without failing CI.
     return {"suite": "openlearn-memory-evaluation", "scenarioVersion": data["version"], "provenance": data["provenance"],
             "metrics": metrics, "gates": gates,
-            "passed": all(gates.values()) and all(item["passed"] for item in outcomes) and retrieval_report["passed"],
-            "categories": categories, "outcomes": outcomes, "retrieval": retrieval_report}
+            "passed": all(gates.values()) and all(item["passed"] for item in outcomes) and retrieval_report["passed"] and forgetting_report["passed"],
+            "categories": categories, "outcomes": outcomes, "retrieval": retrieval_report, "forgetting": forgetting_report}
 
 
 # --- Phase D: retrieval categories (§11.3 categories 1–4 and abstention) -------
@@ -209,3 +209,62 @@ def run_retrieval(db, path: Path = RETRIEVAL_SCENARIOS) -> dict:
     gates = {name: (metrics.get(name) or 0) >= limit for name, limit in RETRIEVAL_GATES.items()}
     return {"scenarioVersion": data["version"], "provenance": data["provenance"], "metrics": metrics, "gates": gates,
             "passed": all(gates.values()), "categories": categories, "outcomes": outcomes}
+
+
+# --- Phase E: forgetting (§11.3 category 9) -------------------------------------------
+
+FORGETTING_SCENARIOS = Path(__file__).resolve().parents[2] / "evaluation" / "memory_forgetting_scenarios.json"
+# Forgetting is policy, not ranking: every case must match exactly, and no
+# fact the learner stated or confirmed may ever be deleted for disuse.
+FORGETTING_GATES = {"forgettingCorrect": 1.0, "learnerStatedDeleted": 0}
+
+
+def _seed_forgetting_fact(conn, owner, item, now):
+    from sqlalchemy import text as sql
+    from . import policy as memory_policy
+    day = 86400
+    learned = now - float(item.get("days_ago", 1)) * day
+    importance = memory_policy.DEFAULT_IMPORTANCE.get(item["kind"], 0.5)
+    ago = lambda key: now - float(item[key]) * day if key in item else None  # noqa: E731
+    conn.execute(sql(f"""INSERT INTO memory_facts({store.FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,NULL,'[]',:event_date,
+        :origin,:status,:false,0.9,:importance,:learned,:learned,NULL,NULL,'[]',:last_used,:uses,:confirmed,:stability,:false,'eval',1)"""),
+        {"owner": owner, "id": item["key"], "kind": item["kind"], "statement": item["statement"],
+         "subject": item.get("subject") or f"{item['kind']}:{item['key']}", "event_date": item.get("event_date"),
+         "origin": item.get("origin", "user_stated"), "status": item.get("status", "active"), "false": False, "importance": importance,
+         "learned": learned, "last_used": ago("last_used_days_ago"), "uses": item.get("use_count", 0), "confirmed": ago("confirmed_days_ago"),
+         "stability": item.get("stability") or store.initial_stability(importance)})
+
+
+def run_forgetting(db, path: Path = FORGETTING_SCENARIOS) -> dict:
+    from datetime import datetime
+    from sqlalchemy import text as sql
+    from . import consolidation, profile
+    data = json.loads(path.read_text(encoding="utf-8"))
+    now = datetime.fromisoformat(data["now"]).timestamp()
+    outcomes = []
+    for case in data["cases"]:
+        owner = "eval_forgetting_" + case["id"]
+        with db.transaction() as conn:
+            for item in case.get("facts", []):
+                _seed_forgetting_fact(conn, owner, item, now)
+            for item in case.get("episodes", []):
+                _seed_episode(conn, owner, item, now)
+        learner_stated = {item["key"] for item in case.get("facts", [])
+                          if item.get("origin", "user_stated") in {"user_stated", "user_confirmed"} and item.get("status") != "shadow"}
+        consolidation.consolidate(db, owner, now=now + float(case.get("advanceDays", 0)) * 86400)
+        with db.engine.connect() as conn:
+            found = dict(conn.execute(sql("SELECT id,status FROM memory_facts WHERE owner_id=:owner"), {"owner": owner}).all())
+            found.update(conn.execute(sql("SELECT id,status FROM memory_episodes WHERE owner_id=:owner"), {"owner": owner}).all())
+            built = profile.stored(conn, owner) or {"factIds": []}
+        actual = {key: found.get(key, "deleted") for key in case["expected"]}
+        mismatches = {key: actual[key] for key, expected in case["expected"].items() if actual[key] != expected}
+        profile_ok = "profile" not in case or built["factIds"] == case["profile"]
+        deleted = sorted(key for key in learner_stated if key not in found)
+        outcomes.append({"id": case["id"], "passed": not mismatches and profile_ok and not deleted,
+                         "mismatches": mismatches, "profileMatches": profile_ok, "learnerStatedDeleted": len(deleted)})
+    metrics = {"forgettingCorrect": round(sum(item["passed"] for item in outcomes) / len(outcomes), 4) if outcomes else 0.0,
+               "learnerStatedDeleted": sum(item["learnerStatedDeleted"] for item in outcomes)}
+    gates = {"forgettingCorrect": metrics["forgettingCorrect"] >= FORGETTING_GATES["forgettingCorrect"],
+             "learnerStatedDeleted": metrics["learnerStatedDeleted"] <= FORGETTING_GATES["learnerStatedDeleted"]}
+    return {"scenarioVersion": data["version"], "provenance": data["provenance"], "metrics": metrics, "gates": gates,
+            "passed": all(gates.values()), "cases": len(outcomes), "outcomes": outcomes}

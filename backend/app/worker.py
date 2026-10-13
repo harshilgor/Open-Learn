@@ -77,6 +77,25 @@ def cleanup_memory_shadow_if_due(store, now=None):
         return 0
 
 
+_last_memory_consolidation_check = 0.0
+
+
+def schedule_memory_consolidation_if_due(store, now=None):
+    """Each minute: queue today's consolidation for recently active owners (§7.1)."""
+    global _last_memory_consolidation_check
+    from .learner_memory import policy
+    now = time.monotonic() if now is None else now
+    if not policy.consolidation_enabled() or now - _last_memory_consolidation_check < policy.CONSOLIDATION_TICK_SECONDS:
+        return 0
+    _last_memory_consolidation_check = now
+    from .learner_memory.jobs import enqueue_consolidations
+    try:
+        return enqueue_consolidations(store)
+    except Exception as exc:
+        log.warning("Memory consolidation scheduling failed (%s)", type(exc).__name__)
+        return 0
+
+
 def monitor_usage_if_due(store, now=None):
     """Poll usage health at the same bounded cadence as reservation cleanup."""
     global _last_usage_monitor
@@ -182,6 +201,7 @@ def tick(store, provider_getter):
     cleanup_voice_if_due(store)
     cleanup_upload_objects_if_due(store)
     cleanup_memory_shadow_if_due(store)
+    schedule_memory_consolidation_if_due(store)
     try:
         reconciled_usage = reconcile_usage_if_due(store)
     except Exception as exc:
@@ -214,6 +234,11 @@ def tick(store, provider_getter):
         if kind == "memory_extract":
             from .learner_memory.jobs import run_memory_extract
             run_memory_extract(store, None, job_id)
+            did_work = True
+            break
+        if kind in {"memory_consolidate", "memory_episode"}:
+            from .learner_memory.jobs import run_memory_consolidate, run_memory_episode
+            (run_memory_consolidate if kind == "memory_consolidate" else run_memory_episode)(store, None, job_id)
             did_work = True
             break
     if LectureWorker(store, provider_getter).drain(limit=4):

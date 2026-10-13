@@ -4,6 +4,8 @@ Seeds one synthetic owner with 2,000 facts and 300 episodes in a disposable
 database, then times LearnerMemoryService.context over varied queries. Pass
 --database-url-env with an isolated local PostgreSQL database named
 openlearn_qualification_* to measure PostgreSQL; the default is SQLite.
+--core-profile turns on consolidation (Phase E), times one consolidation run
+for the owner, and then measures retrieval with the stored core profile.
 """
 from __future__ import annotations
 
@@ -62,6 +64,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=300)
     parser.add_argument("--runs", type=int, default=240)
     parser.add_argument("--out", required=True)
+    parser.add_argument("--core-profile", action="store_true", help="Consolidate first and read the stored core profile (Phase E)")
     parser.add_argument("--database-url-env", help="Isolated local PostgreSQL URL variable (database openlearn_qualification_*); never DATABASE_URL")
     args = parser.parse_args()
     url = None
@@ -74,6 +77,7 @@ def main():
         if not parsed or parsed.get_backend_name() != "postgresql" or parsed.host not in {"localhost", "127.0.0.1"} or not (parsed.database or "").startswith("openlearn_qualification_"):
             parser.error("Require a local PostgreSQL database named openlearn_qualification_*.")
     os.environ.setdefault("AI_TUTOR_ENV", "development")
+    os.environ["OPENLEARN_MEMORY_CONSOLIDATION"] = "on" if args.core_profile else "off"
     from backend.app.learner_memory.service import LearnerMemoryService
     from backend.app.storage import Store
     with tempfile.TemporaryDirectory(prefix="openlearn-memory-bench-") as directory:
@@ -82,6 +86,12 @@ def main():
         now = time.time()
         try:
             seed(store, owner, args.facts, args.episodes, now)
+            consolidation_ms = None
+            if args.core_profile:
+                from backend.app.learner_memory import consolidation
+                started = time.perf_counter()
+                consolidation_report = consolidation.consolidate(store, owner, now=now)
+                consolidation_ms = round((time.perf_counter() - started) * 1000, 1)
             service = LearnerMemoryService(store)
             for query in QUERIES:  # warm caches and imports
                 service.context(owner, None, query, now=now)
@@ -100,7 +110,7 @@ def main():
                 service.context(owner, None, QUERIES[index % len(QUERIES)], now=now, timezone_name="UTC")
                 cold.append((time.perf_counter() - started) * 1000)
             with store.transaction() as conn:
-                for table in ("memory_facts", "memory_episodes"):
+                for table in ("memory_facts", "memory_episodes", "context_records", "memory_fact_versions"):
                     conn.execute(text(f"DELETE FROM {table} WHERE owner_id=:owner"), {"owner": owner})
         finally:
             store.close()
@@ -108,6 +118,8 @@ def main():
               "runs": args.runs, "p50Ms": percentile(timings, .5), "p95Ms": percentile(timings, .95), "p99Ms": percentile(timings, .99),
               "maxMs": round(max(timings), 3), "coldP50Ms": percentile(cold, .5), "coldP95Ms": percentile(cold, .95),
               "meanMemoryTokens": round(sum(tokens) / len(tokens), 1), "targetP95Ms": 25,
+              "coreProfile": args.core_profile, "consolidationMs": consolidation_ms,
+              "consolidation": consolidation_report if args.core_profile else None,
               "note": "p50/p95/p99 are warm (cached static rows, watermark revalidated); cold reloads the owner's facts"}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")

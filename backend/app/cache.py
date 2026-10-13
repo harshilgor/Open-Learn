@@ -27,7 +27,7 @@ T = TypeVar("T")
 # Bump whenever any cached payload shape changes so overlapping deploys never
 # decode each other's entries.
 CACHE_SCHEMA = 1
-NAMESPACES = frozenset({"web_evidence", "material_blocks", "concept_graph", "course", "calendar", "usage_display"})
+NAMESPACES = frozenset({"web_evidence", "material_blocks", "concept_graph", "course", "calendar", "usage_display", "learner_profile"})
 # Generation keys must outlive every data key, otherwise an expired counter
 # could reset to a generation whose stale data is still cached.
 GENERATION_TTL_SECONDS = 7 * 24 * 3600

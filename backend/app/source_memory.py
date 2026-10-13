@@ -101,6 +101,8 @@ class SourceMemory:
                 from .learner_memory import store as facts
                 facts.record_explicit_preference(conn,owner,derived_id=identifier,statement=value['statement'],
                     course_id=scope.get('courseId') if isinstance(scope,dict) else scope,basis=basis)
+                from .learner_memory import profile
+                profile.rebuild_if_enabled(conn,owner)
         return {'id':identifier}
 
     def summarize(self,owner,source_id,revision):
