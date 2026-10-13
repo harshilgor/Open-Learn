@@ -105,7 +105,7 @@ def main():
             from backend.app.learner_memory import service as memory_service
             cold = []
             for index in range(max(20, args.runs // 6)):
-                memory_service._FACTS.clear(); memory_service._EPISODES.clear()
+                memory_service._FACTS.clear(); memory_service._EPISODES.clear(); memory_service._PROFILES.clear()
                 started = time.perf_counter()
                 service.context(owner, None, QUERIES[index % len(QUERIES)], now=now, timezone_name="UTC")
                 cold.append((time.perf_counter() - started) * 1000)

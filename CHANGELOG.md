@@ -13,6 +13,8 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
   - Core profile: a deterministic, byte-stable list of the learner's most durable facts, stored in `context_records`, rewritten only when its bytes change, and cached in the new Redis `learner_profile` namespace. It replaces the Phase D profile section; forgotten facts leave it immediately.
   - New `GET /v1/memory/profile` and `GET /v1/memory/changes` (content-free counts, e.g. "3 memories archived, 1 updated").
   - Evaluation adds 15 forgetting cases (all must pass; no learner-stated fact may be deleted). Consolidation of 2,000 facts takes 0.76 s on SQLite; warm retrieval p95 with the core profile is 14.9 ms.
+  - The memory read path now makes 2 database round trips per turn instead of 7 (combined watermark query, per-process core-profile cache, lazy course names). PostgreSQL warm p95 drops from 34.8 ms to 20.8 ms with consolidation on.
+  - `backend/scripts/memory_shadow_report.py`: aggregate-only shadow-extraction review (counts, rejection reasons; small samples withheld).
 - Learner memory Phase D (flagged, default off): `OPENLEARN_MEMORY_RETRIEVAL_V2` replaces the Phase A block with ranked retrieval for chat and Learn mode.
   - Ranking parses time phrases in the learner's message (today, last week, next Friday, "in November", dates, "when is my…"). It then scores facts and past-session episodes by lexical BM25, concept overlap and time fit, weighted by a strength that decays with disuse (§9.2) plus origin and course bonuses.
   - Selection applies diversity limits and token budgets. The block renders as byte-stable text with a Profile section (preferences and constraints).

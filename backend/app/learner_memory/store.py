@@ -463,6 +463,19 @@ def volatile_for(conn, owner, fact_ids):
     return {row[0]: {"last_used_at": row[1], "stability_days": row[2]} for row in conn.execute(query, {"owner": owner, "ids": list(fact_ids)})}
 
 
+def watermarks(conn, owner):
+    """One round trip for the read path: (facts watermark, episodes watermark).
+
+    Each is the owner's memory version plus a count, as in facts_watermark
+    and episodes_watermark.
+    """
+    row = conn.execute(text("""SELECT (SELECT version FROM memory_fact_versions WHERE owner_id=:owner),
+        (SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false),
+        (SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active')"""), {"owner": owner, "false": False}).one()
+    version = row[0] or 0
+    return (version, row[1]), (version, row[2])
+
+
 def episodes_watermark(conn, owner):
     count = conn.execute(text("SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active'"), {"owner": owner}).scalar_one()
     return memory_version(conn, owner), count

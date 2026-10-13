@@ -432,3 +432,24 @@ def test_account_erasure_removes_profile_and_change_log(db):
     with db.engine.connect() as conn:
         kinds = conn.execute(text("SELECT owner_id,kind FROM context_records WHERE kind IN ('learner_core_profile','memory_changes')")).all()
     assert kinds == [("bob", "learner_core_profile")]
+
+
+# --- Shadow review tooling (§12 rollout step 3) ------------------------------------------
+
+def test_shadow_report_is_aggregate_only_and_withholds_small_samples(db):
+    from backend.app.workflow_store import WorkflowStore
+    from backend.scripts.memory_shadow_report import report
+    results = [{"status": "extracted", "candidates": 2, "created": 1, "rejected": {"quote_not_found": 1}},
+               {"status": "skipped", "reason": "daily_extraction_cap"}]
+    with db.transaction() as conn:
+        for index, result in enumerate(results):
+            job = WorkflowStore(db).enqueue(f"owner_{index}", "session", "memory_extract", {}, f"memory_extract:gen{index}", connection=conn)
+            conn.execute(text("UPDATE learning_jobs SET status='completed',result=:result WHERE id=:id"),
+                         {"result": json.dumps(result), "id": job["id"]})
+    insert(db, "owner_0", fact("shadow_goal", "Secret goal text.", status="shadow", learned_days_ago=0))
+    out = report(db.engine, since=0)
+    assert out["distinctOwners"] == 2 and out["smallSample"] is True
+    assert out["candidatesProposed"] == 2 and out["factsAccepted"] == 1 and out["acceptanceRate"] == 0.5
+    assert out["rejectionReasons"] == {"quote_not_found": 1} and out["skipped"] == {"daily_extraction_cap": 1}
+    assert out["shadowFactsByKind"] == {} and out["shadowFactsSensitive"] is None  # withheld below 20 owners
+    assert "Secret" not in json.dumps(out) and "owner_0" not in json.dumps(out)

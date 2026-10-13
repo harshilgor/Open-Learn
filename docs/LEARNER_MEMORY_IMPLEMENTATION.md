@@ -724,3 +724,10 @@ Agent appends: date, phase, PR, deviations from this spec and why, open question
   - Latency (SQLite, 2,000 facts, 300 episodes): consolidation 763 ms; retrieval with the core profile has a warm p95 of 14.9 ms. PostgreSQL is still not measured.
   - Rollout: flag off by default. §12 orders consolidation after retrieval v2 is on.
   - Still open: PostgreSQL latency (Phases D and E), the embeddings decision (semantic retrieval and cosine dedupe), learners under 13/18, and shadow extraction review before `on`. Phase F: the learner UI for the profile, changes and `needs_review`, plus the remaining §10 write APIs.
+- **2026-10-12 · Phase E follow-up · same branch**
+  - PostgreSQL measured for the first time (local Docker, `deploy/compose-performance.yaml`, 2,000 facts, 300 episodes). The Phase D read path missed the 25 ms target at a warm p95 of 34.8 ms, with 7 round trips per turn.
+  - Fix: one combined watermark query (`store.watermarks`); the core profile cached per process behind that watermark, with `profile.rebuild` bumping the memory version whenever it rewrites; course names fetched lazily. Database work per turn is now 2 round trips.
+  - Result: warm p95 20.8 ms with consolidation on, and 26.0 ms with the flag off (all 2,000 facts active). About 9 ms is Python ranking; pre-filtering candidates in the cached index is the next lever if hosted traffic needs it. Evidence: [docs/memory/Phase_E_Consolidation_2026-10-12.md](memory/Phase_E_Consolidation_2026-10-12.md).
+  - The Phase E SQL (scheduler, episodes, review flags, change log, profile) passed a smoke run on PostgreSQL.
+  - Added `backend/scripts/memory_shadow_report.py` for the §12 shadow review: aggregate counts only, with per-kind counts withheld below 20 distinct owners. The two weeks of real shadow usage still have to elapse before switching extraction to `on`.
+  - Still owner decisions: embeddings, and learners under 13/18.

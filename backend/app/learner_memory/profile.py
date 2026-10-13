@@ -103,6 +103,8 @@ def rebuild(conn, owner, *, now=None) -> bool:
                      {"payload": encoded, "id": identifier, "owner": owner})
     from ..cache import invalidate, owner_scope
     invalidate("learner_profile", owner_scope(owner))  # flushed after the caller's commit
+    # The read path caches the profile per process behind the memory version.
+    store.bump_version(conn, owner, now=now)
     return True
 
 
