@@ -11,6 +11,15 @@
 !integrations
 !integrations/openintelligentui
 !integrations/openintelligentui/**
+!web
+!web/package.json
+!web/package-lock.json
+!web/tsconfig.json
+!web/scripts
+!web/scripts/build-visual-assets.mjs
+!web/components
+!web/components/generated-visual
+!web/components/generated-visual/**
 backend/.env*
 backend/data
 backend/.venv

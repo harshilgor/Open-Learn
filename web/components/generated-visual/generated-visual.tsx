@@ -7,7 +7,7 @@ import { VISUAL_PROMPT_DRAFT } from '@/lib/generated-visual';
 import { SandboxFunctions, type SandboxFunction } from './sandbox-context';
 import { OpenGenUIActivityRenderer } from './upstream/renderer';
 import styles from './generated-visual.module.css';
-import {compatibleContent} from './library-compat';
+import {visualProgram} from './program';
 
 export function GeneratedVisualCard({ visual, lessonId }: { visual:GeneratedVisual;lessonId?:string }) {
   const [question,setQuestion]=useState('');
@@ -16,6 +16,20 @@ export function GeneratedVisualCard({ visual, lessonId }: { visual:GeneratedVisu
   const [exporting,setExporting]=useState(false);
   const [renderAttempt,setRenderAttempt]=useState(0);
   const [theme,setTheme]=useState('');
+  const [expanded,setExpanded]=useState(false);
+  const card=useRef<HTMLElement>(null);
+  // Native full screen where available; otherwise an in-page overlay. The
+  // sandbox reflows to the wider frame through its existing autosizing.
+  const toggleExpanded=()=>{
+    const element=card.current;
+    if(document.fullscreenElement){void document.exitFullscreen();return;}
+    if(!expanded&&element?.requestFullscreen){element.requestFullscreen().then(()=>setExpanded(true)).catch(()=>setExpanded(true));return;}
+    setExpanded(value=>!value);
+  };
+  useEffect(()=>{
+    const sync=()=>{if(!document.fullscreenElement)setExpanded(false);};
+    document.addEventListener('fullscreenchange',sync);return()=>document.removeEventListener('fullscreenchange',sync);
+  },[]);
   useEffect(()=>{
     const update=()=>setTheme(document.documentElement.matches('.dark,[data-theme="dark"]')?'dark':'light');
     update();const observer=new MutationObserver(update);observer.observe(document.documentElement,{attributes:true,attributeFilter:['class','data-theme']});
@@ -62,20 +76,11 @@ export function GeneratedVisualCard({ visual, lessonId }: { visual:GeneratedVisu
       setLink(url.href);return {ok:false,reviewRequired:true};
     }},
   ],[visual.controls,visual.id,lessonId]);
-  const content=useMemo(()=>{
-    if(visual.renderer!=='open_generative_ui')return {};
-    const prepared=compatibleContent(visual.content);
-    if(!Object.keys(visual.controlValues).length)return prepared;
-    // Only validated numeric input IDs and values cross this bridge. No model
-    // function name, source code, or arbitrary DOM selector is invoked.
-    const state=JSON.stringify(visual.controlValues);
-    const apply=`(()=>{for(const [id,value] of Object.entries(${state})){const input=document.getElementById(id);if(input instanceof HTMLInputElement&&['range','number'].includes(input.type)){input.value=String(value);input.dispatchEvent(new Event('input',{bubbles:true}));}}})()`;
-    return {...prepared,jsExpressions:[...(prepared.jsExpressions||[]),apply]};
-  },[visual]);
+  const content=useMemo(()=>visual.renderer==='open_generative_ui'?visualProgram(visual.content,visual.controlValues):{},[visual]);
   const table=visual.renderer==='a2ui'?visual.content:null;
   const focus=()=>{if(lessonId)reportVoiceFocus({lesson_id:lessonId,visualization_id:visual.id,expected_revision:revision.current});};
-  return <figure className={styles.card} onPointerDown={focus} onFocus={focus} aria-label={visual.title} data-visualization-type="generated_ui">
-    <figcaption className={styles.caption}>{visual.title}<span className={styles.actions}><button type="button" disabled={exporting} onClick={()=>void exportSnapshot(false)}>Download</button><button type="button" disabled={exporting} onClick={()=>void exportSnapshot(true)}>Copy HTML</button></span></figcaption>
+  return <figure ref={card} className={`${styles.card}${expanded?' '+styles.expanded:''}`} onPointerDown={focus} onFocus={focus} aria-label={visual.title} data-visualization-type="generated_ui">
+    <figcaption className={styles.caption}>{visual.title}{visual.lineage?<span className={styles.version} title="Revised from an earlier visual in this conversation; the earlier version is unchanged.">Version {visual.lineage.version}</span>:null}<span className={styles.actions}>{visual.renderer==='open_generative_ui'?<button type="button" aria-pressed={expanded} onClick={toggleExpanded}>{expanded?'Close full screen':'Full screen'}</button>:null}<button type="button" disabled={exporting} onClick={()=>void exportSnapshot(false)}>Download</button><button type="button" disabled={exporting} onClick={()=>void exportSnapshot(true)}>Copy HTML</button></span></figcaption>
     {table?<div className={styles.tableScroll} role="region" tabIndex={0} aria-label={table.title}>
       <table><caption>{table.title}</caption><thead><tr>{table.columns.map((column,index)=><th key={index} scope="col">{column}</th>)}</tr></thead>
       <tbody>{table.rows.map((row,index)=><tr key={index}>{row.map((cell,column)=><td key={column}>{cell}</td>)}</tr>)}</tbody></table>

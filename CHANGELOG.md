@@ -13,6 +13,13 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
   - Core profile: a deterministic, byte-stable list of the learner's most durable facts, stored in `context_records`, rewritten only when its bytes change, and cached in the new Redis `learner_profile` namespace. It replaces the Phase D profile section; forgotten facts leave it immediately.
   - New `GET /v1/memory/profile` and `GET /v1/memory/changes` (content-free counts, e.g. "3 memories archived, 1 updated").
   - Evaluation adds 15 forgetting cases (all must pass; no learner-stated fact may be deleted). Consolidation of 2,000 facts takes 0.76 s on SQLite; warm retrieval p95 with the core profile is 14.9 ms.
+- Generated visuals are runtime-verified before learners see them: a headless sandbox mounts each candidate exactly like the chat card at desktop and mobile widths, checks for errors, blank or empty renders, invalid readouts, clipped layouts and dead controls, and feeds specific findings back to the model for bounded repair.
+- Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
+- Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.
+- `backend/scripts/visual_benchmark.py`: a live generative-visual benchmark with task-specific scientific and interaction checks.
+- Science checks for priority topics (pendulum, Ohm's law, projectile motion, gradient descent, neuron activation, transmission-line reflection) test displayed values against the governing formula before a visual is shown.
+- Optional screenshot judge (`OPENLEARN_VISUAL_JUDGE_MODEL`): a reviewed multimodal model's critique of a working first attempt feeds one improvement pass; it never blocks a visual.
+- Paid Claude visual models are supported through `OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS` and `OPENLEARN_VISUAL_TOOL_CHOICE`.
 - Learner memory Phase D (flagged, default off): `OPENLEARN_MEMORY_RETRIEVAL_V2` replaces the Phase A block with ranked retrieval for chat and Learn mode.
   - Ranking parses time phrases in the learner's message (today, last week, next Friday, "in November", dates, "when is my…"). It then scores facts and past-session episodes by lexical BM25, concept overlap and time fit, weighted by a strength that decays with disuse (§9.2) plus origin and course bonuses.
   - Selection applies diversity limits and token budgets. The block renders as byte-stable text with a Profile section (preferences and constraints).
@@ -38,8 +45,17 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Changed
 
+- Visual generation limits are configurable (`OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS`, default 16000; `OPENLEARN_VISUAL_DEADLINE_SECONDS`, default 600; `OPENLEARN_VISUAL_MAX_ATTEMPTS`, default 3; `OPENLEARN_VISUAL_MAX_INPUT_BYTES`, default 160000).
+- Turns where no visual is useful end without a visual-model call.
 - The shared context compiler estimates tokens as UTF-8 bytes / 3 (matching the generation context engine) instead of one token per byte, so compiled packets admit about three times more content within the same budget. Remembered items are ranked course-scoped, explicit, newest first and capped at 12.
 - Updated the repository README and installation guide around the local desktop beta and GitHub Releases distribution.
+
+### Fixed
+
+- Visual model calls were often charged at their full conservative reservation because the usage receipt arrived after the agent stopped reading; finished generations are now drained for their receipt, and provider-rejected requests settle at zero.
+- Visual code validation crashed on Windows for any visual containing non-ASCII text (Greek letters, arrows, emoji).
+- Valid visuals that create elements in JavaScript were rejected as missing DOM targets.
+- `(await import('three')).default`, `d3` defaults and the `three/examples/jsm` OrbitControls path now resolve in visual frames.
 
 ### Known limitations
 

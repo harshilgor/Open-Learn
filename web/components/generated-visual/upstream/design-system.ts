@@ -457,6 +457,8 @@ Layout:
 export const IMPORTMAP = {
   imports: {
     "three/addons/controls/OrbitControls.js": `${VISUAL_ASSET_ORIGIN}/visual-assets/orbit-controls.js`,
+    // The upstream advanced-visualization skill teaches this equivalent path.
+    "three/examples/jsm/controls/OrbitControls.js": `${VISUAL_ASSET_ORIGIN}/visual-assets/orbit-controls.js`,
     "leaflet": `${VISUAL_ASSET_ORIGIN}/visual-assets/leaflet.js`,
     "three": `${VISUAL_ASSET_ORIGIN}/visual-assets/three.js`,
     "gsap": `${VISUAL_ASSET_ORIGIN}/visual-assets/gsap.js`,
