@@ -187,6 +187,17 @@ class LearnerMemoryService:
             logger.warning("learner memory retrieval unavailable", exc_info=False)
             return None
 
+    def _core_profile(self, owner):
+        """The stored core profile payload, or None (fall back to the Phase D profile)."""
+        from ..performance import span
+        from . import profile
+        try:
+            with span("memory_profile"):
+                return profile.load(self.store, owner)
+        except Exception:
+            logger.warning("learner core profile unavailable", exc_info=False)
+            return None
+
     def _context(self, owner, course_id, message, *, purpose, now, concept_ids, timezone_name):
         from . import retrieval, store
         assessment = purpose == "assessment"
@@ -216,18 +227,26 @@ class LearnerMemoryService:
             ranked = retrieval.rank(facts, episodes, message=message, now=now, course_id=course_id, concept_ids=concept_ids,
                                     intent=intent, hydrate=hydrate, fact_index=fact_index, episode_index=episode_index) if retrieve else []
 
-        # Profile: preferences and constraints always apply (until the Phase E
-        # core profile replaces this section). Course-scoped first.
-        def profile_rank(fact):
-            scoped = course_id is not None and fact["course_id"] == course_id
-            return (not scoped, fact["kind"] != "constraint", -policy.ORIGIN_RANK.get(fact["origin"], 0),
-                    -policy.last_reinforced_at(fact), fact["id"])
-        profile, used = [], 0
-        for fact in sorted((fact for fact in facts if fact["kind"] in {"preference", "constraint"}), key=profile_rank):
-            cost = estimate_tokens(fact["statement"]) + 12
-            if used + cost > policy.PROFILE_MAX_TOKENS:
-                break
-            profile.append(fact); used += cost
+        core = self._core_profile(owner) if policy.consolidation_enabled() else None
+        if core is not None:
+            # The stored core profile (§9.3 step 6), in its stored order. Only
+            # facts still active, in scope and allowed for this purpose render,
+            # so a forgotten fact leaves the prompt before the next rebuild.
+            by_id = {fact["id"]: fact for fact in facts}
+            profile = [by_id[identifier] for identifier in core.get("factIds") or [] if identifier in by_id]
+        else:
+            # Before a core profile exists: preferences and constraints always
+            # apply. Course-scoped first.
+            def profile_rank(fact):
+                scoped = course_id is not None and fact["course_id"] == course_id
+                return (not scoped, fact["kind"] != "constraint", -policy.ORIGIN_RANK.get(fact["origin"], 0),
+                        -policy.last_reinforced_at(fact), fact["id"])
+            profile, used = [], 0
+            for fact in sorted((fact for fact in facts if fact["kind"] in {"preference", "constraint"}), key=profile_rank):
+                cost = estimate_tokens(fact["statement"]) + 12
+                if used + cost > policy.PROFILE_MAX_TOKENS:
+                    break
+                profile.append(fact); used += cost
         retrieved, chosen_episodes, omitted = [], [], []
         if retrieve:
             retrieved, chosen_episodes, omitted = retrieval.select(ranked, exclude_ids={fact["id"] for fact in profile})
@@ -272,6 +291,7 @@ class LearnerMemoryService:
             return None
         trace = {
             "policyVersion": policy.MEMORY_POLICY_VERSION, "purpose": purpose, "timeIntent": intent is not None,
+            "coreProfile": core is not None,
             "candidates": {"facts": len(facts), "episodes": len(episodes)},
             "profile": [fact["id"] for fact in kept_profile],
             "included": [{"id": entry.item["id"], "type": entry.item_type, "score": round(entry.score, 4),

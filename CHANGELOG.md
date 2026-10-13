@@ -6,6 +6,13 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase E (flagged, default off): `OPENLEARN_MEMORY_CONSOLIDATION` runs a daily `memory_consolidate` job for each owner with memory activity in the last 3 days.
+  - Forgetting: stale tentative inferences are deleted after 30 days; tentative statements by the learner are archived, never deleted. Reinforced tentative facts are promoted. Facts whose strength falls below 0.05 and deadlines past their 7-day grace are archived, as are episodes older than a year.
+  - Near-duplicates in the same kind and scope merge into the older fact (lexical until embeddings are approved). Same-rank conflicts within 24 hours are flagged `needs_review`.
+  - Episodes: idle sessions (2 hours) get an extractive `memory_episode` (questions, answer headings, lesson titles, concept IDs; no model call). Questions that read as instructions or touch a sensitive category are left out. Deleting a conversation deletes its episodes.
+  - Core profile: a deterministic, byte-stable list of the learner's most durable facts, stored in `context_records`, rewritten only when its bytes change, and cached in the new Redis `learner_profile` namespace. It replaces the Phase D profile section; forgotten facts leave it immediately.
+  - New `GET /v1/memory/profile` and `GET /v1/memory/changes` (content-free counts, e.g. "3 memories archived, 1 updated").
+  - Evaluation adds 15 forgetting cases (all must pass; no learner-stated fact may be deleted). Consolidation of 2,000 facts takes 0.76 s on SQLite; warm retrieval p95 with the core profile is 14.9 ms.
 - Generated visuals are runtime-verified before learners see them: a headless sandbox mounts each candidate exactly like the chat card at desktop and mobile widths, checks for errors, blank or empty renders, invalid readouts, clipped layouts and dead controls, and feeds specific findings back to the model for bounded repair.
 - Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
 - Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.

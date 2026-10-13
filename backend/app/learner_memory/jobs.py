@@ -17,6 +17,8 @@ from . import extraction, policy, store, validator
 log = logging.getLogger(__name__)
 
 KIND_EXTRACT = "memory_extract"
+KIND_CONSOLIDATE = "memory_consolidate"
+KIND_EPISODE = "memory_episode"
 
 
 def enqueue_extraction(store_, conn, owner, *, session_id, generation_id, request):
@@ -101,12 +103,20 @@ def extract_turn(store_, owner, payload, *, extractor=None, now=None):
     turn_basis = {"type": "turn", "sessionId": payload["sessionId"], "turnIndex": index, "generationId": payload["generationId"]}
     actions = {"created": 0, "deduplicated": 0, "existing": 0}
     superseded = 0
+    changed_ids = []
     with store_.transaction() as conn:
         for accepted in outcome.accepted:
-            action, _, replaced = store.write_extracted(conn, owner, accepted, turn_basis=turn_basis, now=now)
+            action, fact_id, replaced = store.write_extracted(conn, owner, accepted, turn_basis=turn_basis, now=now)
             actions[action] += 1
             superseded += len(replaced)
+            if action == "created" and mode == "on":
+                changed_ids.append(fact_id)
         store.delete_shadow_facts_before(conn, owner, now - policy.SHADOW_RETENTION_DAYS * 86400)
+        if mode == "on" and (actions["created"] or superseded):
+            from . import consolidation, profile
+            profile.rebuild_if_enabled(conn, owner, now=now)
+            consolidation.record_change(conn, owner, "learning", {"learned": actions["created"], "updated": superseded},
+                                        fact_ids=changed_ids, now=now)
     rejected = {}
     for reason in outcome.rejected:
         rejected[reason] = rejected.get(reason, 0) + 1
@@ -146,3 +156,74 @@ def run_memory_extract(store_, provider, job_id, *, extractor=None):
         jobs.fail(job, code, retryable=retry)
     finally:
         heartbeat.close()
+
+
+# --- Phase E: consolidation and episodes (§9.3) ----------------------------------
+
+def note_activity(conn, owner):
+    """At turn commit: mark the owner for consolidation. Never fails the turn."""
+    if not policy.consolidation_enabled():
+        return
+    try:
+        with conn.begin_nested():
+            store.touch_activity(conn, owner)
+    except Exception as exc:
+        log.warning("memory activity was not recorded (%s)", type(exc).__name__)
+
+
+def enqueue_consolidations(store_, *, now=None):
+    """Queue today's consolidation for owners with recent memory activity (bounded)."""
+    if not policy.consolidation_enabled():
+        return 0
+    from ..workflow_store import WorkflowStore
+    now = now or time.time()
+    day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+    with store_.transaction() as conn:
+        owners = store.owners_due_for_consolidation(conn, since=now - policy.CONSOLIDATION_ACTIVITY_DAYS * 86400, day=day)
+        for owner in owners:
+            WorkflowStore(store_).enqueue(owner, owner, KIND_CONSOLIDATE, {"day": day}, f"memory_consolidate:{owner}:{day}",
+                                         connection=conn, queue="batch", max_attempts=3)
+    return len(owners)
+
+
+def _run(store_, job_id, body, stage):
+    from ..execution import LeaseHeartbeat, failure_policy, job_scope
+    from ..performance import span
+    from ..workflow_store import WorkflowStore
+    jobs = WorkflowStore(store_)
+    job = jobs.claim(job_id)
+    if not job:
+        return
+    heartbeat = LeaseHeartbeat(store_, job)
+    try:
+        with job_scope(job):
+            with span(stage):
+                result = body(job)
+            with store_.transaction() as conn:
+                jobs.finish(conn, job, result)
+    except Exception as exc:
+        code, retry = failure_policy(exc)
+        log.warning("%s failed (%s)", job["kind"], type(exc).__name__)
+        jobs.fail(job, code, retryable=retry)
+    finally:
+        heartbeat.close()
+
+
+def run_memory_consolidate(store_, provider, job_id):
+    from . import consolidation
+
+    def body(job):
+        if not policy.consolidation_enabled():
+            return {"status": "skipped", "reason": "disabled"}
+        return consolidation.consolidate(store_, job["owner_id"])
+    _run(store_, job_id, body, "memory_consolidate_job")
+
+
+def run_memory_episode(store_, provider, job_id):
+    from . import consolidation
+
+    def body(job):
+        if not policy.consolidation_enabled():
+            return {"status": "skipped", "reason": "disabled"}
+        return consolidation.write_episode(store_, job["owner_id"], job["payload"])
+    _run(store_, job_id, body, "memory_consolidate_job")

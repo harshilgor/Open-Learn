@@ -687,9 +687,10 @@ class GenerationManager:
                             connection, owner, prepared, request, prepared["directReply"], [],
                         )
                         # Social chit-chat often carries durable facts ("my exam is Friday").
-                        from .learner_memory.jobs import enqueue_extraction
+                        from .learner_memory.jobs import enqueue_extraction, note_activity
                         enqueue_extraction(self.store, connection, owner, session_id=journey["sessionId"],
                                            generation_id=generation_id, request=request)
+                        note_activity(connection, owner)
                         result = {"lessonId": artifact.id, "revision": journey["revision"] + 1, "sessionId": journey["sessionId"]}
                         completed_at = time.time()
                         final_metrics = {
@@ -865,9 +866,10 @@ class GenerationManager:
                     if cancelled:
                         raise asyncio.CancelledError()
                     artifact, journey = JourneyService(self.store, provider).commit_stream(connection, owner, prepared, request, body, visualizations)
-                    from .learner_memory.jobs import enqueue_extraction
+                    from .learner_memory.jobs import enqueue_extraction, note_activity
                     enqueue_extraction(self.store, connection, owner, session_id=journey["sessionId"],
                                        generation_id=generation_id, request=request)
+                    note_activity(connection, owner)
                     if prepared.get("memoryFactIds"):
                         from .learner_memory import store as memory_store
                         memory_store.record_use(connection, owner, prepared["memoryFactIds"])
