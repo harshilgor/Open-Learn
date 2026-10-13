@@ -102,6 +102,20 @@ upstream_model.request_model = request_model
 upstream_router.request_options = routing_options
 upstream_router.JEV_URL = API_ORIGIN+'/internal/visuals/jev'
 upstream_router.provider_trust_env = lambda: False
+original_routing_input = upstream_router.routing_input
+
+
+def routing_input(state):
+    # Open Learn repair feedback arrives as a user message; the presentation
+    # chosen for the learner's turn stands, so it is never re-routed (to text).
+    human = next((message for message in reversed(state.get('messages', [])) if message.type == 'human'), None)
+    content = human.content if human is not None and isinstance(human.content, str) else ''
+    if content.startswith('Open Learn tested this visual') and state.get('visualization_decision'):
+        return None
+    return original_routing_input(state)
+
+
+upstream_router.routing_input = routing_input
 
 # Preserve the bundled geographic skill while replacing CDN fetching with the
 # reviewed local module and stylesheet supplied by the host renderer.
@@ -117,6 +131,58 @@ VERIFICATION_FEEDBACK_PREFIX = 'Open Learn tested this visual'
 # Latest candidate kept verbatim in repair context so the model can fix it in
 # place; older or larger ones are compacted to bound the request.
 MAX_REPAIR_SOURCE_CHARS = 64000
+
+
+def paired_tool_messages(messages,state_messages):
+    """Every tool call immediately followed by its result; no orphan results.
+
+    CopilotKit intercepts frontend tool calls and strips them (and any result
+    for them) from the graph history, but a provider-format copy of the call can
+    survive in additional_kwargs or content blocks and is serialized anyway.
+    Anthropic rejects such a call without a result ("tool_use ids were found
+    without tool_result blocks"). Calls are normalized here and each gets its
+    result from state or a neutral placeholder; Open Learn's repair feedback
+    follows as a user message.
+    """
+    from langchain.messages import ToolMessage
+    from langchain_core.messages import AIMessage
+    known={message.tool_call_id:message for message in state_messages if isinstance(message,ToolMessage)}
+    known.update({message.tool_call_id:message for message in messages if isinstance(message,ToolMessage)})
+    result=[]
+    for message in messages:
+        if isinstance(message,ToolMessage):
+            continue  # re-attached below, directly after its call
+        raw=(getattr(message,'additional_kwargs',None) or {}).get('tool_calls') if isinstance(message,AIMessage) else None
+        if raw and not getattr(message,'tool_calls',None):
+            # CopilotKit strips intercepted frontend calls from tool_calls but
+            # the provider-format copy survives and is serialized anyway.
+            calls=[]
+            for item in raw:
+                function=item.get('function') or {}
+                try:
+                    args=json.loads(function.get('arguments') or '{}')
+                except ValueError:
+                    args={}
+                if item.get('id'):
+                    calls.append({'id':item['id'],'name':function.get('name',''),'args':args if isinstance(args,dict) else {},'type':'tool_call'})
+            kwargs={key:value for key,value in message.additional_kwargs.items() if key!='tool_calls'}
+            message=message.model_copy(update={'tool_calls':calls,'additional_kwargs':kwargs})
+        if isinstance(message,AIMessage) and not getattr(message,'tool_calls',None) and isinstance(message.content,list):
+            # A Claude call can survive only as a tool_use content block, which
+            # the OpenAI converter turns back into a call later; normalize it
+            # here so its result is attached.
+            blocks=[block for block in message.content if isinstance(block,dict) and block.get('type') in {'tool_use','tool_call'} and block.get('id')]
+            if blocks:
+                calls=[{'id':block['id'],'name':block.get('name',''),'args':block.get('input',block.get('args')) or {},'type':'tool_call'} for block in blocks]
+                rest=[block for block in message.content if block not in blocks]
+                message=message.model_copy(update={'tool_calls':calls,'content':rest or ''})
+        result.append(message)
+        if isinstance(message,AIMessage):
+            for call in getattr(message,'tool_calls',None) or []:
+                answer=known.get(call.get('id'))
+                result.append(answer if answer is not None else ToolMessage(
+                    content=f"The host rendered the {call.get('name')} artifact. Any review feedback follows.",tool_call_id=call.get('id')))
+    return result
 
 
 class EndOnTextDecision(AgentMiddleware):
@@ -172,9 +238,11 @@ class VisualToolsOnly(AgentMiddleware):
         choice=request.tool_choice
         system=request.system_message
         messages=[]
-        latest=next((call['id'] for message in reversed(request.messages) for call in reversed(getattr(message,'tool_calls',None) or [])
+        # Normalize provider-format tool calls first so compaction sees them.
+        history=paired_tool_messages(request.messages,request.state.get('messages',[]))
+        latest=next((call['id'] for message in reversed(history) for call in reversed(getattr(message,'tool_calls',None) or [])
                      if call.get('name')=='generateSandboxedUi'),None)
-        for message in request.messages:
+        for message in history:
             original_calls=getattr(message,'tool_calls',[])
             if original_calls:
                 compact=[]
@@ -244,7 +312,7 @@ graph = create_deep_agent(
         'No external actions, saved-account claims, credential forms, or fabricated sources. Include units and an accessible text explanation inside the artifact.'
         ' The host import map supports only three, three/addons/controls/OrbitControls.js, gsap, d3, chart.js and leaflet. '
         'Use bare module imports for those libraries or inline SVG and native DOM. Remote scripts and network requests are blocked. Images may use only the USGS tile path and sourced Wikimedia hosts described in the map skill. '
-        'Libraries are ES modules, not globals: await import("three") or await import("chart.js") inside an async initialization function; assign the returned exports before using them. Do not assume THREE, Chart, d3, gsap or L are already globals. Call and await initialization from jsExpressions. '
+        'Libraries are ES modules, not globals: await import("three") or await import("chart.js") inside an async initialization function; assign the returned exports before using them. Do not assume THREE, Chart, d3, gsap or L are already globals. Call and await initialization from jsExpressions, which is a JSON array of strings such as ["init()"]: quote the code; never write bare code as its value. '
         'Follow-ups use Websandbox.connection.remote.sendPrompt({text}) and links use Websandbox.connection.remote.openLink({url}). '
         'The host asks the learner to review these actions; never claim a follow-up was automatically sent.'
         ' For adjustable numeric inputs, use a unique safe id, aria-label, type range or number, explicit min/max/value, and an input event listener. '

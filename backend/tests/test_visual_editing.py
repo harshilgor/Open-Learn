@@ -84,8 +84,11 @@ def test_oversized_source_is_not_shared(conversation, monkeypatch):
     assert 'editTarget' not in grounding
 
 
-def edited_events(edit_of):
-    html = PENDULUM_HTML + '<label for="damping">Damping</label><input id="damping" aria-label="Damping" type="range" min="0" max="1" value="0.1">'
+UNRELATED_HTML = '<h3>Energy</h3><svg id="bars" viewBox="0 0 10 10"></svg><p id="legend">Sample data</p>'
+
+
+def edited_events(edit_of, html=None):
+    html = html or PENDULUM_HTML + '<label for="damping">Damping</label><input id="damping" aria-label="Damping" type="range" min="0" max="1" value="0.1">'
     events = candidate_events('edit', html, 'function f(){}', ['f()'])
     args = json.loads(events[2]['delta'])
     if edit_of:
@@ -94,7 +97,7 @@ def edited_events(edit_of):
     return events
 
 
-def run_edit(monkeypatch, runtime_fixture, edit_of):
+def run_edit(monkeypatch, runtime_fixture, edit_of, html=None):
     runs, requests = runtime_fixture
     seen = []
 
@@ -103,7 +106,7 @@ def run_edit(monkeypatch, runtime_fixture, edit_of):
         return {'status': 'passed', 'findings': [], 'digest': 'd', 'durationMs': 1}
     monkeypatch.setattr('backend.app.visual_verification.verify_blocking', verify)
     monkeypatch.setattr('backend.app.visual_verification.unavailable_reason', lambda: None)
-    runs.append(sse(edited_events(edit_of)))
+    runs.append(sse(edited_events(edit_of, html)))
     target = {'id': 'visual_parent', 'title': 'Pendulum', 'revision': 3, 'lineage': {'rootId': 'visual_root', 'version': 2},
               'controls': [], 'controlValues': {'gravity': 3.7, 'length': 99}, 'source': {'html': [PENDULUM_HTML]}}
 
@@ -122,9 +125,16 @@ def test_declared_edit_gets_lineage_and_verified_carried_state(runtime, monkeypa
     assert 'editTarget' in prompt and PENDULUM_HTML.replace('"', '\\"') in prompt
 
 
+def test_an_undeclared_revision_that_keeps_the_target_structure_is_an_edit(runtime, monkeypatch):
+    # Models often skip the optional editOf argument but follow the edit
+    # instructions (start from the source, keep element ids).
+    visual, seen, _ = run_edit(monkeypatch, runtime, None)
+    assert visual.lineage.parent_id == 'visual_parent' and seen == [{'gravity': 3.7}]
+
+
 @pytest.mark.parametrize('edit_of', [None, 'visual_someone_else'])
-def test_undeclared_or_foreign_edits_are_new_visuals(runtime, monkeypatch, edit_of):
-    visual, seen, _ = run_edit(monkeypatch, runtime, edit_of)
+def test_unrelated_visuals_are_new_even_when_a_target_was_offered(runtime, monkeypatch, edit_of):
+    visual, seen, _ = run_edit(monkeypatch, runtime, edit_of, UNRELATED_HTML)
     assert visual.lineage is None and visual.control_values == {} and seen == [{}]
 
 
