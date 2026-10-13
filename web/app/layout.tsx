@@ -6,10 +6,25 @@ import { AccountAccess, AccountWorkspace } from '@/components/account-access';
 import { AppInstall } from "@/components/app-install";
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://open-learn-eta.vercel.app"),
   manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, title: "Open Learn", statusBarStyle: "default" },
-  title: "Open Learn. — A space to understand",
-  description: "Explore connected ideas and follow your curiosity without losing your place.",
+  title: "Open Learn — Your AI study partner",
+  description: "Ask a question, choose how deeply to explore, then save the explanations that click as notes, reviews, and quizzes.",
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    siteName: "Open Learn",
+    title: "Open Learn — Your AI study partner",
+    description: "Explore ideas at your pace. Keep the explanations, notes, and reviews that help them stick.",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "Open Learn, a study partner for curious minds" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Open Learn — Your AI study partner",
+    description: "Explore ideas at your pace. Keep the explanations, notes, and reviews that help them stick.",
+    images: ["/opengraph-image"],
+  },
   other: {
     "codex-preview": "development",
   },
