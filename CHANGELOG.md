@@ -49,6 +49,9 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 - Visual code validation crashed on Windows for any visual containing non-ASCII text (Greek letters, arrows, emoji).
 - Valid visuals that create elements in JavaScript were rejected as missing DOM targets.
 - `(await import('three')).default`, `d3` defaults and the `three/examples/jsm` OrbitControls path now resolve in visual frames.
+- Claude visual models: repair and polish attempts failed with HTTP 400 (orphaned tool calls in the continuation). Feedback now continues the thread as a user message, and tool calls are paired before each model call.
+- Claude visual models: visuals often never started because a malformed trailing `jsExpressions` argument was dropped. It is now recovered and verified like any other code, and a declared `editOf` is recovered from the same arguments.
+- Edits that keep the original visual's structure are recognized even when the model omits `editOf`.
 
 ### Known limitations
 

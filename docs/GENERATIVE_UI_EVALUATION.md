@@ -195,14 +195,19 @@ Changes made: `OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS` (default `true`; se
 | --- | --- | --- | --- | --- | --- |
 | E: Haiku producer | 9 / 12 | 3 / 12 | 38.8 | 9.2 | ≈ $0.07 |
 | F: Haiku producer + Haiku judge, all new checks | 10 / 12 | 5 / 12 | 40.8 | 9.2 | ≈ $0.05 |
+| G: Haiku, continuation fix | 10 / 12 | 6 / 12 | 69.8 | 9.2 | $0.091 |
+| G2: Haiku, continuation fix (repeat) | 11 / 12 | 6 / 12 | 66.9 | 9.2 | $0.094 |
 | C (reference): Nemotron Super, free | 9–11 / 12 | 6–8 / 12 | 60–143 | 28–85 | $0 |
 
-Haiku is about 1.5× faster end to end and shows a progressive preview within ~9 s because it streams tool arguments. On objective checks it does **not** beat the free Nemotron Super model yet, for two measured reasons:
+All rows are scored with the same checks. The benchmark's science checks are now the in-pipeline validators from section 9.4, and earlier runs were re-scored with them. G and G2 are real ledger costs after the metering fix in 9.5.
 
-1. **Repair and polish continuations fail with HTTP 400 for Claude.** The first attempt works, but every follow-up request that carries Haiku's own previous tool call is rejected, so warnings are never polished and errors never repaired. The identical message shape built from a Nemotron history is accepted by Haiku (verified by replay), so the cause lies in how a streamed Claude tool call is recorded in the history. The proxy now logs the provider's error detail, so the next paid run will name the rejected field. Root cause not yet confirmed.
-2. **Haiku did not declare the conversational edit** (`editOf`), so the edit task produced a new visual without lineage.
+Haiku shows a progressive preview within about 9 s because it streams tool arguments. On objective checks it did **not** beat the free Nemotron Super model in these runs. Three defects explain most of the gap, and all three are now fixed:
 
-Recommendation: keep `nvidia/nemotron-3-super-120b-a12b:free` as the visual model for now. Re-evaluate Haiku once the continuation 400 is fixed, and Sonnet once the platform budget allows it.
+1. **Repair and polish continuations failed with HTTP 400 for Claude.** Fixed before runs G and G2. The CopilotKit runtime strips intercepted frontend-tool calls and their results from the history, but still serializes a provider-format copy of the call. Anthropic then rejects the request: "tool_use ids were found without tool_result blocks". Verification feedback now continues the thread as a user message, and orphaned tool calls are paired or dropped before every model call. G and G2 made 21–22 model calls with no HTTP 400s.
+2. **Haiku's start-up code was silently dropped.** Found in G and G2, fixed afterwards. The OpenRouter Anthropic route streams tool input without JSON validation. Haiku wrote the last field as bare code (`"jsExpressions": initPendulum()}`) in 42 of 47 recorded calls, so the runtime's parser dropped the field and the visual never started. This is why controls measured responsive only 15 of 42 (G) and 0 of 49 (G2) times, against 15–20 of 18–25 for Nemotron Super. The orchestrator now recovers the field from the raw arguments (all 42 recover, and each passes `node --check`), and the prompt states the field's JSON form. **Haiku has not yet been benchmarked with this fix.** The run was stopped by low system memory, so the G and G2 rows understate Haiku.
+3. **Edits were not recognized.** The same malformed JSON hid Haiku's `editOf` argument. The argument is now recovered, and an edit is also recognized by structure (the candidate keeps at least half of the target's element ids).
+
+Recommendation: keep `nvidia/nemotron-3-super-120b-a12b:free` as the default until a Haiku run with fix 2 matches or beats it. Model routing (Haiku by default, Sonnet only where measured need justifies it) is planned in `docs/VISUAL_MODEL_ROUTING_PLAN.md`.
 
 ### 9.3 Screenshot judge (paid models)
 
