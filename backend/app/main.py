@@ -38,6 +38,7 @@ from .session_models import (
 )
 from .state_models import StateEventCreate
 from .state_routes import build_state_router
+from .agent_routes import build_agent_router
 from .state_service import LearnerStateService
 from .storage import Store
 
@@ -62,6 +63,7 @@ def get_store() -> Store:
 # isolated from the topic graph API above.
 app.include_router(build_learner_graph_router(get_store))
 app.include_router(build_state_router(get_store))
+app.include_router(build_agent_router(get_store))
 
 
 @app.get("/health")

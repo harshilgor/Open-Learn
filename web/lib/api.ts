@@ -257,6 +257,62 @@ export type NoteInput = {
 
 export type NoteRecord = NoteInput & { id: string; version: number; updatedAt: string };
 
+export type LearnerNote = {
+  id: string;
+  learnerId: string;
+  scope: 'learner' | 'private';
+  body: string;
+  conceptId?: string | null;
+  lessonId?: string | null;
+  branchId?: string | null;
+  documentId?: string | null;
+  revision: number;
+  provenance: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentDocument = {
+  id: string;
+  learnerId: string;
+  title: string;
+  mimeType: 'text/plain' | 'text/markdown' | 'text/csv';
+  characterCount: number;
+  contentSha256: string;
+  createdAt: string;
+};
+
+export type AgentTaskStep = {
+  tool: 'read_owned_document' | 'extract_key_points' | 'create_learner_note';
+  status: 'pending' | 'completed' | 'skipped' | 'failed';
+  detail: string;
+};
+
+export type AgentTask = {
+  id: string;
+  learnerId: string;
+  kind: 'summarize_to_note';
+  goal: string;
+  documentIds: string[];
+  noteStyle: 'outline' | 'study';
+  noteScope: 'learner' | 'private';
+  status: 'queued' | 'planning' | 'running' | 'completed' | 'failed' | 'cancelled';
+  steps: AgentTaskStep[];
+  result?: { noteId?: string | null; documentIds: string[]; summary?: string | null; limitations: string[] } | null;
+  errorCode?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AgentTaskEvent = {
+  id: string;
+  taskId: string;
+  sequence: number;
+  type: string;
+  data: Record<string, unknown>;
+  createdAt: string;
+};
+
 export class LearningApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -448,5 +504,39 @@ export const learningApi = {
 
   updateNote(noteId: string, body: string, version: number): Promise<NoteRecord> {
     return request<NoteRecord>(`/v1/notes/${encodeURIComponent(noteId)}`, { method: 'PATCH', body: JSON.stringify({ body, version }) });
+  },
+
+  createAgentDocument(learnerId: string, input: { title: string; content: string; mimeType: AgentDocument['mimeType'] }): Promise<AgentDocument> {
+    return request<AgentDocument>(`/v1/learners/${encodeURIComponent(learnerId)}/documents`, {
+      method: 'POST',
+      headers: { 'X-Dev-Learner-Id': learnerId },
+      body: JSON.stringify(input),
+    });
+  },
+
+  createAgentTask(learnerId: string, input: { goal: string; documentIds: string[]; noteStyle?: 'outline' | 'study'; noteScope?: 'learner' | 'private' }, idempotencyKey: string): Promise<AgentTask> {
+    return request<AgentTask>(`/v1/learners/${encodeURIComponent(learnerId)}/agent-tasks`, {
+      method: 'POST',
+      headers: { 'X-Dev-Learner-Id': learnerId, 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(input),
+    });
+  },
+
+  getAgentTask(learnerId: string, taskId: string): Promise<AgentTask> {
+    return request<AgentTask>(`/v1/learners/${encodeURIComponent(learnerId)}/agent-tasks/${encodeURIComponent(taskId)}`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
+  getAgentTaskEvents(learnerId: string, taskId: string): Promise<AgentTaskEvent[]> {
+    return request<AgentTaskEvent[]>(`/v1/learners/${encodeURIComponent(learnerId)}/agent-tasks/${encodeURIComponent(taskId)}/events`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
+  listLearnerNotes(learnerId: string): Promise<LearnerNote[]> {
+    return request<LearnerNote[]>(`/v1/learners/${encodeURIComponent(learnerId)}/notes`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
   },
 };

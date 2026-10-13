@@ -493,6 +493,7 @@ class LearnerStateService:
         return NoteRecord(
             id=row["id"], learner_id=row["learner_id"], scope=row["scope"], body=row["body"],
             concept_id=row["concept_id"], lesson_id=row["lesson_id"], branch_id=row["branch_id"],
+            document_id=row["document_id"],
             revision=row["revision"], provenance=_object(row["provenance_json"]),
             created_at=row["created_at"], updated_at=row["updated_at"],
         )
@@ -509,11 +510,12 @@ class LearnerStateService:
                     raise StateServiceError("branch_not_found", "The note branch anchor is outside this learner.", 404)
             values = {"id": note_id, "learner_id": learner_id, "scope": request.scope, "body": request.body,
                       "concept_id": request.concept_id, "lesson_id": request.lesson_id, "branch_id": request.branch_id,
+                      "document_id": request.document_id,
                       "revision": 1, "provenance_json": _json(request.provenance), "now": now}
             connection.execute(text("""
-                INSERT INTO notes(id, learner_id, scope, body, concept_id, lesson_id, branch_id, revision,
+                INSERT INTO notes(id, learner_id, scope, body, concept_id, lesson_id, branch_id, document_id, revision,
                                   provenance_json, created_at, updated_at, deleted_at)
-                VALUES (:id, :learner_id, :scope, :body, :concept_id, :lesson_id, :branch_id, :revision,
+                VALUES (:id, :learner_id, :scope, :body, :concept_id, :lesson_id, :branch_id, :document_id, :revision,
                         :provenance_json, :now, :now, NULL)
             """), values)
             connection.execute(text("""

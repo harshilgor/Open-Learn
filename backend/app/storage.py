@@ -18,6 +18,7 @@ from .database import create_database_engine, run_migrations
 from .models import GraphJob, GraphVersion, TopicScope
 from .policy_models import PolicyValidationResult, TeachingPlan
 from .session_models import ActionEvent, LearningSession, LessonArtifact, RunStatus
+from .agent_models import AgentDocument, AgentTask, AgentTaskEvent
 
 
 class Store:
@@ -190,3 +191,91 @@ class Store:
                 text("SELECT payload FROM action_events WHERE action_id = :id ORDER BY sequence ASC"), {"id": action_id}
             ).mappings().all()
         return [ActionEvent.model_validate_json(row["payload"]) for row in rows]
+
+    def save_agent_document(self, document: AgentDocument, content: str) -> None:
+        with self.transaction() as connection:
+            self._put(connection, "agent_documents", "id", document.id, {
+                "learner_id": document.learner_id,
+                "title": document.title,
+                "mime_type": document.mime_type,
+                "content": content,
+                "content_sha256": document.content_sha256,
+                "created_at": document.created_at,
+            })
+
+    def get_agent_document(self, document_id: str, learner_id: str) -> tuple[AgentDocument, str] | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(text("""
+                SELECT id, learner_id, title, mime_type, content, content_sha256, created_at
+                FROM agent_documents WHERE id=:id AND learner_id=:learner_id
+            """), {"id": document_id, "learner_id": learner_id}).mappings().first()
+        if row is None:
+            return None
+        document = AgentDocument(
+            id=row["id"], learner_id=row["learner_id"], title=row["title"], mime_type=row["mime_type"],
+            character_count=len(row["content"]), content_sha256=row["content_sha256"], created_at=row["created_at"],
+        )
+        return document, row["content"]
+
+    def list_agent_documents(self, learner_id: str) -> list[AgentDocument]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(text("""
+                SELECT id, learner_id, title, mime_type, content, content_sha256, created_at
+                FROM agent_documents WHERE learner_id=:learner_id ORDER BY created_at DESC
+            """), {"learner_id": learner_id}).mappings().all()
+        return [AgentDocument(
+            id=row["id"], learner_id=row["learner_id"], title=row["title"], mime_type=row["mime_type"],
+            character_count=len(row["content"]), content_sha256=row["content_sha256"], created_at=row["created_at"],
+        ) for row in rows]
+
+    def save_agent_task(self, task: AgentTask, idempotency_key: str | None = None) -> None:
+        values: dict[str, Any] = {
+            "learner_id": task.learner_id,
+            "status": task.status.value,
+            "payload": task.model_dump_json(),
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+        # A status update must never erase the idempotency key established by
+        # the create command.  Omitting it also works for inserts because the
+        # database column is nullable.
+        if idempotency_key is not None:
+            values["idempotency_key"] = idempotency_key
+        with self.transaction() as connection:
+            self._put(connection, "agent_tasks", "id", task.id, values)
+
+    def get_agent_task(self, task_id: str, learner_id: str) -> AgentTask | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(text("SELECT payload FROM agent_tasks WHERE id=:id AND learner_id=:learner_id"), {
+                "id": task_id, "learner_id": learner_id,
+            }).mappings().first()
+        return AgentTask.model_validate_json(row["payload"]) if row else None
+
+    def get_agent_task_by_idempotency(self, learner_id: str, idempotency_key: str) -> AgentTask | None:
+        with self.engine.connect() as connection:
+            row = connection.execute(text("""
+                SELECT payload FROM agent_tasks WHERE learner_id=:learner_id AND idempotency_key=:key
+            """), {"learner_id": learner_id, "key": idempotency_key}).mappings().first()
+        return AgentTask.model_validate_json(row["payload"]) if row else None
+
+    def list_agent_tasks(self, learner_id: str, limit: int = 50) -> list[AgentTask]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(text("""
+                SELECT payload FROM agent_tasks WHERE learner_id=:learner_id ORDER BY updated_at DESC LIMIT :limit
+            """), {"learner_id": learner_id, "limit": limit}).mappings().all()
+        return [AgentTask.model_validate_json(row["payload"]) for row in rows]
+
+    def save_agent_task_event(self, event: AgentTaskEvent) -> None:
+        with self.transaction() as connection:
+            self._put(connection, "agent_task_events", "id", event.id, {
+                "task_id": event.task_id,
+                "sequence": event.sequence,
+                "payload": event.model_dump_json(),
+            })
+
+    def list_agent_task_events(self, task_id: str) -> list[AgentTaskEvent]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(text("""
+                SELECT payload FROM agent_task_events WHERE task_id=:task_id ORDER BY sequence ASC
+            """), {"task_id": task_id}).mappings().all()
+        return [AgentTaskEvent.model_validate_json(row["payload"]) for row in rows]

@@ -204,12 +204,15 @@ class NoteCreate(ApiModel):
     concept_id: str | None = Field(default=None, max_length=160)
     lesson_id: str | None = Field(default=None, max_length=160)
     branch_id: str | None = Field(default=None, max_length=160)
+    # A document is a valid learning anchor even before the learner has chosen
+    # a curriculum concept or started a lesson.
+    document_id: str | None = Field(default=None, max_length=160)
     provenance: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def has_anchor(self) -> NoteCreate:
-        if not any((self.concept_id, self.lesson_id, self.branch_id)):
-            raise ValueError("A note must have a conceptId, lessonId, or branchId anchor")
+        if not any((self.concept_id, self.lesson_id, self.branch_id, self.document_id)):
+            raise ValueError("A note must have a conceptId, lessonId, branchId, or documentId anchor")
         return self
 
 
@@ -227,6 +230,7 @@ class NoteRecord(ApiModel):
     concept_id: str | None = None
     lesson_id: str | None = None
     branch_id: str | None = None
+    document_id: str | None = None
     revision: int
     provenance: dict[str, Any]
     created_at: datetime
