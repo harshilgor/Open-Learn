@@ -6,6 +6,12 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase F3 (clean-up and rollout support):
+  - Explicit preferences (Settings and chat "remember…") are stored only as learner memory facts; `memory_derived` no longer gets preference rows.
+  - Learn mode's context compiler reads preference and constraint facts, ordered course-specific first, then learner-stated, then newest. It states the precedence order, and drops a packet at commit if a fact it used was forgotten meanwhile.
+  - Forgetting or rewording a preference also retires the hidden source that held its old words, so they can't come back through note search or a retried save.
+  - The memory page shows each Buddy's settings read-only, with a link to the Buddy editor. The duplicate "remember a preference" form left the Advanced source tools.
+  - CI runs the Phase F backend and web memory tests. `docs/memory/Rollout_Runbook.md` describes the hosted rollout step by step.
 - Learner memory Phase F2: a new Settings → Memory page, "What Open Learn remembers about you".
   - Memories are grouped by type, with a course filter. Each shows "You said this on {date} in {chat}" (linking back to the chat) and the learner's own words, with Edit, Forget (asks first), History and, for unconfirmed or faded memories, Confirm.
   - Also on the page: a "Needs your review" section for conflicting memories ("Keep this one"), the core profile ("What the tutor always knows"), "Recently updated", session summaries with delete, the "Pause learning new memories" switch, a per-memory switch for personal topics, "Add a memory", and "Forget everything" (shows what will be deleted first).

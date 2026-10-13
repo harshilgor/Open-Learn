@@ -6,6 +6,8 @@ const { request, openChatSession } = vi.hoisted(() => ({ request: vi.fn(), openC
 vi.mock('@/lib/api', () => ({ request, learningApi: { listChatSessions: vi.fn() } }));
 vi.mock('@/lib/workspace-events', () => ({ openChatSession }));
 vi.mock('@/components/source-memory-settings', () => ({ SourceMemorySettings: () => <p>Source tools</p> }));
+const { buddies } = vi.hoisted(() => ({ buddies: { snapshot: null as unknown, edit: vi.fn() } }));
+vi.mock('@/components/buddies', () => ({ useBuddies: () => buddies }));
 
 import { LearnerMemorySettings } from '@/components/learner-memory-settings';
 
@@ -179,4 +181,17 @@ it('forgets everything only after showing what will be deleted', async () => {
   expect(calls('POST')).toHaveLength(0);
   await click(button(section, 'Delete all memories'));
   expect(request).toHaveBeenCalledWith('/v1/memory/forget-all', { method: 'POST', body: JSON.stringify({ confirmation: 'forget_token' }) });
+});
+
+it('shows Buddy settings read-only and opens the Buddy editor to change them', async () => {
+  const buddy = { id: 'b1', name: 'Sage', style: 'calm', concise: true, examples: false, hintsFirst: true, exampleTheme: 'music', archived: false };
+  buddies.snapshot = { profiles: [buddy, { ...buddy, id: 'old', name: 'Retired', archived: true }] };
+  await render();
+  const section = within('Buddy settings');
+  expect(section.textContent).toContain('Sage');
+  expect(section.textContent).toContain('calm tone · concise answers · examples only on request · hints before answers · music examples');
+  expect(section.textContent).not.toContain('Retired');
+  await click(button(section, 'Change in Buddy settings'));
+  expect(buddies.edit).toHaveBeenCalledWith(buddy);
+  buddies.snapshot = null;
 });

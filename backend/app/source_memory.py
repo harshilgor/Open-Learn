@@ -89,20 +89,24 @@ class SourceMemory:
                 if current!=ref['revision']: fail('source_changed','Derived memory requires current sources.',409)
             payload=json.dumps({'value':value,'basis':basis,'scope':scope,'explicit':explicit})
             if identifier:
+                # Rows written before Phase F3 still guard their retries.
                 existing=conn.execute(text('SELECT payload,valid FROM memory_derived WHERE owner_id=:owner AND id=:id'),{'owner':owner,'id':identifier}).first()
                 if existing:
                     if existing[0]!=payload or not existing[1]:fail('memory_identity_conflict','This saved memory changed or was forgotten; a retry cannot replace it.',409)
                     return {'id':identifier}
             identifier=identifier or 'derived_'+uuid4().hex
-            conn.execute(text('INSERT INTO memory_derived(owner_id,id,kind,payload,valid) VALUES(:owner,:id,:kind,:payload,true)'),{'owner':owner,'id':identifier,'kind':kind,'payload':json.dumps({'value':value,'basis':basis,'scope':scope,'explicit':explicit})})
             if kind=='preference' and explicit and isinstance(value,dict) and isinstance(value.get('statement'),str):
-                # Learner facts are the durable store for explicit preferences;
-                # memory_derived stays written until Phase F (spec §6.4).
+                # Explicit preferences live only in memory_facts (spec §6.4,
+                # Phase F3). The fact ID derives from the identifier, so a
+                # retry is idempotent. Forgetting the fact also retires its
+                # preference source, so a retried request fails as removed.
                 from .learner_memory import store as facts
                 facts.record_explicit_preference(conn,owner,derived_id=identifier,statement=value['statement'],
                     course_id=scope.get('courseId') if isinstance(scope,dict) else scope,basis=basis)
                 from .learner_memory import profile
                 profile.rebuild_if_enabled(conn,owner)
+                return {'id':identifier}
+            conn.execute(text('INSERT INTO memory_derived(owner_id,id,kind,payload,valid) VALUES(:owner,:id,:kind,:payload,true)'),{'owner':owner,'id':identifier,'kind':kind,'payload':payload})
         return {'id':identifier}
 
     def summarize(self,owner,source_id,revision):

@@ -46,7 +46,8 @@ jobs:
           backend/tests/test_context_provenance.py backend/tests/test_selected_material_context.py
           backend/tests/test_learner_memory_phase_a.py backend/tests/test_learner_memory_phase_b.py
           backend/tests/test_learner_memory_phase_c.py backend/tests/test_learner_memory_phase_d.py
-          backend/tests/test_learner_memory_phase_e.py
+          backend/tests/test_learner_memory_phase_e.py backend/tests/test_learner_memory_phase_f.py
+          backend/tests/test_source_memory_compiler.py
           backend/tests/test_cache.py
       - name: Learner memory evaluation gates (recorded extraction outputs; no provider)
         run: python -m backend.app.evaluation_runner --memory
@@ -105,4 +106,5 @@ jobs:
           tests/generation-connection.test.tsx tests/generation-activity.test.tsx
           tests/conversation-admission.test.tsx tests/notes-sidebar.test.tsx
           tests/workspace-side-chats.test.tsx tests/compact-tutor-chat.test.tsx tests/release-metadata.test.tsx
+          tests/learner-memory.test.tsx tests/learner-memory-settings.test.tsx tests/settings-navigation.test.tsx
       - run: npm run build:production

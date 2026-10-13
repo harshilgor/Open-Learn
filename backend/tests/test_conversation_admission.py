@@ -125,7 +125,9 @@ def test_chat_preference_commits_once_and_never_saves_credentials(env):
             assert first.json()['memorySourceId']
             assert client.post('/v1/assistant/messages',json=body,headers={'Idempotency-Key':'memory'}).json() == first.json()
             with store.engine.connect() as conn:
-                assert conn.execute(text("SELECT COUNT(*) FROM memory_derived WHERE kind='preference'")).scalar_one() == 1
+                # Explicit preferences live in learner memory facts (Phase F3); the retry adds none.
+                assert conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE kind='preference'")).scalar_one() == 1
+                assert conn.execute(text("SELECT COUNT(*) FROM memory_derived WHERE kind='preference'")).scalar_one() == 0
             rejected = client.post('/v1/assistant/messages',json={**body,'clientMessageId':'secret','text':'Remember that my password is not-a-real-password'},headers={'Idempotency-Key':'secret'})
             assert rejected.status_code == 422
             with store.engine.connect() as conn:

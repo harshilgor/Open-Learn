@@ -137,8 +137,29 @@ def _drop_basis(conn, owner, facts, key, value, *, on_empty):
 
 def forget_derived(conn, owner, derived_id):
     """The learner dismissed a saved preference: remove what only it supported."""
-    _drop_basis(conn, owner, _facts_referencing(conn, owner, "derivedId", derived_id), "derivedId", derived_id,
-                on_empty=lambda fact: delete_fact(conn, owner, fact["id"]))
+    def remove(fact):
+        retire_preference_sources(conn, owner, fact)
+        delete_fact(conn, owner, fact["id"])
+    _drop_basis(conn, owner, _facts_referencing(conn, owner, "derivedId", derived_id), "derivedId", derived_id, on_empty=remove)
+
+
+# Settings and chat "remember…" requests store the learner's words as a
+# source with this ID prefix; the source exists only to back the preference.
+PREFERENCE_SOURCE_PREFIX = "preference_source_"
+
+
+def retire_preference_sources(conn, owner, fact):
+    """Forgetting or rewording a preference retires the source holding its old words.
+
+    Otherwise the old wording would stay retrievable as a note, and a retried
+    save request could bring it back. Other sources are never touched.
+    """
+    ids = sorted({ref["sourceId"] for ref in fact.get("basis") or () if ref.get("type") == "memory_source"
+                  and str(ref.get("sourceId", "")).startswith(PREFERENCE_SOURCE_PREFIX)})
+    for source_id in ids:
+        conn.execute(text("UPDATE memory_sources SET deleted=:true,updated_at=:now WHERE owner_id=:owner AND id=:id AND deleted=:false"),
+                     {"true": True, "false": False, "now": time.time(), "owner": owner, "id": source_id})
+    return ids
 
 
 def source_changed(conn, owner, source_id, *, removed, now=None):
@@ -659,6 +680,7 @@ def edit_fact(conn, owner, fact_id, *, statement, kind, course_id, event_date, s
     # but not source links: removing that source must not delete the edit.
     basis = [ref for ref in old["basis"] if ref.get("type") == "turn"] + [{"type": "learner", "action": "edit", "previousId": fact_id}]
     _supersede(conn, owner, fact_id, new_id, now)
+    retire_preference_sources(conn, owner, old)
     superseded = [fact_id] + _take_slot(conn, owner, subject_key, course_id, new_id, now=now)
     conn.execute(text(f"""INSERT INTO memory_facts({FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,:course,:concepts,:event_date,
         'user_confirmed','active',:sensitive,1.0,:importance,:now,:now,NULL,NULL,:basis,NULL,0,:now,:stability,:false,:policy,1)"""),
@@ -761,9 +783,10 @@ def forget_all_token(conn, owner) -> str:
 def forget_all(conn, owner, *, now=None) -> dict:
     """Hard-delete every fact (shadow included), episode and embedding for the owner (§10).
 
-    Explicit preferences saved through Settings are dismissed in
-    ``memory_derived`` too, so Learn mode stops reading them. Source revisions
-    and continuity summaries stay: they belong to the learner's sources.
+    Explicit preferences saved before Phase F3 are dismissed in
+    ``memory_derived`` too, and the sources that held preference wording are
+    retired. Other source revisions and continuity summaries stay: they
+    belong to the learner's sources.
     """
     counts = memory_counts(conn, owner)
     conn.execute(text("DELETE FROM memory_embeddings WHERE owner_id=:owner"), {"owner": owner})
@@ -771,5 +794,7 @@ def forget_all(conn, owner, *, now=None) -> dict:
     conn.execute(text("DELETE FROM memory_episodes WHERE owner_id=:owner"), {"owner": owner})
     conn.execute(text("UPDATE memory_derived SET valid=:false WHERE owner_id=:owner AND kind='preference' AND valid=:true"),
                  {"owner": owner, "false": False, "true": True})
+    conn.execute(text("UPDATE memory_sources SET deleted=:true,updated_at=:now WHERE owner_id=:owner AND id LIKE :prefix AND deleted=:false"),
+                 {"true": True, "false": False, "now": time.time(), "owner": owner, "prefix": PREFERENCE_SOURCE_PREFIX + "%"})
     bump_version(conn, owner, now=now)
     return counts

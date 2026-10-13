@@ -7,7 +7,9 @@ import {
   MEMORY_KINDS, memoryApi, type FactInput, type ForgetPreview, type MemoryChange, type MemoryEpisode, type MemoryFact,
   type MemoryProfile, type MemorySettings,
 } from '@/lib/learner-memory';
+import { useBuddies } from './buddies';
 import { SourceMemorySettings } from './source-memory-settings';
+import type { Buddy } from '@/lib/buddies';
 import styles from './learner-memory-settings.module.css';
 
 type Course = { id: string; name: string };
@@ -108,6 +110,8 @@ export function LearnerMemorySettings({ loadChats = chatTitles }: { loadChats?: 
       <p className={styles.muted}>Your most important memories are included in every chat.</p>
       <ul className={styles.plain}>{data.profile.items.map(item => <li key={item.id}>{item.statement}</li>)}</ul>
     </section> : null}
+
+    <BuddyDefaults />
 
     <div className={styles.filters}>
       <label>Show memories for<select value={course} onChange={event => setCourse(event.target.value)}>
@@ -260,5 +264,31 @@ function ForgetEverything({ busy, run }: { busy: boolean; run: Actions['run'] })
       <button type="button" disabled={busy} onClick={() => { setError(''); void memoryApi.forgetPreview().then(setPreview).catch(cause => setError(cause instanceof Error ? cause.message : 'Couldn’t check your memories.')); }}>Forget everything…</button>
     </>}
     {error ? <p role="alert">{error}</p> : null}
+  </section>;
+}
+
+/** How a Buddy is set to talk, in plain words. */
+export function buddySummary(buddy: Buddy): string {
+  const parts = [`${buddy.style} tone`, buddy.concise ? 'concise answers' : 'developed answers', buddy.examples ? 'uses examples' : 'examples only on request'];
+  if (buddy.hintsFirst) parts.push('hints before answers');
+  if (buddy.exampleTheme && buddy.exampleTheme !== 'general') parts.push(`${buddy.exampleTheme} examples`);
+  return parts.join(' · ');
+}
+
+/**
+ * Buddy settings, read-only (spec §10): the Buddy editor stays their home.
+ * They apply only where no saved memory or current request says otherwise.
+ */
+function BuddyDefaults() {
+  const { snapshot, edit } = useBuddies();
+  const buddies = snapshot?.profiles.filter(buddy => !buddy.archived) || [];
+  if (!buddies.length) return null;
+  return <section aria-label="Buddy settings" className={styles.group}>
+    <h3>Buddy settings</h3>
+    <p className={styles.muted}>Your Buddy’s defaults. Preferences saved above come first, and what you ask for in a chat comes before both.</p>
+    {buddies.map(buddy => <article key={buddy.id} className={styles.row}>
+      <div><p>{buddy.name}</p><p className={styles.meta}>{buddySummary(buddy)}</p></div>
+      <div className={styles.actions}><button type="button" onClick={() => edit(buddy)}>Change in Buddy settings</button></div>
+    </article>)}
   </section>;
 }

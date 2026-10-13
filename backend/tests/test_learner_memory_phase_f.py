@@ -304,3 +304,108 @@ def test_precedence_note_reaches_the_prompt_with_memory(conversation, monkeypatc
     prompt = provider.streamed[-1]
     prompt = prompt if isinstance(prompt, str) else prompt.legacy_prompt()
     assert ("Preference precedence:" in prompt) is enabled
+
+
+# --- Phase F3: one preference store; the compiler reads memory facts ---------------------
+
+def sources_deleted(db, owner):
+    with db.engine.connect() as conn:
+        return dict(conn.execute(text("SELECT id,deleted FROM memory_sources WHERE owner_id=:owner"), {"owner": owner}).all())
+
+
+def test_saved_preferences_are_written_only_as_facts(api):
+    client, db = api
+    saved = client.post("/v1/memory/preferences", json={"statement": "Prefers worked examples.", "confirmed": True}).json()
+    with db.engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM memory_derived")).scalar_one() == 0
+        fact_row = facts.get_fact(conn, "local", facts.fact_id_for_derived("local", saved["id"]))
+    assert fact_row["statement"] == "Prefers worked examples." and fact_row["status"] == "active"
+    # The legacy dismiss route still forgets it, and retires the source that held the words.
+    assert client.delete(f"/v1/memory/derived/{saved['id']}").status_code == 200
+    assert row(db, "local", fact_row["id"]) is None
+    assert all(sources_deleted(db, "local").values())
+
+
+def test_forgetting_or_rewording_a_preference_retires_its_old_words(api):
+    from fastapi import HTTPException
+    from backend.app.source_memory import SourceMemory
+    client, db = api
+    first = client.post("/v1/memory/preferences", json={"statement": "Prefers short answers.", "confirmed": True}).json()
+    second = client.post("/v1/memory/preferences", json={"statement": "Prefers diagrams.", "confirmed": True}).json()
+    first_fact = facts.fact_id_for_derived("local", first["id"])
+    second_fact = facts.fact_id_for_derived("local", second["id"])
+    source_of = {fid: row(db, "local", fid)["basis"][0]["sourceId"] for fid in (first_fact, second_fact)}
+
+    client.patch(f"/v1/memory/facts/{first_fact}", json={"statement": "Prefers detailed answers.", "kind": "preference", "expectedRevision": 1})
+    assert sources_deleted(db, "local")[source_of[first_fact]]
+    with db.engine.connect() as conn:
+        assert not any("short answers" in block["text"] for block in SourceMemory(db).retrieve(conn, "local", "short answers"))
+
+    assert client.delete(f"/v1/memory/facts/{second_fact}").status_code == 200
+    assert sources_deleted(db, "local")[source_of[second_fact]]
+    # A retried save of the forgotten preference can't bring it back.
+    with pytest.raises(HTTPException) as error:
+        SourceMemory(db).derive("local", "preference", {"statement": "Prefers diagrams."}, [{"sourceId": source_of[second_fact], "revision": 1}],
+                                explicit=True, identifier=second["id"])
+    assert error.value.status_code == 409
+
+
+def test_forget_all_retires_preference_sources_but_not_other_sources(api):
+    from backend.app.source_memory import SourceMemory
+    client, db = api
+    client.post("/v1/memory/preferences", json={"statement": "Prefers short answers.", "confirmed": True})
+    SourceMemory(db).revise("local", "lecture-notes", "Limits and continuity.", expected_revision=0)
+    token = client.get("/v1/memory/forget-all").json()["confirmation"]
+    client.post("/v1/memory/forget-all", json={"confirmation": token})
+    deleted = sources_deleted(db, "local")
+    assert deleted.pop("lecture-notes") in (False, 0) and all(deleted.values())
+
+
+def compiled(db, owner, course=None, purpose="teaching"):
+    from backend.app.context_compiler import ContextCompiler
+    packet = ContextCompiler(db).compile(owner, None, purpose, "algebra", course_id=course, token_budget=20000)
+    return packet, json.loads(packet["text"].split("\n\n")[0])
+
+
+def test_compiler_reads_preference_and_constraint_facts_in_precedence_order(tmp_path):
+    db = Store(tmp_path / "compiler.db")
+    try:
+        course(db, "ana", "calc", "Calculus")
+        insert(db, "ana", fact("global_pref", "Prefers short answers.", kind="preference", learned_days_ago=1))
+        insert(db, "ana", fact("calc_pref", "Prefers full derivations in calculus.", kind="preference", course="calc", learned_days_ago=5))
+        insert(db, "ana", fact("inferred", "Might like diagrams.", kind="preference", origin="inferred", learned_days_ago=0))
+        insert(db, "ana", fact("night", "Studies after 10pm.", kind="constraint", learned_days_ago=2))
+        insert(db, "ana", fact("goal", "Wants an A.", kind="goal"))
+        insert(db, "ana", fact("private", "Has ADHD.", kind="constraint", sensitive=True))
+        insert(db, "bob", fact("bob_pref", "Bob prefers long answers.", kind="preference"))
+        with db.transaction() as conn:  # a legacy row, already mirrored into facts by the 0086 backfill
+            conn.execute(text("INSERT INTO memory_derived(owner_id,id,kind,payload,valid) VALUES('ana','legacy','preference',:payload,true)"),
+                         {"payload": json.dumps({"value": {"statement": "Prefers short answers."}, "basis": [], "scope": None, "explicit": True})})
+        packet, structured = compiled(db, "ana", "calc")
+        assert [item["id"] for item in structured["remembered"]] == ["calc_pref", "global_pref", "night", "inferred"]
+        assert structured["remembered"][0]["value"]["statement"] == "Prefers full derivations in calculus."
+        assert structured["preferencePrecedence"].startswith("Preference precedence:")
+        assert "ADHD" not in packet["text"] and "Wants an A." not in packet["text"] and "Bob" not in packet["text"]
+        assert [item["id"] for item in compiled(db, "ana")[1]["remembered"]] == ["global_pref", "night", "inferred"]
+        # Assessment keeps preferences and constraints (§2 rule 5).
+        assert {item["id"] for item in compiled(db, "ana", "calc", "assessment")[1]["remembered"]} == {"calc_pref", "global_pref", "night", "inferred"}
+    finally:
+        db.close()
+
+
+def test_forgetting_a_fact_used_by_a_compiled_packet_fails_its_commit(tmp_path):
+    from fastapi import HTTPException
+    from backend.app.context_compiler import ContextCompiler
+    db = Store(tmp_path / "commit.db")
+    try:
+        insert(db, "ana", fact("pref", "Prefers short answers.", kind="preference"))
+        packet, _ = compiled(db, "ana")
+        with db.engine.connect() as conn:
+            ContextCompiler(db).validate_commit(conn, "ana", packet)  # still valid
+        with db.transaction() as conn:
+            facts.delete_fact(conn, "ana", "pref")
+        with db.engine.connect() as conn, pytest.raises(HTTPException) as error:
+            ContextCompiler(db).validate_commit(conn, "ana", packet)
+        assert error.value.status_code == 409
+    finally:
+        db.close()

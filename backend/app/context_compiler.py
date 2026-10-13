@@ -126,23 +126,31 @@ class ContextCompiler:
                 structured_candidates.append(('preferences',json.loads(prefs['payload']),None))
             if prerequisites:
                 structured_candidates.append(('reviewedPrerequisites',prerequisites[:20],None))
-            remembered=[]
-            for row in conn.execute(text('SELECT id,kind,payload FROM memory_derived WHERE owner_id=:owner AND valid=true'),{'owner':owner}).mappings():
-                value=json.loads(row['payload']); scope=value.get('scope')
-                if scope not in (None,course_id,{'courseId':course_id}): continue
-                if row['kind']=='preference' and not value.get('explicit'): continue
+            # Preferences and constraints come from learner memory facts (Phase
+            # F3); continuity summaries still come from memory_derived. Legacy
+            # preference rows there were mirrored into facts and are skipped.
+            from .learner_memory.policy import COMPILER_MAX_REMEMBERED, PRECEDENCE_NOTE
+            from .learner_memory.service import rank_remembered, compiler_preferences
+            remembered_facts=compiler_preferences(conn,owner,course_id)
+            summaries=[]
+            if purpose!='assessment':
                 # A continuity/teaching summary can contain a previously
                 # revealed solution. Assessment context uses accepted learner
                 # state and the authorized current source revisions instead.
-                if purpose=='assessment' and row['kind'] not in {'preference'}: continue
-                remembered.append({'id':row['id'],'kind':row['kind'],'value':value})
-            # Course-scoped before global, explicit before tentative, newest
-            # first; a bounded count keeps budget for sources and state.
-            from .learner_memory.policy import COMPILER_MAX_REMEMBERED
-            from .learner_memory.service import rank_remembered
-            remembered=[{'id':row['id'],'kind':row['kind'],**row['value']} for row in rank_remembered(conn,owner,remembered,course_id)[:COMPILER_MAX_REMEMBERED]]
+                for row in conn.execute(text("SELECT id,kind,payload FROM memory_derived WHERE owner_id=:owner AND valid=true AND kind<>'preference'"),{'owner':owner}).mappings():
+                    value=json.loads(row['payload']); scope=value.get('scope')
+                    if scope not in (None,course_id,{'courseId':course_id}): continue
+                    summaries.append({'id':row['id'],'kind':row['kind'],'value':value})
+            # Learner facts first (course-scoped, then by origin and recency),
+            # then summaries newest first; a bounded count keeps budget for
+            # sources and state.
+            remembered=remembered_facts+[{'id':row['id'],'kind':row['kind'],**row['value']} for row in rank_remembered(conn,owner,summaries,course_id)]
+            remembered=remembered[:COMPILER_MAX_REMEMBERED]
             for item in remembered:
-                structured_candidates.append(('remembered',item,{'kind':'derived_memory','record_id':item['id'],'revision':1}))
+                dependency={'kind':'memory_fact','record_id':item['id'],'revision':1} if item.get('source')=='memory_fact' else {'kind':'derived_memory','record_id':item['id'],'revision':1}
+                structured_candidates.append(('remembered',item,dependency))
+            if remembered_facts or prefs:
+                structured_candidates.append(('preferencePrecedence',PRECEDENCE_NOTE.strip(),None))
             continuity=None
             if session_id and purpose!='teaching':
                 continuity=conn.execute(text("SELECT id,sequence,payload FROM context_records WHERE owner_id=:owner AND session_id=:session AND kind='conversation_state'"),{'owner':owner,'session':session_id}).mappings().first()
@@ -300,6 +308,7 @@ class ContextCompiler:
             elif dep['kind']=='conversation_state': sql="SELECT sequence FROM context_records WHERE owner_id=:owner AND id=:id AND kind='conversation_state'"
             elif dep['kind']=='concept_graph': sql='SELECT revision FROM concept_graph_revisions WHERE owner_id=:owner'
             elif dep['kind']=='derived_memory': sql='SELECT 1 FROM memory_derived WHERE owner_id=:owner AND id=:id AND valid=true'
+            elif dep['kind']=='memory_fact': sql="SELECT 1 FROM memory_facts WHERE owner_id=:owner AND id=:id AND status='active'"
             elif dep['kind']=='agent_operational_note': sql='SELECT revision FROM agent_operational_notes WHERE owner_id=:owner AND id=:id'
             else: fail('unknown_context_dependency','Cannot verify this context dependency.',409)
             revision=conn.execute(text(sql),{'owner':owner,'id':dep['record_id']}).scalar_one_or_none()
