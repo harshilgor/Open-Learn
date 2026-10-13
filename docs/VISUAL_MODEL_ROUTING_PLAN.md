@@ -128,8 +128,19 @@ This keeps model authority in one place, the API. It needs no per-run model plum
 
 ### 3.6 How the policy improves (measured, human-approved)
 
+**Decision (12 October 2026):** the Sonnet budget will be raised, but Sonnet is used only where it is really needed. Every category starts on `standard`. "Really needed" means that all four conditions below hold for a category.
+
+| Condition | Rule (initial values) |
+| --- | --- |
+| Haiku is not good enough | Haiku's all-checks-passed rate is below 60%, over at least 20 runs in that category |
+| Sonnet is clearly better | Sonnet's rate is at least 20 percentage points higher on the same tasks |
+| The gain is worth paying for | Sonnet's cost per *passing* visual is at most 10× Haiku's |
+| Haiku has had a fair chance | Haiku's failures in that category are model limits, not pipeline defects like the `jsExpressions` one. Fix those first and re-measure |
+
+These conditions are checked by the routing report, not by hand. A separate advanced-tier spend cap (section 4) bounds the cost even if the table is wrong.
+
 1. The report is computed from production verification outcomes, using the same checks as the benchmark. Results are measured, not guessed.
-2. A category moves to `advanced` when the standard tier's all-checks rate is below a threshold, for example 60%, over at least N runs (for example 30), *and* the advanced tier's measured rate is meaningfully higher.
+2. A category moves to `advanced` only when the conditions above hold.
 3. A category moves back to `standard` when the standard tier's rate catches up. That happens as models, prompts or the quality contract improve.
 4. Version 1 does not change the policy automatically. The report proposes a new `policyVersion` and a person approves it, because each move changes spend.
 5. **Optional exploration** (later, behind a flag, budget-capped): send a small share of requests, for example 5%, in a category to the other tier, so both tiers keep producing comparison data. Without it, an `advanced` category never collects fresh `standard` data.
@@ -138,10 +149,11 @@ This keeps model authority in one place, the API. It needs no per-run model plum
 
 - Today's reservation for a Sonnet call is about **$0.56**, from 16K maximum output plus the conservative input estimate. Against the current $1/day platform cap, the budget gate (rule 3) would allow at most one advanced run per day, and only when nothing else has spent.
 - Real Sonnet spend per run is probably far lower, based on Haiku's measured 5–7K output tokens per call. That has not been measured for Sonnet.
-- Before advanced routing is useful, one of these is needed. Each is your decision; this plan does not change any cap.
-  - Raise `OPENLEARN_PLATFORM_DAILY_BUDGET_USD` and `OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD`.
-  - Lower `OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS` for the advanced tier only (a per-tier `maxOutputTokens`), which shrinks its reservation. This needs measured Sonnet output sizes first, so that real visuals are not truncated.
-  - Limit advanced routing to paid plans (rule 2).
+- **Decision:** the platform budget will be raised for Sonnet. To keep Sonnet "only when really needed" even with more headroom:
+  - Add a separate advanced-tier cap, `OPENLEARN_VISUAL_ADVANCED_DAILY_BUDGET_USD` and `..._MONTHLY_...`, inside the platform cap. When it is used up, routing falls back to `standard` with reason `budget`. Raising the platform cap therefore does not let Sonnet absorb the whole budget.
+  - Once Sonnet's real output sizes are measured, set a per-tier `maxOutputTokens` for the advanced tier, so each reservation is closer to real spend.
+  - Optionally, limit advanced routing to paid plans (rule 2).
+- **Estimated cost of measuring Sonnet once (Phase 0):** Sonnet costs about 20× Haiku per token ($2/$10 against $0.10/$0.50 per million tokens). Haiku's 12-task benchmark costs about $0.09, so a Sonnet run is likely around **$2** in real spend. Calls are reserved one at a time at about $0.56 each, so that day's cap needs about **$3** of headroom. This is an estimate until measured.
 
 ## 5. Rollout
 
@@ -185,6 +197,6 @@ This keeps model authority in one place, the API. It needs no per-run model plum
 
 ## 7. Open decisions (yours)
 
-1. **Budget:** raise the platform caps, cap advanced output per tier, or restrict advanced visuals to paid plans.
+1. **Budget:** decided to raise it for Sonnet. Still open: the platform cap values and the advanced-tier sub-cap (a suggested starting point is a $5/day platform cap with $2/day for the advanced tier).
 2. **Advanced model:** Sonnet 5.5, or a cheaper mid-size model if one passes the forced-tool probe in evaluation section 9.1.
 3. **Policy changes:** whether policy changes stay human-approved, which this plan recommends for version 1, or may later apply automatically within a spend limit.
