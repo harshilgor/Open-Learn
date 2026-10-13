@@ -608,8 +608,8 @@ Record answers here before the relevant phase starts:
   Open: there is no age signal yet. Until one exists, the default below applies to everyone.
 - [x] Sensitive facts on explicit request: allow (§2 rule 6), or refuse entirely?
   **Decided 2026-10-12:** allow, only on an explicit remember request, stored with `sensitive=true`, never embedded, and excluded from prompts unless enabled per fact. Inferred sensitive facts are always dropped.
-- [ ] Embeddings for memory facts (requires `AI_TUTOR_EMBEDDING_MODEL`; external provider sees fact text)?
-  Open. Build plan, flags and evaluation gates: [docs/memory/Embeddings_Plan.md](memory/Embeddings_Plan.md).
+- [x] Embeddings for memory facts (requires `AI_TUTOR_EMBEDDING_MODEL`; external provider sees fact text)?
+  **Decided 2026-10-13:** self-host EmbeddingGemma 2 (text-only, 256 dimensions) as a private embedding service, so no learner text goes to an outside provider. Build plan: [docs/memory/Embeddings_Plan.md](memory/Embeddings_Plan.md).
 - [x] Default for new accounts: memory learning on, with a first-run notice?
   **Decided 2026-10-12:** on by default, with a one-time notice linking to Settings → Memory to review or pause.
 - [ ] Shadow-mode duration and who may review aggregate results.
