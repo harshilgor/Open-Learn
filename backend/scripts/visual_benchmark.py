@@ -32,6 +32,13 @@ sys.path.insert(0, str(ROOT))
 from backend.app.visual_science import HELPERS  # noqa: E402 - shared with in-pipeline science checks
 
 
+def science_check(topic: str) -> str:
+    """The in-pipeline science validator, reported in benchmark form."""
+    from backend.app.visual_science import TOPICS
+    return ('async () => { const r = await (' + TOPICS[topic][1] + ')(); '
+            "return {pass: r.status === 'pass' ? true : r.status === 'fail' ? false : null, detail: r.detail, measured: r.measured}; }")
+
+
 def check(body: str) -> str:
     return 'async () => {' + HELPERS + body + '}'
 
@@ -57,33 +64,12 @@ TASKS = [
      'explanation': 'A simple pendulum has period T = 2π√(L/g) for small swings, so a longer string or weaker gravity makes it swing more slowly. Mass does not affect the period.',
      'question': 'Build a working pendulum simulation where I can adjust gravity and length, watch it swing, and see the period change.',
      'checks': {'controls': controls_check(r'/grav|\bg\b/', r'/length|\bl\b/'),
-                'period_matches_physics': check(r"""const g = findInput(/grav|\bg\b/), L = findInput(/length|\bl\b/);
-                  if (!g || !L) return {pass: false, detail: 'gravity or length control not found'};
-                  const results = [];
-                  for (const target of [null, 'max']) {
-                    if (target) { setValue(g, g.max || Number(g.value) * 2); await sleep(700); }
-                    let length = Number(L.value); if (/cm/.test(labelOf(L))) length /= 100;
-                    const expected = 2 * Math.PI * Math.sqrt(length / Number(g.value));
-                    const shown = readout(/period[^0-9\-]{0,40}?(-?\d+(?:\.\d+)?)\s*(s|sec)/i) || readout(/\bT\s*[=≈:]\s*(-?\d+(?:\.\d+)?)\s*(s)/);
-                    if (!shown) return {pass: null, detail: 'no period readout to verify'};
-                    results.push({expected: +expected.toFixed(3), shown: shown.value, g: Number(g.value), L: length});
-                  }
-                  const ok = results.every(r => Math.abs(r.shown - r.expected) / r.expected < 0.08);
-                  return {pass: ok, detail: ok ? 'period within 8% of 2π√(L/g)' : 'period disagrees with 2π√(L/g)', measured: results};""")}},
+                'period_matches_physics': science_check('pendulum')}},
     {'id': 'circuit', 'title': 'Voltage and current',
      'explanation': "Ohm's law says current equals voltage divided by resistance (I = V/R). In a series circuit the resistances add, so the same current flows through every resistor.",
      'question': 'Explain voltage and current with an interactive circuit diagram: a battery and resistors where I can change the voltage and resistance and see the current flow.',
      'checks': {'controls': controls_check(r'/volt|battery|emf|source/', r'/resist|ohm|Ω/'),
-                'ohms_law': check(r"""const V = findInput(/volt|battery|emf|source/); const Rs = fields().filter(el => /resist|ohm|Ω|\br\d?\b/.test(labelOf(el)) && el.type !== 'checkbox');
-                  if (!V || !Rs.length) return {pass: false, detail: 'voltage or resistance control not found'};
-                  await sleep(300); const shown = readout(/current[^0-9\-]{0,40}?(-?\d+(?:\.\d+)?)\s*(mA|A)\b/i) || readout(/\bI\s*[=≈:]\s*(-?\d+(?:\.\d+)?)\s*(mA|A)\b/);
-                  if (!shown) return {pass: null, detail: 'no current readout to verify'};
-                  const current = shown.unit === 'mA' ? shown.value / 1000 : shown.value; const v = Number(V.value);
-                  const values = Rs.map(el => Number(el.value)).filter(Number.isFinite); const series = values.reduce((a, b) => a + b, 0);
-                  const parallel = 1 / values.reduce((a, b) => a + 1 / b, 0);
-                  const candidates = [v / values[0], v / series, v / parallel];
-                  const ok = candidates.some(expected => Math.abs(current - expected) / Math.max(1e-9, Math.abs(expected)) < 0.05);
-                  return {pass: ok, detail: ok ? 'current consistent with I = V/R' : 'current inconsistent with I = V/R', measured: {v, resistances: values, current, candidates}};""")}},
+                'ohms_law': science_check('ohms_law')}},
     {'id': 'neural_network', 'title': 'Neural network training',
      'explanation': 'A neural network computes outputs layer by layer in the forward pass. Backpropagation then sends error gradients backward through the layers to update each weight.',
      'question': 'Visualize a small neural network showing forward propagation and backpropagation of gradients step by step, with controls to step through the training.',
@@ -116,15 +102,7 @@ TASKS = [
      'question': 'Interactive transmission line impedance visualization: let me change the load impedance and the line length in wavelengths and show the input impedance and reflection coefficient on a Smith chart or plot.',
      # Load inputs may be absolute (ZL, RL) or normalized to Z0 (r, x), the usual Smith-chart convention.
      'checks': {'controls': controls_check(r'/load|z_?l|zl|r_?l\b|rnorm|norm.*r|resist/', r'/length|λ|wavelength|ℓ/'),
-                'reflection_coefficient': check(r"""const zl = findInput(/load.*(re|resist|real)|^z_?l|zl|r_?l\b|rnorm|norm.*r|resist|load/); const x = findInput(/react|imag|x_?l|xl|xnorm|norm.*x/); const z0 = findInput(/z_?0|z0|character/);
-                  if (!zl) return {pass: null, detail: 'no load control'}; await sleep(300);
-                  const shown = readout(/(?:\|Γ\||Γ|reflection coefficient|\|gamma\|)[^0-9\-]{0,40}?(-?\d+(?:\.\d+)?)()/i);
-                  if (!shown) return {pass: null, detail: 'no reflection coefficient readout'};
-                  const normalized = /norm/.test(labelOf(zl));
-                  const r = Number(zl.value), xi = x ? Number(x.value) : 0, z = normalized ? 1 : (z0 ? Number(z0.value) : 50);
-                  const nr = r - z, ni = xi, dr = r + z, di = xi; const mag = Math.hypot(nr, ni) / Math.hypot(dr, di); const re = (nr * dr + ni * di) / (dr * dr + di * di);
-                  const ok = Math.abs(Math.abs(shown.value) - mag) < 0.03 || Math.abs(shown.value - re) < 0.03;
-                  return {pass: ok, detail: ok ? '|Γ| consistent with (ZL−Z0)/(ZL+Z0)' : 'Γ inconsistent with load', measured: {r, x: xi, z0: z, shown: shown.value, expectedMagnitude: +mag.toFixed(3)}};""")}},
+                'reflection_coefficient': science_check('reflection_coefficient')}},
     {'id': 'dashboard', 'title': 'Energy dashboard',
      'explanation': 'Energy use changes by season and by sector: heating dominates winter demand while cooling raises summer demand. Comparing views together reveals which sectors drive the peaks.',
      'question': "Build a dashboard for exploring a city's monthly energy use with coordinated charts: a line chart over the year, a bar chart by sector, and a filter that updates both. Use clearly labeled sample data.",

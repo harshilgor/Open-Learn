@@ -234,6 +234,48 @@ class GeneratedVisual(ApiModel):
         return self
 
 
+EDIT_OF_PATTERN = re.compile(r'"editOf"\s*:\s*"([A-Za-z0-9_-]{1,200})"')
+
+
+def render_arguments(raw: str) -> dict:
+    """Render tool arguments, tolerating a malformed trailing jsExpressions.
+
+    Some provider routes stream tool input without JSON validation, and models
+    then write the last field as bare code (``"jsExpressions": init()}``). The
+    runtime's streaming parser drops that field, so the visual never starts.
+    The bare code is recovered as one script (the renderer runs each expression
+    as a script); static and runtime verification still apply to it.
+    """
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
+    except ValueError:
+        pass
+    recovered = {}
+    declared = EDIT_OF_PATTERN.search(raw)
+    if declared:
+        recovered['editOf'] = declared.group(1)
+    starts = list(re.finditer(r'"jsExpressions"\s*:\s*', raw))
+    if not starts:
+        return recovered
+    tail = raw[starts[-1].end():].rstrip()
+    trailing_edit = re.search(r',\s*"editOf"\s*:\s*"[^"]*"\s*\}$', tail)
+    if trailing_edit:
+        tail = tail[:trailing_edit.start()].rstrip() + '}'
+    if not tail.endswith('}'):
+        return recovered  # The call was cut off; nothing safe to recover.
+    tail = tail[:-1].strip()
+    try:
+        parsed = json.loads(tail)
+    except ValueError:
+        parsed = tail
+    if isinstance(parsed, str) and parsed.strip():
+        recovered['jsExpressions'] = [parsed]
+    elif isinstance(parsed, list) and parsed and all(isinstance(item, str) for item in parsed):
+        recovered['jsExpressions'] = parsed
+    return recovered
+
+
 class ActivityCollector:
     """Reduce the pinned runtime's activity snapshots and JSON-Patch deltas.
 
@@ -252,6 +294,8 @@ class ActivityCollector:
         # Render tool calls observed in the stream, so a failed candidate can be
         # answered with a tool result on the same thread (AG-UI frontend tools).
         self.render_tool_calls: list[dict] = []
+        # Candidate identifier -> activity message id ("<toolCallId>-activity").
+        self.activity_ids: dict[str, str] = {}
 
     def begin_run(self) -> set[str]:
         """Reset per-run terminal state; return identifiers produced earlier."""
@@ -363,7 +407,21 @@ class ActivityCollector:
         if len(self.values) >= MAX_CANDIDATES and identifier not in self.values:
             raise ValueError("visual_artifact_limit")
         self.values[identifier] = result
+        self.activity_ids[identifier] = identity
         return result
+
+    def with_recovered_expressions(self, identifier: str, value: GeneratedVisual) -> GeneratedVisual:
+        """Restore jsExpressions the streaming parser dropped (see render_arguments)."""
+        if value.renderer != 'open_generative_ui' or value.content.get('jsExpressions'):
+            return value
+        call_id = self.activity_ids.get(identifier, '').removesuffix('-activity')
+        call = next((item for item in self.render_tool_calls if item['id'] == call_id), None)
+        expressions = render_arguments(call['arguments']).get('jsExpressions') if call else None
+        if not expressions:
+            return value
+        import logging
+        logging.getLogger(__name__).info('visual stream: recovered %d malformed jsExpressions', len(expressions))
+        return value.model_copy(update={'content': {**value.content, 'jsExpressions': expressions, 'jsExpressionsComplete': True}})
 
     def final(self) -> list[GeneratedVisual]:
         """Statically valid candidates of a finished run (no runtime check)."""
@@ -374,9 +432,9 @@ class ActivityCollector:
             raise ValueError('visual_missing_artifact')
         valid_values = []
         validation_error = None
-        for value in self.values.values():
+        for identifier, value in self.values.items():
             try:
-                valid_values.append(static_candidate(value))
+                valid_values.append(static_candidate(self.with_recovered_expressions(identifier, value)))
             except ValueError as error:
                 if str(error) == 'visual_incomplete_artifact':
                     raise
@@ -506,18 +564,29 @@ def debug_candidate(generation_id: str, attempt: int, value: GeneratedVisual, ve
         key: verdict.get(key) for key in ('ok', 'code', 'polish', 'findings', 'feedback')}}, indent=1), encoding='utf-8')
 
 
-def edit_lineage(target: dict | None, call: dict | None):
-    """Lineage and carried state when the model declares an edit of the offered target.
+ID_PATTERN = re.compile(r"""\bid\s*=\s*["']([A-Za-z][A-Za-z0-9_-]*)["']""")
 
-    Only the target supplied by the server can be named; anything else is a new visual.
+
+def element_ids(html) -> set[str]:
+    return set(ID_PATTERN.findall(''.join(html) if isinstance(html, list) else str(html or '')))
+
+
+def edit_lineage(target: dict | None, call: dict | None, html=None):
+    """Lineage and carried state when a candidate revises the offered target.
+
+    A revision is recognized when the model declares ``editOf`` for the offered
+    target, or when the candidate structurally continues it: it keeps at least
+    half of the target's element ids (at least two). Models follow the edit
+    instructions (start from the source, keep ids) more reliably than they set
+    the optional argument. Only the server-offered target can become a parent.
     """
-    if not target or not call:
+    if not target:
         return None, None
-    try:
-        declared = json.loads(call['arguments']).get('editOf')
-    except (ValueError, AttributeError):
-        return None, None
-    if declared != target['id']:
+    declared = render_arguments(call['arguments']).get('editOf') if call else None
+    original = element_ids((target.get('source') or {}).get('html'))
+    kept = original & element_ids(html)
+    continues = len(original) >= 2 and len(kept) * 2 >= len(original)
+    if declared != target['id'] and not continues:
         return None, None
     parent = target.get('lineage') or {}
     lineage = VisualLineage(root_id=parent.get('rootId') or target['id'], parent_id=target['id'],
@@ -526,21 +595,17 @@ def edit_lineage(target: dict | None, call: dict | None):
 
 
 def continuation_messages(messages: list[dict], call: dict, note: str) -> list[dict]:
-    """Answer the intercepted frontend tool call with diagnostics (AG-UI).
+    """Continue the same thread with verification feedback as a user message.
 
-    This is how CopilotKit clients return frontend tool results: the graph
-    resumes on the same thread with the tool result appended.
+    A tool result for the intercepted frontend call would be the AG-UI idiom,
+    but the CopilotKit middleware strips intercepted calls and their results
+    from the graph history while a provider-format copy of the call survives;
+    Anthropic then rejects the orphaned call. A user message works with every
+    provider. The candidate's code stays in the thread checkpoint, the agent
+    pairs the earlier call with a neutral result, and the presentation
+    decision for the learner's turn is reused (agent.routing_input).
     """
-    try:
-        json.loads(call['arguments'])
-        arguments = call['arguments']
-    except ValueError:
-        # A truncated call is still answered; the checkpoint copy is authoritative.
-        arguments = '{}'
-    assistant = {'id': call['parentMessageId'] or f"{call['id']}_message", 'role': 'assistant',
-                 'toolCalls': [{'id': call['id'], 'type': 'function', 'function': {'name': call['name'], 'arguments': arguments}}]}
-    result = {'id': f"{call['id']}_result", 'role': 'tool', 'toolCallId': call['id'], 'content': note[:6000]}
-    return [*messages, assistant, result]
+    return [*messages, {'id': f"{call['id']}_feedback", 'role': 'user', 'content': note[:6000]}]
 
 
 async def generate(owner: str, generation_id: str, prepared: dict, question: str, emit, emit_plan=None, emit_progress=None) -> list[GeneratedVisual]:
@@ -638,7 +703,7 @@ async def generate(owner: str, generation_id: str, prepared: dict, question: str
                 if not collector.finished:
                     raise ValueError("visual_stream_interrupted")
                 collector.log_summary()
-                produced = [value for key, value in collector.values.items() if key not in before]
+                produced = [collector.with_recovered_expressions(key, value) for key, value in collector.values.items() if key not in before]
                 tables += [value for value in produced if value.renderer == 'a2ui']
                 candidates = [value for value in produced if value.renderer == 'open_generative_ui']
                 if not candidates:
@@ -655,7 +720,7 @@ async def generate(owner: str, generation_id: str, prepared: dict, question: str
                     return []  # The presentation decision was text.
                 await progress('verifying')
                 calls = collector.render_tool_calls[calls_before:]
-                lineage, carry = edit_lineage(prepared.get('editTarget'), calls[-1] if calls else None)
+                lineage, carry = edit_lineage(prepared.get('editTarget'), calls[-1] if calls else None, candidates[-1].content.get('html'))
                 # The screenshot judge only reviews a first attempt, where a polish can still use it.
                 judge_question = question if state['attempt'] == 1 and limits['polishWarnings'] else None
                 verdict = await asyncio.to_thread(assess_candidate, candidates[-1], carry, science, judge_question)

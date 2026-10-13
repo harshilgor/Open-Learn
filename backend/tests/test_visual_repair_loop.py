@@ -93,13 +93,13 @@ def test_invalid_javascript_is_repaired_on_the_same_thread(runtime, monkeypatch)
     assert [value.content['html'] for value in result] == [['<p id="out">Period 2.0 s</p>']]
     first, second = agent_runs(requests)
     assert first['body']['threadId'] == second['body']['threadId'] == 'job_test'
-    assistant, tool = second['body']['messages'][-2:]
-    assert assistant['id'] == 'ai_one' and assistant['role'] == 'assistant'
-    assert assistant['toolCalls'][0]['id'] == 'call_one'
-    assert json.loads(assistant['toolCalls'][0]['function']['arguments'])['jsFunctions'] == 'function f( {'
-    assert tool['role'] == 'tool' and tool['toolCallId'] == 'call_one'
-    assert tool['content'].startswith('Open Learn tested this visual')
-    assert 'SyntaxError' in tool['content']
+    # Feedback continues the same thread as a user message (provider-neutral);
+    # the candidate's code stays in the thread checkpoint.
+    assert second['body']['messages'][:-1] == first['body']['messages']
+    feedback = second['body']['messages'][-1]
+    assert feedback['role'] == 'user' and feedback['id'] == 'call_one_feedback'
+    assert feedback['content'].startswith('Open Learn tested this visual')
+    assert 'SyntaxError' in feedback['content']
     assert [item['stage'] for item in progress] == ['generating', 'verifying', 'repairing', 'generating', 'verifying']
     assert result[0].verification['status'] == 'passed'
 
@@ -205,3 +205,35 @@ def test_dynamic_dom_is_left_to_runtime_verification_when_available(monkeypatch)
     monkeypatch.setattr('backend.app.visual_verification.unavailable_reason', lambda: 'assets_missing')
     with pytest.raises(ValueError, match='missing_dom_target'):
         static_candidate(value)
+
+
+@pytest.mark.parametrize('raw, expected', [
+    ('{"html": "<p>x</p>", "jsExpressions": ["init()"]}', ['init()']),
+    ('{"html": "<p>x</p>", "jsExpressions": init()}', ['init()']),
+    ('{"html": "<p>x</p>", "jsExpressions": \ninitSim().catch(showError);\n}', ['initSim().catch(showError);']),
+    ('{"html": "<p>x</p>", "jsExpressions": try { a(); } catch (e) { b(e); }}', ['try { a(); } catch (e) { b(e); }']),
+    ('{"html": "<p>x</p>", "jsExpressions": init(), "editOf": "visual_parent"}', ['init()']),
+    ('{"html": "<p>x</p>", "jsExpressions": init(', None),  # cut off: nothing is guessed
+])
+def test_malformed_trailing_expressions_are_recovered(raw, expected):
+    from backend.app.openintelligentui import render_arguments
+    assert render_arguments(raw).get('jsExpressions') == expected
+
+
+def test_declared_edit_survives_malformed_arguments():
+    from backend.app.openintelligentui import render_arguments
+    assert render_arguments('{"editOf": "visual_parent", "jsExpressions": init()}')['editOf'] == 'visual_parent'
+
+
+def test_candidate_with_bare_code_expressions_still_starts(runtime, monkeypatch):
+    # Provider routes that stream tool input unvalidated let models write
+    # "jsExpressions": init(); the runtime parser drops the field entirely.
+    runs, _ = runtime
+    verdicts(monkeypatch, [('passed', [])])
+    events = candidate_events('one', '<p id="out">x</p>', 'function init(){}', [])
+    events[2]['delta'] = json.dumps({'initialHeight': 200, 'css': '', 'html': '<p id="out">x</p>', 'jsFunctions': 'function init(){}'})[:-1] + ', "jsExpressions": init();}'
+    events[3]['messageId'] = 'call_one-activity'
+    del events[3]['content']['jsExpressions'], events[3]['content']['jsExpressionsComplete']
+    runs.append(sse(events))
+    result, _ = run_generate()
+    assert result[0].content['jsExpressions'] == ['init();']
