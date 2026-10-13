@@ -14,7 +14,7 @@
 .actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
 .actions button, .group > button, .form button { font-size: 12px; padding: 4px 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); cursor: pointer; }
 .actions button:disabled, .form button:disabled, .group > button:disabled { opacity: 0.5; cursor: default; }
-button[data-danger="true"] { border-color: var(--destructive, #c0392b); color: var(--destructive, #c0392b); }
+.actions .danger { border-color: var(--destructive, #c0392b); color: var(--destructive, #c0392b); }
 .toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; }
 .filters label, .form label { display: grid; gap: 4px; font-size: 13px; }
 .filters select { max-width: 320px; }

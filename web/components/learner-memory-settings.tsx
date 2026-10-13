@@ -202,7 +202,7 @@ function FactRow({ item, busy, run, courses, chats, courseName, reviewing = fals
       <button type="button" disabled={busy} onClick={() => setEditing(true)}>Edit</button>
       {history ? null : <button type="button" disabled={busy} onClick={() => void memoryApi.history(item.id).then(setHistory).catch(() => setHistory([]))}>History</button>}
       {forgetting
-        ? <><button type="button" disabled={busy} data-danger="true" onClick={() => void run(() => memoryApi.forget(item), 'Forgotten.')}>Yes, forget</button>
+        ? <><button type="button" className={styles.danger} disabled={busy} onClick={() => void run(() => memoryApi.forget(item), 'Forgotten.')}>Yes, forget</button>
           <button type="button" disabled={busy} onClick={() => setForgetting(false)}>Cancel</button></>
         : <button type="button" disabled={busy} onClick={() => setForgetting(true)}>Forget</button>}
     </div>
@@ -252,7 +252,7 @@ function ForgetEverything({ busy, run }: { busy: boolean; run: Actions['run'] })
     {preview ? <>
       <p>This permanently deletes {preview.facts} {preview.facts === 1 ? 'memory' : 'memories'} and {preview.episodes} session {preview.episodes === 1 ? 'summary' : 'summaries'}. Your chats, notes and courses stay.</p>
       <div className={styles.actions}>
-        <button type="button" data-danger="true" disabled={busy} onClick={() => void run(() => memoryApi.forgetAll(preview.confirmation), 'Everything Open Learn remembered about you is deleted.').then(() => setPreview(null))}>Delete all memories</button>
+        <button type="button" className={styles.danger} disabled={busy} onClick={() => void run(() => memoryApi.forgetAll(preview.confirmation), 'Everything Open Learn remembered about you is deleted.').then(() => setPreview(null))}>Delete all memories</button>
         <button type="button" disabled={busy} onClick={() => setPreview(null)}>Cancel</button>
       </div>
     </> : <>
