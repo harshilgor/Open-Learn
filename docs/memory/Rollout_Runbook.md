@@ -36,6 +36,8 @@ Rollback: set both to `off`.
 
 Set `OPENLEARN_MEMORY_EXTRACTION=shadow` and `OPENLEARN_MEMORY_EXTRACTION_MODEL=anthropic/claude-haiku-5.5` on the API and the learning worker. Learners see nothing: shadow facts are hidden and deleted after 30 days.
 
+Shadow extraction is **paid by the platform**, not learners. Model calls are billed to the usage account `platform:memory-shadow`, which has no allowance limit but still counts against the platform's daily and monthly budgets. Watch its spend in the usage admin views. In mode `on`, extraction bills the learner's allowance again (§13).
+
 Review weekly, in aggregate only:
 
 ```

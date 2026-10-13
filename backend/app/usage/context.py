@@ -22,6 +22,20 @@ def usage_scope(store, owner, root):
         current_store.reset(st)
 
 
+@contextmanager
+def billed_to(owner):
+    """Bill provider work in this block to ``owner`` (e.g. a platform account).
+
+    Use only around the model call: the principal also scopes data access,
+    so wrapping anything that reads learner records would break owner checks.
+    """
+    token=principal_context.set(Principal(owner,'usage_worker'))
+    try:
+        yield
+    finally:
+        principal_context.reset(token)
+
+
 def usage_job(function):
     @wraps(function)
     def wrapped(store,provider,job_id,*args,**kwargs):

@@ -1,0 +1,101 @@
+.toast {
+  position: fixed;
+  z-index: 80;
+  right: 24px;
+  bottom: 24px;
+  width: min(360px, calc(100vw - 32px));
+  padding: 16px;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgb(0 0 0 / 24%), 0 2px 8px rgb(0 0 0 / 10%);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+  animation: arrive 220ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--sidebar-accent) 72%, var(--background));
+  border-radius: 10px;
+}
+
+.title {
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -.01em;
+}
+
+.close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  padding: 0;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.close:hover { color: var(--foreground); background: var(--accent); }
+.close:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.description,
+.instructions,
+.error {
+  margin: 10px 0 0 40px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.description,
+.instructions { color: var(--muted-foreground); }
+.instructions { margin-top: 8px; }
+.error { color: var(--destructive); }
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0 40px;
+}
+
+.primary { height: 34px; padding-inline: 12px; font-size: 12px; }
+.dismiss { height: 34px; padding-inline: 10px; color: var(--muted-foreground); font-size: 12px; }
+
+@keyframes arrive {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 600px) {
+  .toast {
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    width: auto;
+    left: 12px;
+    padding: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}

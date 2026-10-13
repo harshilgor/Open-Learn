@@ -387,3 +387,44 @@ def test_extraction_that_loses_a_concurrent_race_retries_and_then_supersedes(cha
     assert finished["status"] == "completed" and finished["result"]["superseded"] == 1
     [active] = [fact for fact in all_visible(chat) if fact["status"] == "active"]
     assert active["event_date"] == "2026-11-10"
+
+
+class BillingProbe(FakeExtractor):
+    """Records which account the model call would be billed to, and who owns the data access."""
+    def __init__(self, *responses):
+        super().__init__(*responses)
+        self.billed = []
+
+    def complete_json(self, prompt, max_tokens=4000, **kwargs):
+        from backend.app.identity import principal_context
+        self.billed.append(principal_context.get().owner_id)
+        return super().complete_json(prompt, max_tokens, **kwargs)
+
+
+@pytest.mark.parametrize("mode,billed", [("shadow", "platform:memory-shadow"), ("on", "alice")])
+def test_shadow_extraction_is_billed_to_the_platform_not_the_learner(chat, monkeypatch, mode, billed):
+    """Owner decision 2026-10-13: learners never pay for hidden shadow work."""
+    from backend.app.generation_models import GenerationRequest
+    monkeypatch.setenv("OPENLEARN_MEMORY_EXTRACTION", mode)
+    add_turn(chat, "my calc midterm is on November 3", "gen-1")
+    request = GenerationRequest(mode="ask", message="my calc midterm is on November 3")
+    with chat.transaction() as conn:
+        queued = jobs.enqueue_extraction(chat, conn, "alice", session_id="session-c", generation_id="gen-1", request=request)
+    probe = BillingProbe([candidate()])
+    jobs.run_memory_extract(chat, None, queued["id"], extractor=probe)
+    assert WorkflowStore(chat).job("alice", queued["id"])["status"] == "completed"
+    assert probe.billed == [billed]
+    # The facts still belong to the learner either way.
+    with chat.engine.connect() as conn:
+        assert {row[0] for row in conn.execute(text("SELECT owner_id FROM memory_facts"))} == {"alice"}
+
+
+def test_platform_usage_account_skips_allowance_but_no_identity_can_claim_it(chat):
+    from backend.app.usage.ledger import PLATFORM_OWNERS, Ledger
+    assert policy.SHADOW_BILLING_OWNER in PLATFORM_OWNERS
+    with chat.engine.connect() as conn:
+        ledger = Ledger(chat)
+        assert ledger.test_unlimited(conn, policy.SHADOW_BILLING_OWNER) is True
+        assert ledger.test_unlimited(conn, "alice") is False
+    # Identity owners are "local" or "account_*"; neither contains a colon.
+    assert all(":" in owner and not owner.startswith("account_") for owner in PLATFORM_OWNERS)

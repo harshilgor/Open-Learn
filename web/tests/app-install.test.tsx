@@ -31,15 +31,15 @@ it('remembers dismissal and allows explicitly reopening instructions', () => {
   act(() => button('Not now').click());
   expect(localStorage.getItem('openlearn-install-invitation-v1')).toBe('seen');
   act(() => window.dispatchEvent(new Event('openlearn:install')));
-  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).not.toBeNull();
+  expect(document.querySelector('[role="status"]')).not.toBeNull();
 });
 it('does not invite returning visitors', () => {
   localStorage.setItem('openlearn-install-invitation-v1', 'seen'); visit();
-  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
+  expect(document.querySelector('[role="status"]')).toBeNull();
 });
 it('does not invite standalone visitors', () => {
   vi.stubGlobal('matchMedia', () => ({ matches: true })); visit();
-  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
+  expect(document.querySelector('[role="status"]')).toBeNull();
 });
 it('waits for the browser to offer installation before inviting', () => {
   returning(); visit();
@@ -52,7 +52,7 @@ it('only triggers the native prompt on a click, then consumes it', async () => {
   const prompt = vi.fn(async () => undefined);
   const event = offerInstall(prompt);
   expect(event.defaultPrevented).toBe(true); expect(prompt).not.toHaveBeenCalled();
-  await act(async () => button('Install').click());
+  await act(async () => button('Install app').click());
   expect(prompt).toHaveBeenCalledTimes(1);
-  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
+  expect(document.querySelector('[role="status"]')).toBeNull();
 });

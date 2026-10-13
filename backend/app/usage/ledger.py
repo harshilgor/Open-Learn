@@ -34,6 +34,11 @@ def _usage_capability(component, provider, model, quantities):
     return 'tool'
 
 
+# Usage accounts the platform pays for. Each is a fixed ID that no identity
+# can hold (identity owners are "local" or "account_*").
+PLATFORM_OWNERS = frozenset({'platform:memory-shadow'})
+
+
 class Ledger:
     RECONCILIATION_ALERT_GRACE_SECONDS = 60
     OUTBOX_ALERT_ROWS = 100_000
@@ -43,6 +48,10 @@ class Ledger:
         self.store, self.policy, self.clock = store, policy or Policy.load(), clock
 
     def test_unlimited(self, conn, owner):
+        # Platform-paid work (e.g. hidden shadow-mode memory extraction) never
+        # draws on a learner allowance; the platform budget still caps it.
+        if owner in PLATFORM_OWNERS:
+            return True
         allowed = {value.strip().lower() for value in os.getenv('OPENLEARN_USAGE_TEST_EMAILS', '').split(',') if value.strip()}
         if not allowed or not owner.startswith('account_'):
             return False

@@ -104,6 +104,15 @@ def extraction_model() -> str | None:
     return value or None
 
 
+# Shadow extraction is hidden from learners, so the platform pays for it
+# (owner decision 2026-10-13); mode "on" bills the learner's allowance.
+SHADOW_BILLING_OWNER = "platform:memory-shadow"
+
+
+def extraction_billing_owner(owner: str) -> str:
+    return SHADOW_BILLING_OWNER if extraction_mode() == "shadow" else owner
+
+
 def extraction_enabled() -> bool:
     """Extraction runs only with a mode and a configured model (§12)."""
     return extraction_mode() != "off" and extraction_model() is not None
