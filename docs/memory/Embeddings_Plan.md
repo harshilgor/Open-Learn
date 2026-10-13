@@ -14,27 +14,46 @@ Retrieval today is lexical: BM25 over shared words, plus concept and time signal
 
 Embeddings don't help with dates and deadlines (the time-intent parser handles them), with core-profile facts (sent every turn), or with small accounts (word matching is enough there).
 
-**Turn-on trigger:** build now behind a flag, and enable it when the shadow report (`backend/scripts/memory_shadow_report.py`) shows the median active learner above about 100 active facts, or when the paraphrase evaluation category (§6) misses its recall gate.
+**Turn-on trigger:** build now behind a flag, and enable it when the shadow report (`backend/scripts/memory_shadow_report.py`) shows the median active learner above about 100 active facts, or when the paraphrase evaluation category (§7) misses its recall gate.
 
-## 2. Owner decisions needed before E1
+## 2. Which embedding model: buy, host, or run it ourselves
+
+Research, 12 October 2026 (vendor and blog figures; verify prices on the provider pages before E1).
+
+| Option | Examples | Privacy | Latency per query | Cost | Fit |
+|---|---|---|---|---|---|
+| **Run an open model inside our backend** | EmbeddingGemma 2 (Apache 2.0, released 6 Oct 2026; 768 dims, truncatable to 512/256/128; the text path uses a ~270M core), EmbeddingGemma 1 (308M; Gemma licence), Qwen3-Embedding-0.6B (Apache 2.0), nomic-embed-text v1.5 (137M) | Fact text never leaves our servers, so the §13 privacy question mostly goes away | Short texts on CPU: an estimated tens of ms, to be measured in E1. No network call. | No per-call cost; uses about 0.5–1.5 GB of RAM per backend process, plus model download | **Recommended.** It also works on desktop (SQLite) installs. |
+| Hosted open model | Cloudflare Workers AI (`@cf/google/embeddinggemma-300m`), DeepInfra or Together (BGE-M3, Qwen3), Hugging Face endpoints | Text goes to the host | 50–300 ms network call | Very low | Fallback if backend memory is too tight |
+| Commercial embeddings API | OpenAI `text-embedding-3-small` (~$0.02 per 1M tokens, already wired in `semantic_retrieval.py`), Voyage 4 / 4-lite, Cohere Embed v4 | Text goes to the provider | 50–300 ms | Very low | Simplest; zero new infrastructure |
+| Full memory product | Mem0 (Apache 2.0, self-hostable; hosted from $19/mo), Zep (hosted; self-host now only via Graphiti), Letta | Every learner message goes to the vendor (or a new service we run) | Network | Per plan | **Not recommended.** We already have this layer (extraction, validator, timeline, consolidation, isolation). Switching would replace tested, education-specific rules with a generic system and add a data processor. Only the embedding model is worth buying or borrowing. |
+
+**Recommendation:** run **EmbeddingGemma 2** in-process for text, at 256 or 512 dimensions, through ONNX Runtime (for example `fastembed` or `optimum`) rather than PyTorch, to keep the install small. Keep the OpenAI path in `semantic_retrieval.py` as a configurable alternative. Gate E1 on a benchmark of the real CPU latency and RAM on the hosted instance size. If it doesn't fit, use a hosted endpoint for the same model, so stored vectors stay compatible.
+
+What this changes in the rest of the plan:
+
+- Local embedding takes the query-embedding network call off the chat path, so §4.3's 15 ms wait becomes a direct (bounded) call.
+- The model name and dimensions are part of the vector key, so switching later re-embeds rather than mixing spaces.
+- Billing (§8) becomes server CPU, not the usage ledger.
+
+## 3. Owner decisions needed before E1
 
 | Decision | Recommendation |
 |---|---|
-| Approve sending fact text (≤ 300 chars, never sensitive) and the learner's message to an embeddings provider | Yes, with a privacy-policy line. The message already goes there when note or material embeddings are on. |
-| Provider and model | Keep the existing `AI_TUTOR_EMBEDDING_MODEL` path (`semantic_retrieval.py`: OpenAI, or OpenAI models through OpenRouter). Default `text-embedding-3-small` at 512 dimensions: good enough for short facts, and small to store. |
+| Approve sending fact text (≤ 300 chars, never sensitive) and the learner's message to an embeddings provider | Not needed if we self-host (§2). If we use a hosted API: yes, with a privacy-policy line. |
+| Provider and model | EmbeddingGemma 2 running in our backend (§2), so no text leaves our servers. Alternative: the existing `AI_TUTOR_EMBEDDING_MODEL` path (`text-embedding-3-small` at 512 dimensions). |
 | Who pays | Same as extraction: the learner's allowance through the usage ledger. Cost is negligible (§7). |
 | Memory-specific opt-out | A separate flag (`OPENLEARN_MEMORY_EMBEDDINGS`), so memory embeddings can be off while note embeddings stay on. |
 
-## 3. Design
+## 4. Design
 
-### 3.1 What gets embedded
+### 4.1 What gets embedded
 
 - Active and tentative facts: `statement`, prefixed by the kind ("goal: Wants to pass AP Calculus BC."), because the kind is part of what a query matches.
 - Active episodes: `summary` plus topic labels.
 - **Never:** sensitive facts, whether or not the learner enabled them for prompts (§2 rule 6); shadow facts; archived or superseded facts (their vectors are deleted).
 - `content_hash` = sha256 of the exact text sent. A changed hash means re-embed, a model change means re-embed, and vectors are keyed by `(owner, item_type, item_id, model)` as in the Phase B table.
 
-### 3.2 Write side (background, never on the chat path)
+### 4.2 Write side (background, never on the chat path)
 
 - **After extraction:** `jobs.py`, after `write_extracted` commits in mode `on`, embeds the facts it created in one batched call. A failure (provider down, allowance exhausted) leaves the fact searchable by words only; there are no retries in the chat path.
 - **Learner actions** (Phase F add, edit, confirm-to-active): embed in the same request, after the commit. Same failure rule.
@@ -42,7 +61,7 @@ Embeddings don't help with dates and deadlines (the time-intent parser handles t
 - **Deletes:** `delete_fact`, `delete_episode` and `forget_all` already delete `memory_embeddings` rows. Consolidation deletes vectors for facts it archives or supersedes.
 - **Storage:** JSON text in `memory_embeddings.vector` (works on both dialects), at 512 dimensions about 5 KB per fact. Move to pgvector (E4) only when needed.
 
-### 3.3 Read side (the per-turn query embedding)
+### 4.3 Read side (the per-turn query embedding)
 
 This is the only latency risk. The 25 ms p95 budget can't absorb a 50–300 ms network call, so the plan is to avoid making one:
 
@@ -52,16 +71,16 @@ This is the only latency risk. The 25 ms p95 budget can't absorb a 50–300 ms n
 4. **Ranking:** turn on the reserved `semantic: 0.45` weight in `RELEVANCE_WEIGHTS` when a vector is present; otherwise renormalize over the other weights, as today. Cosine is computed over the cached per-owner vectors, loaded with the static fact cache and revalidated by the same watermark.
 5. **Fail soft:** any error means lexical only, logged content-free (§2 rule 9).
 
-### 3.4 Consolidation (dedupe)
+### 4.4 Consolidation (dedupe)
 
 `duplicate_pairs` adds `cosine ≥ DEDUPE_COSINE (0.92)` for same kind and scope, alongside the lexical checks. Existing guards stay: sensitive and non-sensitive facts never merge, and different `event_date`s never merge. Merges above 0.92 that aren't lexical matches are logged with a new `mergedSemantic` count, so the change log and the evaluation can measure false merges.
 
-### 3.5 Scale path (E4, only if needed)
+### 4.5 Scale path (E4, only if needed)
 
 - Under about 5,000 facts per owner: an in-process cosine over cached vectors. 2,000 × 512 dims is about 1M multiply-adds: well under a millisecond with numpy, but likely tens of milliseconds in pure Python (the current `_cosine`). numpy isn't a backend dependency today, so E2 either adds it or scores only the top ~200 lexical and recent candidates. Measure both.
 - Above that, or if the per-process cache uses too much memory: pgvector on PostgreSQL (a `vector(512)` column, an HNSW index, and a `ORDER BY embedding <=> :q LIMIT 50` prefilter). SQLite (desktop) keeps the in-process path.
 
-## 4. Build steps
+## 5. Build steps
 
 | Step | Scope | Size |
 |---|---|---|
@@ -70,7 +89,7 @@ This is the only latency risk. The 25 ms p95 budget can't absorb a 50–300 ms n
 | **E3** Dedupe and evaluation | The cosine dedupe in consolidation. Evaluation: a `paraphrase` category (≥ 15 cases with recorded vectors, so CI stays offline) and a `semantic_dedupe` category (true and false pairs). Latency benchmark with vectors on PostgreSQL. | 0.5–1 day |
 | **E4** pgvector | Only if the trigger in §3.5 fires. | 1 day |
 
-## 5. Flags and rollout
+## 6. Flags and rollout
 
 | Flag | Values | Default |
 |---|---|---|
@@ -86,18 +105,18 @@ Both must be set for anything to be embedded. Rollout:
 
 Rollback is flag-only: with the flag off, vectors are ignored and ranking is lexical.
 
-## 6. Evaluation gates
+## 7. Evaluation gates
 
 - Paraphrase recall@5 ≥ 0.8 (today: the "orgo" case fails).
 - Existing categories don't regress: recall@5 ≥ 0.8 on categories 1–3, abstention ≥ 0.95, assessment isolation 1.0.
 - Semantic dedupe: false merges = 0 on the labeled set.
-- Latency: `generation_context` added p95 ≤ 25 ms on PostgreSQL with 2,000 facts and vectors cached; the embedding call itself is off the critical path by design (§3.3).
+- Latency: `generation_context` added p95 ≤ 25 ms on PostgreSQL with 2,000 facts and vectors cached; the embedding call itself is off the critical path by design (§4.3).
 
-## 7. Cost
+## 8. Cost
 
 At current small-embedding-model prices (verify before E1), facts under 300 characters cost cents per 10,000. The per-turn query embedding is the main volume: one call per chat turn, already paid when note embeddings are on, and shared after E2. Backfill for an owner with 2,000 facts is about 63 batched calls, once.
 
-## 8. Risks
+## 9. Risks
 
 | Risk | Mitigation |
 |---|---|

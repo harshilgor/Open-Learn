@@ -1,9 +1,10 @@
 "use client";
 import { AccountSettings } from './account-settings';
+import { LearnerMemorySettings } from './learner-memory-settings';
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTheme } from 'next-themes';
-import { ArrowLeft, Bell, BookOpen, CircleHelp, Database, Download, Gauge, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { ArrowLeft, Bell, BookOpen, Brain, CircleHelp, Database, Download, Gauge, Monitor, Moon, Settings2, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ProviderSettings } from './provider-settings';
 import { UsageSettings } from './usage-settings';
@@ -14,7 +15,7 @@ import { DataActionsSection, UpdateSection } from './local-data-settings';
 import styles from './settings-page.module.css';
 import { DEFAULT_SETTINGS, readSettingsPreferences, saveSettingsPreferences, SETTINGS_CHANGED_EVENT, type SettingsPreferences } from '@/lib/settings-preferences';
 
-export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'data' | 'about' | 'updates';
+export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'memory' | 'data' | 'about' | 'updates';
 
 const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 }[] = [
   { id: 'account', label: 'Account', icon: Monitor },
@@ -22,6 +23,7 @@ const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 
   { id: 'learning', label: 'Learning', icon: BookOpen },
   { id: 'usage', label: 'Usage', icon: Gauge },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'memory', label: 'Memory', icon: Brain },
   { id: 'data', label: 'Privacy & data', icon: Database },
   { id: 'about', label: 'Help', icon: CircleHelp },
   { id: 'updates', label: 'Updates', icon: Download },
@@ -181,10 +183,16 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               </div>
             </section>
           ) : null}
+          {category === 'memory' ? (
+            <section aria-label="Memory settings">
+              <h1>What Open Learn remembers about you</h1>
+              <div className={styles.card}><LearnerMemorySettings /></div>
+            </section>
+          ) : null}
           {category === 'data' ? (
             <section aria-label="Data and privacy settings">
               <h1>Privacy &amp; data</h1>
-              <p className={styles.lede}>Manage your account data, source memory and saved changes. Device drafts may remain until synchronized or discarded.</p>
+              <p className={styles.lede}>Manage your account data and saved changes. Device drafts may remain until synchronized or discarded.</p>
               <div className={styles.card}><AccountSettings section="privacy" /></div>
               {(typeof window !== 'undefined' && (window as Window & {formaDesktop?:{serviceMode?:string}}).formaDesktop?.serviceMode === 'local') ? <div className={styles.card}><DataActionsSection /></div> : null}
             </section>

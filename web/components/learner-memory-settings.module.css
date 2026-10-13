@@ -1,0 +1,25 @@
+.page { display: grid; gap: 18px; }
+.lede { margin: 0; color: var(--muted-foreground); line-height: 1.6; }
+.muted { margin: 0; font-size: 13px; color: var(--muted-foreground); line-height: 1.5; }
+.status { margin: 0; font-size: 13px; padding: 8px 12px; border-radius: var(--radius); background: var(--muted); }
+.group { display: grid; gap: 8px; }
+.group h3 { margin: 0; font-size: 15px; }
+.group summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+.group[data-danger="true"] { padding-top: 14px; border-top: 1px solid var(--border); }
+.row { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.row p { margin: 0; }
+.meta { font-size: 12px; color: var(--muted-foreground); margin-top: 2px !important; }
+.quote { font-size: 12px; font-style: italic; color: var(--muted-foreground); margin-top: 2px !important; }
+.link { border: 0; padding: 0; background: none; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+.actions { display: flex; flex-wrap: wrap; gap: 6px; flex-shrink: 0; }
+.actions button, .group > button, .form button { font-size: 12px; padding: 4px 10px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); cursor: pointer; }
+.actions button:disabled, .form button:disabled, .group > button:disabled { opacity: 0.5; cursor: default; }
+button[data-danger="true"] { border-color: var(--destructive, #c0392b); color: var(--destructive, #c0392b); }
+.toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.filters label, .form label { display: grid; gap: 4px; font-size: 13px; }
+.filters select { max-width: 320px; }
+.form { display: grid; gap: 10px; padding: 10px 0; }
+.form input, .form select, .filters select { padding: 6px 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--background); color: inherit; }
+.plain { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; }
+.history { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
+@media (max-width: 640px) { .row { flex-direction: column; } }
