@@ -22,3 +22,7 @@ pywebpush>=2.0,<3
 PyJWT[crypto]>=2.10,<3
 
 websockets>=14,<17
+
+# Optional cache-aside layer (REDIS_URL); imported lazily. fakeredis is test-only.
+redis>=5,<7
+fakeredis>=2.26,<3

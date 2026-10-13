@@ -88,8 +88,8 @@ export function ChatModeSelector({ mode, onModeChange, disabled, conversation, o
 export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string; uploadPath?: string; resumableUploadPath?: string; uploadSessionUrl?: string; uploadComplete?: boolean };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
-export function ChatComposer({ value, onChange, attachments, onAttachmentsChange, onSubmit, onCancel, busy, allowSendWhileBusy = false, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry, onVoice }: {
-  value: string; onChange: (value: string) => void; attachments: ChatAttachment[];
+export function ChatComposer({ value, onChange, onPasteText, attachments, onAttachmentsChange, onSubmit, onCancel, busy, allowSendWhileBusy = false, followup, gear, onGearChange, mode = 'ask', onModeChange, noteMentions = [], onAddNoteMention, onRemoveNoteMention, onOpenNoteMention, variant = 'main', conversation, onConversation, onInClass, contextConcept, onRemoveContext, unavailable, onRetry, onVoice }: {
+  value: string; onChange: (value: string) => void; onPasteText?: (text: string) => void; attachments: ChatAttachment[];
   onAttachmentsChange: (items: ChatAttachment[]) => void; onSubmit: () => void; onCancel?: () => void; busy: boolean; allowSendWhileBusy?: boolean; followup: boolean; gear: Gear; onGearChange: (gear: Gear) => void;
   mode?: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?:boolean; onConversation?:()=>void; onInClass?:()=>void;
   noteMentions?: ChatNoteMention[]; onAddNoteMention?: (note: WorkspaceNoteSummary) => void; onRemoveNoteMention?: (noteId: string) => void; onOpenNoteMention?: (noteId: string) => void;
@@ -207,7 +207,7 @@ export function ChatComposer({ value, onChange, attachments, onAttachmentsChange
           : (followup ? 'Ask a follow-up…' : 'Message your Buddy…')
       }
       rows={1} onChange={event => onChange(event.target.value)}
-      onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); add(Array.from(event.clipboardData.files)); } }}
+      onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); add(Array.from(event.clipboardData.files)); } else { const pasted = event.clipboardData.getData('text/plain'); if (pasted) onPasteText?.(pasted); } }}
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && (!busy || allowSendWhileBusy) && !unavailable && !allowanceBlocked && !dictationLocked) { event.preventDefault(); onSubmit(); } }} />
     {noteQuery !== null && noteMatches.length > 0 ? <div className={styles.notePicker} role="listbox" aria-label="Notes to mention">{noteMatches.map(note => <button type="button" role="option" aria-selected="false" key={note.id} onClick={() => { onChange(value.replace(/@[^\s@]*$/, `@${note.title} `)); onAddNoteMention?.(note); setNoteMatches([]); }}><strong>{note.title}</strong><small>Revision {note.revision}</small></button>)}</div> : null}
     <input ref={input} type="file" hidden multiple accept=".pdf,.txt,.md,.csv,.png,.jpg,.jpeg,.webp,.gif" onChange={event => { add(Array.from(event.target.files || [])); event.target.value = ''; }} />

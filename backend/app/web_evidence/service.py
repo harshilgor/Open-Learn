@@ -633,24 +633,24 @@ class WebEvidenceService:
             self.provider.provider_name,
         ])
         cache_key = self.evidence_store.cache_key(hashlib.sha256(cache_material.encode()).hexdigest()[:40])
-        cached = self.evidence_store.get_cache(cache_key, tenant_id=auth.tenant_id, fingerprint=fingerprint)
-        if cached is not None:
-            hits = [ProviderSearchHit.model_validate(item) for item in cached]
-        else:
-            hits = self.provider.search(
+        def search() -> list[dict]:
+            found = self.provider.search(
                 public_query,
                 intent=args.intent,
                 decision=decision,
                 cancel_check=policy_kwargs.get("cancel_check"),
             )
-            self.evidence_store.put_cache(
-                cache_key,
-                owner_id=auth.learner_id,
-                tenant_id=auth.tenant_id,
-                fingerprint=fingerprint,
-                hits=[h.model_dump(mode="json") for h in hits],
-                ttl_seconds=self.config.cache_ttl_seconds,
-            )
+            return [h.model_dump(mode="json") for h in found]
+
+        cached = self.evidence_store.cached_search(
+            cache_key,
+            owner_id=auth.learner_id,
+            tenant_id=auth.tenant_id,
+            fingerprint=fingerprint,
+            ttl_seconds=self.config.cache_ttl_seconds,
+            loader=search,
+        )
+        hits = [ProviderSearchHit.model_validate(item) for item in cached]
         packets: list[EvidencePacket] = []
         total = 0
         expires = self.clock.now() + timedelta(seconds=self.config.result_ttl_seconds)

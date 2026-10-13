@@ -68,8 +68,10 @@ class ContextCompiler:
 
     @staticmethod
     def tokens(value):
-        # Conservative UTF-8 bound, configurable provider tokenizer can replace it.
-        return max(1,len(value.encode('utf-8')))
+        # Shared conservative estimate (UTF-8 bytes / 3). Counting every byte
+        # as a token overestimated by 3-4x and squeezed memory out early.
+        from .context_engine import estimate_tokens
+        return estimate_tokens(value)
 
     def compile(self,owner,session_id,purpose,request,*,required_source_ids=(),operational_note_refs=(),token_budget=12000,quiz_scope=None,course_id=None,target_concept_ids=(),reserve_output_tokens=2000,expected_revisions=None):
         command=ContextCompileRequest.model_validate({'purpose':purpose,'request':request,'session_id':session_id,
@@ -133,7 +135,12 @@ class ContextCompiler:
                 # revealed solution. Assessment context uses accepted learner
                 # state and the authorized current source revisions instead.
                 if purpose=='assessment' and row['kind'] not in {'preference'}: continue
-                remembered.append({'id':row['id'],'kind':row['kind'],**value})
+                remembered.append({'id':row['id'],'kind':row['kind'],'value':value})
+            # Course-scoped before global, explicit before tentative, newest
+            # first; a bounded count keeps budget for sources and state.
+            from .learner_memory.policy import COMPILER_MAX_REMEMBERED
+            from .learner_memory.service import rank_remembered
+            remembered=[{'id':row['id'],'kind':row['kind'],**row['value']} for row in rank_remembered(conn,owner,remembered,course_id)[:COMPILER_MAX_REMEMBERED]]
             for item in remembered:
                 structured_candidates.append(('remembered',item,{'kind':'derived_memory','record_id':item['id'],'revision':1}))
             continuity=None

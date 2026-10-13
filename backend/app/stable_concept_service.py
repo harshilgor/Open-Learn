@@ -62,6 +62,9 @@ class StableConceptService:
         values = ",".join(":" + name for name in columns)
         updates = ",".join(f"{name}=excluded.{name}" for name in columns if name not in {"owner_id", "id"})
         conn.execute(text(f"INSERT INTO {table}({names}) VALUES({values}) ON CONFLICT(owner_id,id) DO UPDATE SET {updates}"), columns)
+        # Every graph table write goes through here; flushed after commit.
+        from .cache import invalidate, owner_scope
+        invalidate("concept_graph", owner_scope(owner))
 
     def _finish(self, conn, owner, previous, action, details):
         revision = previous + 1
@@ -86,7 +89,12 @@ class StableConceptService:
                 if not row:
                     problem("concept_revision_not_found", "That historical graph revision is unavailable.", 404)
                 return {"revision": revision, **json.loads(row)["snapshot"]}
-            return {"revision": current, **{table: self._rows(conn, owner, table) for table in TABLES}}
+            from .cache import get_or_load, json_codec, owner_scope
+            # Keyed by revision; the generation also covers writes that don't
+            # bump it (mapping reports). Loaded on this same connection.
+            return get_or_load("concept_graph", owner_scope(owner), {"revision": current},
+                               lambda: {"revision": current, **{table: self._rows(conn, owner, table) for table in TABLES}},
+                               ttl_seconds=3600, **json_codec())
 
     def create(self, owner, command):
         with self.store.transaction() as conn:

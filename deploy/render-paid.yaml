@@ -4,6 +4,14 @@ projects:
     environments:
       - name: virginia-prepared-cutover
         services:
+          # Disposable cache-aside copies only; PostgreSQL stays authoritative.
+          # Free plan: 25 MB, 50 connections (see deploy/connection-budget.json).
+          - type: keyvalue
+            name: openlearn-cache
+            plan: free
+            region: virginia
+            ipAllowList: []
+            maxmemoryPolicy: allkeys-lru
           - type: worker
             name: openlearn-notifications
             region: virginia
@@ -15,6 +23,14 @@ projects:
             autoDeployTrigger: off
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -31,6 +47,14 @@ projects:
             dockerCommand: python -m backend.app.reminder_cron
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_PROCESS_ROLE
                 value: cron
               - key: OPENLEARN_DB_POOL_SIZE
@@ -55,6 +79,14 @@ projects:
               - key: OPENLEARN_DB_POOL_SIZE
                 value: '3'
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -76,6 +108,14 @@ projects:
               - key: OPENLEARN_DB_POOL_SIZE
                 value: '3'
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -97,6 +137,14 @@ projects:
             autoDeployTrigger: off
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -114,6 +162,14 @@ projects:
             autoDeployTrigger: off
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -131,6 +187,14 @@ projects:
             autoDeployTrigger: off
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
@@ -148,6 +212,14 @@ projects:
             autoDeployTrigger: off
             envVars:
               - fromGroup: openlearn-production
+              # Cache invalidation needs Redis wherever cached data is written.
+              # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+              # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+              - key: REDIS_URL
+                fromService:
+                  type: keyvalue
+                  name: openlearn-cache
+                  property: connectionString
               - key: OPENLEARN_MIGRATE_ON_START
                 value: 'false'
               - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL

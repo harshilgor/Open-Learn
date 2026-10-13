@@ -5,6 +5,7 @@ import { reportVoiceFocus, VOICE_FOCUS, VOICE_REFRESH, voiceApi } from "@/lib/vo
 
 import { OutgoingMessages } from './outgoing-messages';
 import { isSocialTurn } from '@/lib/social-turn';
+import { canUseTutorFastPath } from '@/lib/tutor-fast-path';
 import { useChatOutbox } from '@/hooks/use-chat-outbox';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -38,6 +39,8 @@ import { WebResearchActivity, type AgentActivity } from './web-research-activity
 import { BuddyReplyStatus } from './buddy-reply-status';
 import { generationActivityCopy } from '@/lib/generation-activity';
 import { ModeTransitionCard, OriginBadge } from './mode-transition-card';
+import { MemoryFirstRunNotice, MemorySavedChip } from './memory-saved-chip';
+import { clientTimezone, memorySettings, pastedRangesFor } from '@/lib/learner-memory';
 import { useBuddies, BuddyAvatar } from './buddies';
 import { buddyApi } from '@/lib/buddies';
 import { DevContextInspector } from './dev-context-inspector';
@@ -212,6 +215,11 @@ export function LearnChat({
   const quizOrigin = useRef<'ask' | 'learn'>('ask');
   const classificationBypass = useRef<string | null>(null);
   const submitRef = useRef<((text?:string, fromOutbox?:boolean, clientMessageId?:string, onAccepted?:()=>void) => Promise<'choice' | void>) | null>(null);
+  // Recently pasted text, matched against each sent message (queued messages
+  // included). Pasted text never supports a remembered fact about the learner.
+  const pastedSnippets = useRef<string[]>([]);
+  // Turns that completed in this tab; only these check for newly saved memories.
+  const [memoryWatch, setMemoryWatch] = useState<ReadonlySet<string>>(() => new Set());
   const outboxProcessing = useRef(0);
   const outbox = useChatOutbox({
     storageKey:`openlearn-text-outbox:${buddies.active?.id||'connecting'}:${sessionId||initialSessionId||'new'}`,
@@ -1057,6 +1065,7 @@ export function LearnChat({
             if (typeof result?.revision === 'number') setJourney(current => current ? {...current, revision: Math.max(current.revision, result.revision!)} : current);
             setTurns(current => current.map(turn => turn.generationId === event.generationId ? { ...turn, generationStatus: 'completed', status: 'completed', connectionLost: false, progress: undefined, stream: turn.stream ? {...turn.stream, status: 'completed'} : undefined } : turn));
             updateTurnActivity(event.generationId, () => null);
+            if (event.generationId) setMemoryWatch(current => new Set(current).add(event.generationId));
           }
         },
         onReconnect: () => updateTurnProgress(stream.descriptor?.id || undefined, 'Reconnecting to your response…'),
@@ -1108,7 +1117,9 @@ export function LearnChat({
         action: input.action, expectedRevision: journey?.revision || 1, clientMessageId,
         classificationBypassId: bypassId || undefined, taskId: studyTask?.taskId,
         canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext, selectedText: passageContext?.excerpt,
-        selectedSpanIds: passageContext?.spanId ? [passageContext.spanId] : undefined };
+        selectedSpanIds: passageContext?.spanId ? [passageContext.spanId] : undefined,
+        pastedRanges: (() => { const ranges = pastedRangesFor(input.message, pastedSnippets.current); return ranges.length ? ranges : undefined; })(),
+        clientTimezone: clientTimezone() };
       if (retryGenerationId) await stream.retry(retryGenerationId, clientMessageId || crypto.randomUUID(), callbacks);
       else await stream.start(sid, requestBody, callbacks);
       if (stream.descriptor?.requiresModeChoice) return 'choice';
@@ -1211,7 +1222,8 @@ export function LearnChat({
     // Existing Ask conversations can accept follow-ups immediately. Keep the
     // browser upload and advisory mode-classification work out of the receipt
     // path; the server persists this message before provider generation starts.
-    if (fromOutbox && sessionId) {
+    if (fromOutbox && sessionId && canUseTutorFastPath(text, chatMode,
+      !!(attachments.length || noteMentions.length || passageContext || browserAssistant.replyTarget))) {
       setClassActionReply(''); setError('');
       return await streamTurn({ action: 'message', message: text, question: text }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
     }
@@ -1464,6 +1476,7 @@ export function LearnChat({
         {turn.visualError ? <p className={styles.hint} role="status">{turn.visualError}</p> : null}
         <VerificationBadge verification={turn.verification}/>
         {noteDrafts.filter(draft => draft.sessionId === turn.sessionId && !turns.slice(turnIndex + 1).some(item => item.sessionId === turn.sessionId)).map(draft => <NoteDraftCard key={draft.id} draft={draft} onHandled={updated => setNoteDrafts(current => current.map(item => item.id === updated.id ? updated : item))} />)}
+        {turn.generationId && memoryWatch.has(turn.generationId) ? <MemorySavedChip generationId={turn.generationId} /> : null}
         {turn.generationId && turn.status !== 'pending' ? <DevContextInspector generationId={turn.generationId} /> : null}
       </article> : null}
     </motion.div>;
@@ -1517,7 +1530,8 @@ export function LearnChat({
         onDismiss={handleDismissTransition}
       /> : null}
       {buddies.active?.archived&&!sessionId?<p role="status">This Buddy is archived. Choose an active Buddy to start a new conversation.</p>:null}
-      <ChatComposer onVoice={() => void startVoice()} onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => {
+      <MemoryFirstRunNotice load={memorySettings} />
+      <ChatComposer onPasteText={text => { pastedSnippets.current = [...pastedSnippets.current, text].slice(-20); }} onVoice={() => void startVoice()} onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => {
         if(/^(?:please )?(?:discuss this separately|open (?:a )?side chat about this|rewrite (?:this|the selected passage)|simplify (?:this|the selected passage)|add (?:an? )?example|improve (?:this|the selected passage)|make question \d+ (?:harder|easier)|let me focus on (?:this|the) (?:document|note)|focus on (?:this|the) workspace|restore split view|return to split view)[.!]?$/i.test(prompt.trim())){void submit();return;}
         if(chatMode==='ask'&&!attachments.length&&!noteMentions.length&&!passageContext&&!quizClarification&&!waitingForModeChoice&&buddies.active){
           const text=prompt.trim();if(text&&outbox.enqueue(text)){setPrompt('');requestAnimationFrame(()=>scrollToBottom(false));}

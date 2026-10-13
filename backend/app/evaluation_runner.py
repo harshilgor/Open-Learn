@@ -56,4 +56,14 @@ def run(fixtures: Path = FIXTURES) -> dict:
     return {"suite":"openlearn-deterministic-evaluation","fixtureVersion":data["version"],
             "scenarioVersion": json.loads(OPENLEARN_FIXTURES.read_text(encoding="utf-8"))["version"],
             "passed":all(x["passed"] for x in outcomes), "categories": category_counts, "outcomes":outcomes}
-if __name__ == "__main__": print(json.dumps(run(),sort_keys=True))
+if __name__ == "__main__":
+    import argparse, sys
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--memory", action="store_true", help="Run the learner-memory suite (spec §11.3) instead")
+    if parser.parse_args().memory:
+        from .learner_memory.evaluation import run as run_memory
+        report = run_memory()
+    else:
+        report = run()
+    print(json.dumps(report, sort_keys=True))
+    sys.exit(0 if report["passed"] else 1)

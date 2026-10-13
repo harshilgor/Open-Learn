@@ -140,6 +140,8 @@ from .identity_routes import build_identity_router
 app.include_router(build_identity_router(get_store))
 from .memory_routes import build_memory_router
 app.include_router(build_memory_router(get_store))
+from .learner_memory.routes import build_learner_memory_router
+app.include_router(build_learner_memory_router(get_store))
 app.include_router(build_material_router(get_store, lambda: lesson_provider))
 app.include_router(build_learning_router(get_store, lambda: lesson_provider))
 app.include_router(build_generation_router(get_store, lambda: lesson_provider))
@@ -311,7 +313,9 @@ dependency_readiness = DependencyReadiness()
 def ready():
     if not dependency_readiness.check(store.engine):
         return JSONResponse(status_code=503,content={'status':'unavailable'},headers={'Cache-Control':'no-store'})
-    return JSONResponse(content={'status':'ready'},headers={'Cache-Control':'no-store'})
+    # Redis is optional: a degraded cache is reported, never a readiness failure.
+    from .cache import cache_status
+    return JSONResponse(content={'status':'ready','cache':cache_status()},headers={'Cache-Control':'no-store'})
 
 
 @app.get("/health/web-evidence")

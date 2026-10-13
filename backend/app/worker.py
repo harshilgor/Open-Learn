@@ -20,6 +20,16 @@ _last_voice_cleanup = 0.0
 _last_object_cleanup = 0.0
 
 
+def cleanup_identity_objects_if_due(store):
+    from .identity_data import cleanup_objects
+    now = time.monotonic()
+    # Track the cadence on the Store, keeping separate stores independent.
+    if now - getattr(store, '_identity_cleanup_checked_at', float('-inf')) < 30:
+        return
+    store._identity_cleanup_checked_at = now
+    cleanup_objects(store)
+
+
 def cleanup_voice_if_due(store):
     global _last_voice_cleanup
     now = time.monotonic()
@@ -45,6 +55,25 @@ def cleanup_upload_objects_if_due(store):
         return MaterialService(store).process_object_cleanup()
     except Exception as exc:
         log.warning("Upload object cleanup iteration failed (%s)", type(exc).__name__)
+        return 0
+
+
+_last_memory_shadow_cleanup = 0.0
+
+
+def cleanup_memory_shadow_if_due(store, now=None):
+    """Hourly: shadow facts are evaluation data, kept SHADOW_RETENTION_DAYS."""
+    global _last_memory_shadow_cleanup
+    now = time.monotonic() if now is None else now
+    if now - _last_memory_shadow_cleanup < 3600:
+        return 0
+    _last_memory_shadow_cleanup = now
+    from .learner_memory import policy, store as memory_store
+    try:
+        with store.transaction() as conn:
+            return memory_store.purge_expired_shadow(conn, time.time() - policy.SHADOW_RETENTION_DAYS * 86400)
+    except Exception as exc:
+        log.warning("Memory shadow cleanup failed (%s)", type(exc).__name__)
         return 0
 
 
@@ -150,15 +179,15 @@ def tick(store, provider_getter):
     from .learning_routes import run_job
     from .lecture_pipeline import LectureWorker
     from .material_service import MaterialService
-    from .identity_data import cleanup_objects
     cleanup_voice_if_due(store)
     cleanup_upload_objects_if_due(store)
+    cleanup_memory_shadow_if_due(store)
     try:
         reconciled_usage = reconcile_usage_if_due(store)
     except Exception as exc:
         log.warning("Usage reconciliation iteration failed (%s)", type(exc).__name__)
         reconciled_usage = 0
-    cleanup_objects(store)
+    cleanup_identity_objects_if_due(store)
     reconcile_recordings(store)
     did_work = bool(reconciled_usage) or Outbox(store).deliver_one({"learning.command.completed": dispatch_learning_completion, "execution.job.requested": dispatch_job(store)})
     with store.engine.connect() as conn:
@@ -180,6 +209,11 @@ def tick(store, provider_getter):
             break
         if kind == "hypothesis_analyze":
             run_hypothesis(store, provider_getter(), job_id)
+            did_work = True
+            break
+        if kind == "memory_extract":
+            from .learner_memory.jobs import run_memory_extract
+            run_memory_extract(store, None, job_id)
             did_work = True
             break
     if LectureWorker(store, provider_getter).drain(limit=4):

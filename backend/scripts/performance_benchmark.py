@@ -48,7 +48,7 @@ def summary(values):
         for name, fraction in (("p50Ms", .5), ("p95Ms", .95), ("p99Ms", .99))}}
 
 
-def seed(store, session, owner='local'):
+def seed(store, session, owner='local', memory_preferences=0):
     now = utc_now()
     with store.transaction() as connection:
         connection.execute(text("""INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at)
@@ -60,9 +60,16 @@ def seed(store, session, owner='local'):
     graph = GraphGenerator().generate(scope)
     store.save_graph(graph)
     store.save_session(LearningSession(id=session, learner_id=owner, graph_id=graph.id, created_at=now, updated_at=now))
+    if memory_preferences:
+        from backend.app.source_memory import SourceMemory
+        memory = SourceMemory(store)
+        for index in range(memory_preferences):
+            statement = f'Synthetic saved preference {index}: prefer one worked example before practice.'
+            memory.revise(owner, f'benchmark-preference-{index}', statement, expected_revision=0)
+            memory.derive(owner, 'preference', {'statement': statement}, [{'sourceId': f'benchmark-preference-{index}', 'revision': 1}], explicit=True)
 
 
-async def benchmark(store, runs, concurrency, checkpoint):
+async def benchmark(store, runs, concurrency, checkpoint, memory_preferences=0):
     checkpoint([], phase='running')
     principal_token = principal_context.set(Principal('local', 'local'))
     manager = GenerationManager(store, FixtureProvider())
@@ -79,7 +86,7 @@ async def benchmark(store, runs, concurrency, checkpoint):
             started = time.perf_counter()
             outcome = {'scenario': scenario, 'status': 'failed', 'firstTextMs': None}
             try:
-                await asyncio.to_thread(seed, store, session, owner)
+                await asyncio.to_thread(seed, store, session, owner, memory_preferences)
                 started = time.perf_counter()
                 with trace_scope(resource='chat'):
                     record = await asyncio.to_thread(manager.create, owner, session,
@@ -137,6 +144,7 @@ def main():
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--concurrency', type=int, default=1)
     parser.add_argument('--out', required=True)
+    parser.add_argument('--memory-preferences', type=int, default=0, help='Saved explicit preferences seeded per synthetic owner (learner memory read path)')
     parser.add_argument('--temp-dir', type=Path, help='Optional writable parent for the disposable SQLite directory')
     parser.add_argument('--database-url-env', help='Optional isolated local PostgreSQL URL environment variable; never DATABASE_URL')
     parser.add_argument('--external-worker', action='store_true', help='Run a separate synthetic generation process against isolated PostgreSQL')
@@ -156,6 +164,8 @@ def main():
             parser.error('Require a local PostgreSQL database named openlearn_qualification_*. Hosted databases are rejected.')
     if not 1 <= args.runs <= 1000 or not 1 <= args.concurrency <= 50:
         parser.error('Runs must be 1–1000; concurrency 1–50')
+    if not 0 <= args.memory_preferences <= 2000:
+        parser.error('Memory preferences must be 0–2000')
     temp_parent = args.temp_dir.resolve() if args.temp_dir else None
     if temp_parent is not None and not temp_parent.is_dir():
         parser.error('--temp-dir must be an existing directory')
@@ -168,7 +178,7 @@ def main():
         report = {"scope": "isolated local PostgreSQL + fixture provider" if isolated_url else "offline SQLite + fixture provider; not production latency or answer quality",
             "executionMode": "separate-generation-process" if args.external_worker else "embedded",
             "productionQualification": False, "phase": phase, "startedAt": started_at,
-            "concurrency": args.concurrency, "requestedAttempts": args.runs, "attempts": len(rows),
+            "concurrency": args.concurrency, "memoryPreferences": args.memory_preferences, "requestedAttempts": args.runs, "attempts": len(rows),
             "failures": sum(row['status'] != 'completed' or row.get('revisionProtected') is not True for row in rows),
             "timings": {key: summary([row[key] for row in rows if isinstance(row.get(key), (int, float))])
                 for key in ('acceptanceMs', 'firstTextMs', 'noteSaveMs', 'completionMs')},
@@ -227,7 +237,7 @@ def main():
                         raise RuntimeError('Isolated generation worker did not become ready; inspect its local log.')
                     time.sleep(.1)
             checkpoint(results, phase='initializing_event_loop')
-            results = asyncio.run(benchmark(store, args.runs, args.concurrency, checkpoint))
+            results = asyncio.run(benchmark(store, args.runs, args.concurrency, checkpoint, args.memory_preferences))
         finally:
             if worker is not None:
                 stop_file.touch()

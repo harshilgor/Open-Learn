@@ -114,7 +114,11 @@ def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=
             assessment_rates = approved_tariff(model, assessment_profile)
         except (ValueError, KeyError, TypeError):
             raise UsageError('usage_provider_unavailable','Assessment model has no approved pinned tariff.',503) from None
-    if not free_model and (not policy.paid or (assessment_rates is None and visual_rates is None and (model!=configured_model or model!='anthropic/claude-haiku-5.5'))):
+    # The reviewed Haiku tariff covers the configured chat model and the
+    # configured learner-memory extraction model (owner decision 2026-10-12).
+    memory_model=os.getenv('OPENLEARN_MEMORY_EXTRACTION_MODEL','').strip()
+    haiku_route=model=='anthropic/claude-haiku-5.5' and model in {configured_model,memory_model}
+    if not free_model and (not policy.paid or (assessment_rates is None and visual_rates is None and not haiku_route)):
         raise UsageError('usage_provider_unavailable','This model has no approved usage tariff.',503)
     maximum=payload.get('max_output_tokens',payload.get('max_tokens',2000))
     if not isinstance(maximum,int) or maximum<1 or maximum>16000:raise UsageError('usage_input_limit','The response limit is unsupported.',422)

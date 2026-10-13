@@ -34,6 +34,12 @@ GenerationEventType = Literal[
 ]
 
 
+class PastedRange(ApiModel):
+    """Character offsets in ``message`` that the learner pasted rather than typed."""
+    start: int = Field(ge=0, le=100_000)
+    end: int = Field(ge=1, le=100_000)
+
+
 class GenerationRequest(JourneyCommand):
     """A message-producing Journey command observed through the generation API."""
     client_message_id: str | None = Field(default=None, alias="clientMessageId", min_length=1, max_length=160)
@@ -48,6 +54,10 @@ class GenerationRequest(JourneyCommand):
     # Buddy response presentation is persisted atomically with durable message
     # acceptance, avoiding a separate browser request before every turn.
     presentation: Literal["conversation", "ask", "learn", "quiz"] | None = None
+    # Learner memory (spec §7.4): pasted text never supports a learner fact, and
+    # relative dates ("Friday") resolve in the learner's own timezone.
+    pasted_ranges: list[PastedRange] = Field(default_factory=list, max_length=50)
+    client_timezone: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_+\-/]+$")
 
 
 class GenerationDescriptor(ApiModel):
