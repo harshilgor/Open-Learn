@@ -22,7 +22,7 @@ async function localModule(name:string):Promise<string>{
       if(url.origin!==window.location.origin||!url.pathname.startsWith('/visual-assets/'))throw new Error('Export library unavailable.');
       const response=await fetch(url);if(!response.ok)throw new Error('Export library unavailable.');
       let source=await response.text();if(source.length>6000000)throw new Error('Export library too large.');
-      if(name==='three/addons/controls/OrbitControls.js')source=source.replaceAll('"./three.js"',JSON.stringify(await localModule('three')));
+      if(url.pathname.endsWith('/orbit-controls.js'))source=source.replaceAll('"./three.js"',JSON.stringify(await localModule('three')));
       return dataModule(source);
     })();assetCache.set(name,value);value.catch(()=>assetCache.delete(name));
   }return value;
