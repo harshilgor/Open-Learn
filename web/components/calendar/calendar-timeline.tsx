@@ -81,9 +81,10 @@ export function CalendarTimeline({ days, events, zone, calendars, onSelect, onAd
               const visibleEnd = Math.min(end, lastHour * 60);
               const height = Math.max(24, (visibleEnd - visibleStart) * hourHeight / 60 - 2);
               const compact = height < 36;
-              const short = !compact && height < 64;
+              const narrow = lanes > 1 && days.length > 1;
+              const short = !compact && (height < 64 || narrow);
               const calendarColor = calendars.find(c => c.id === event.calendarId)?.color;
-              return <button type="button" key={event.id} className={`${styles.timelineEvent} ${compact ? styles.timelineEventCompact : short ? styles.timelineEventShort : ''}`} data-category={eventCategory(event)} style={{ top: (visibleStart - firstHour * 60) * hourHeight / 60 + 1, height, left: `calc(${lane / lanes * 100}% + 2px)`, width: `calc(${100 / lanes}% - 5px)`, ...(calendarColor && event.type === 'personal' ? { '--event-color': calendarColor } as CSSProperties : {}) }} onClick={() => onSelect(event)} aria-label={`${event.title}, ${eventTime(event, zone)}`}>
+              return <button type="button" key={event.id} className={`${styles.timelineEvent} ${compact ? styles.timelineEventCompact : short ? styles.timelineEventShort : ''} ${narrow ? styles.timelineEventNarrow : ''}`} title={`${event.title} · ${eventTime(event, zone)}`} data-category={eventCategory(event)} style={{ top: (visibleStart - firstHour * 60) * hourHeight / 60 + 1, height, left: `calc(${lane / lanes * 100}% + 2px)`, width: `calc(${100 / lanes}% - 5px)`, ...(calendarColor && event.type === 'personal' ? { '--event-color': calendarColor } as CSSProperties : {}) }} onClick={() => onSelect(event)} aria-label={`${event.title}, ${eventTime(event, zone)}`}>
                 <strong>{event.title}</strong>
                 <span>{eventTime(event, zone)}{event.recurrence ? <Repeat2 size={11} aria-label="Repeats"/> : null}</span>
               </button>;

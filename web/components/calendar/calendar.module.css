@@ -83,7 +83,10 @@
 .timelineEventCompact{flex-direction:row;align-items:center;gap:6px;padding:2px 8px}
 .timelineEventCompact>strong{-webkit-line-clamp:1;flex:0 1 auto;min-width:0;white-space:nowrap;text-overflow:ellipsis;display:block}
 .timelineEventCompact>strong{flex:1 1 auto}
-.timelineEventCompact>span{flex:0 100 auto;min-width:0;overflow:hidden;font-size:11px}
+.timelineEventCompact>span{flex:none;font-size:11px}
+.timelineEventNarrow{padding-left:6px;padding-right:4px}
+.timelineEventNarrow>strong{font-size:12px}
+.timelineEventNarrow.timelineEventCompact>span{display:none}
 
 /* ---------- Agenda ---------- */
 .agenda{max-width:820px;margin:0 auto;padding:4px 0 40px}
@@ -231,4 +234,8 @@
   .event{grid-template-columns:1fr;gap:4px}
   .formRow{grid-template-columns:1fr}
   .empty{padding:35px 15px}
+  .monthWrap{min-width:0}
+  .monthDay{min-height:92px;padding:4px}
+  .compactEvent{padding:2px 4px}
+  .compactEvent>span{display:none}
 }

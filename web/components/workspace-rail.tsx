@@ -19,9 +19,10 @@ type Props = {
   current?: string;
 };
 
-/** The menu renders only on the client, after the user opens it. */
+/** Installing is offered only in a browser tab: not in the desktop app or an installed copy. */
 function canInstall() {
-  return !window.matchMedia('(display-mode: standalone)').matches && !('formaDesktop' in window);
+  if (typeof window === 'undefined' || 'formaDesktop' in window) return false;
+  return !(typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches);
 }
 
 export function WorkspaceRail(props: Props) {
