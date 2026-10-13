@@ -199,10 +199,20 @@ class VisualToolsOnly(AgentMiddleware):
             chosen='generateSandboxedUi' if decision['renderer']=='open_generative_ui' else 'render_a2ui'
             photo_calls={call['id'] for message in request.state.get('messages',[]) for call in getattr(message,'tool_calls',[]) if call.get('name')=='get_trip_stop_images'}
             if decision.get('visualization')=='animated_route' and not photo_calls:chosen='get_trip_stop_images'
-            if chosen in names:choice={'type':'function','function':{'name':chosen}}
             # Some OpenRouter endpoints accept "required" but still emit prose;
-            # a specific named tool is tested and enforced instead. Supply the
-            # focused skill directly so forced rendering does not skip its guidance.
+            # a specific named tool is tested and enforced instead. Models with
+            # mandatory reasoning (Claude Sonnet/Opus 5.5) reject any forced
+            # choice, so OPENLEARN_VISUAL_TOOL_CHOICE=auto instructs instead; the
+            # orchestrator retries a run that produces no artifact.
+            forced=os.getenv('OPENLEARN_VISUAL_TOOL_CHOICE','named').strip().lower()!='auto'
+            if chosen in names and forced:choice={'type':'function','function':{'name':chosen}}
+            instruction='' if forced or chosen not in names else (
+                f'\nRespond only by calling {chosen} with the complete artifact. Do not answer in prose and do not describe the code.')
+            # Supply the focused skill directly so forced rendering does not skip its guidance.
+            if instruction and decision['renderer']!='open_generative_ui':
+                from langchain.messages import SystemMessage
+                original=system.content if system else ''
+                system=SystemMessage(content=original+instruction if isinstance(original,str) else [*original,{'type':'text','text':instruction}])
             if decision['renderer']=='open_generative_ui':
                 from langchain.messages import SystemMessage
                 skill_name='svg-diagrams' if decision.get('visualization') in {'flowchart','static_diagram'} else 'advanced-visualization'
@@ -217,6 +227,7 @@ class VisualToolsOnly(AgentMiddleware):
                     if geographic:
                         guidance='\n'.join(section for section in sections if
                             section.startswith(('## Streaming','## Live geographic maps','## Trip itineraries')))
+                guidance+=instruction
                 original=system.content if system else ''
                 system=SystemMessage(content=original+'\n'+guidance if isinstance(original,str) else [*original,{'type':'text','text':guidance}])
         return request.override(tools=tools,tool_choice=choice,system_message=system,messages=messages)

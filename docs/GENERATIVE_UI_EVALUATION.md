@@ -141,6 +141,9 @@ What this means:
 | `backend/tests/test_visual_verification.py` (real Chromium: defects incl. collapsed and clipped graphics and edge-value readouts, idioms, network block, timeouts, contrast, overlapping text, state replay) | 22 passed |
 | `backend/tests/test_visual_repair_loop.py` (scripted runtime: continuation, fallback, budgets, stalls, failures during polish, empty responses, usage finality) | 12 passed |
 | `backend/tests/test_visual_editing.py` (edit targets, declared edits, carried state, lineage ownership) | 8 passed |
+| `backend/tests/test_visual_science.py` (correct vs wrong physics for pendulum, Ohm's law, projectile, neuron; worked examples; formula text; empty readouts) | 9 passed |
+| `backend/tests/test_visual_judge.py` (off by default, warning-only, bounded image billing, metered call, receipt settlement) | 8 passed |
+| `backend/tests/test_visual_metering.py` (receipt drained after early disconnect, cancelled generations aborted, rejected requests settle at zero) | 4 passed |
 | Existing visual suites (`test_openintelligentui`, `test_visual_runs`, `test_visual_code`, `test_visual_pricing`, `test_visual_media_boundary`, `test_visualization_models`) | all passed |
 | Frontend visual tests (`web/tests/generated-visual*.test.tsx`, `generated-trip`) | 19 passed |
 | Usage, voice and generation suites | 127 passed; 9 failures that fail identically on unmodified `main` (`test_usage_parsing` ×3, `test_usage_summary` ×5, `test_generation_web_search_events` ×1) |
@@ -166,3 +169,68 @@ What this means:
 - **Paid models.** No paid visual model was enabled (requires an approved tariff and your decision on spend). Free models are rate-limited and vary between runs.
 - **Hosted deployment, live microphone voice edits, and the web UI in a real browser session** were not exercised in this work; frontend behavior is covered by component tests.
 - **Sample size.** B and C were each run three times (A and D once). Per-task outcomes vary between runs, so differences of one or two tasks within a configuration are noise; the B-to-C difference (2.3 to 7.0 tasks, 7 to 0 broken visuals) held in every run.
+
+## 9. Follow-up: paid models, screenshot judge and science checks
+
+Measured 12 October 2026 (afternoon). Real OpenRouter spend for everything in this section was about $0.30. The local ledger recorded more, because of the metering defect described below, and reached the configured $1/day platform cap, which ended live runs for the day.
+
+### 9.1 Which models can produce visuals
+
+Visual generation forces a named `generateSandboxedUi` tool call. Each candidate was probed with a forced call that needs a long string argument:
+
+| Model | Price per M tokens (in / out) | Forced tool call | Notes |
+| --- | --- | --- | --- |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | free | **broken**: empty or 1,024-character arguments | original configuration |
+| `nvidia/nemotron-3-super-120b-a12b:free` | free | works (30 KB) | arguments arrive all at once (no progressive preview) |
+| `anthropic/claude-haiku-5.5` | $0.10 / $0.50 | works (10 KB in 13 s, streamed from 1.4 s) | only without OpenRouter's `require_parameters` routing flag, which rejects every Anthropic endpoint |
+| `anthropic/claude-sonnet-5.5` | $2 / $10 | **refused**: "tool_choice type tool/any not supported"; reasoning is mandatory and cannot be disabled | needs `OPENLEARN_VISUAL_TOOL_CHOICE=auto` (implemented) |
+
+Changes made: `OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS` (default `true`; set `false` for Anthropic models) and `OPENLEARN_VISUAL_TOOL_CHOICE=named|auto` (default `named`; `auto` instructs the model to answer only with the tool, and the orchestrator retries a run without an artifact).
+
+**Sonnet 5.5 was not benchmarked.** With a 16K output limit and ~50 KB inputs, the ledger reserves about $0.56 per Sonnet call before dispatch, which the $1/day platform cap does not allow alongside other use. Raising `OPENLEARN_PLATFORM_DAILY_BUDGET_USD` is your decision; the configuration is otherwise ready.
+
+### 9.2 Haiku 5.5 results
+
+| Run | Published | All checks passed | Median total (s) | Median first preview (s) | Real cost |
+| --- | --- | --- | --- | --- | --- |
+| E: Haiku producer | 9 / 12 | 3 / 12 | 38.8 | 9.2 | ≈ $0.07 |
+| F: Haiku producer + Haiku judge, all new checks | 10 / 12 | 5 / 12 | 40.8 | 9.2 | ≈ $0.05 |
+| C (reference): Nemotron Super, free | 9–11 / 12 | 6–8 / 12 | 60–143 | 28–85 | $0 |
+
+Haiku is about 1.5× faster end to end and shows a progressive preview within ~9 s because it streams tool arguments. On objective checks it does **not** beat the free Nemotron Super model yet, for two measured reasons:
+
+1. **Repair and polish continuations fail with HTTP 400 for Claude.** The first attempt works, but every follow-up request that carries Haiku's own previous tool call is rejected, so warnings are never polished and errors never repaired. The identical message shape built from a Nemotron history is accepted by Haiku (verified by replay), so the cause lies in how a streamed Claude tool call is recorded in the history. The proxy now logs the provider's error detail, so the next paid run will name the rejected field. Root cause not yet confirmed.
+2. **Haiku did not declare the conversational edit** (`editOf`), so the edit task produced a new visual without lineage.
+
+Recommendation: keep `nvidia/nemotron-3-super-120b-a12b:free` as the visual model for now. Re-evaluate Haiku once the continuation 400 is fixed, and Sonnet once the platform budget allows it.
+
+### 9.3 Screenshot judge (paid models)
+
+Against the nine human-labeled screenshots from section 5:
+
+| Judge | Agreement with human labels | Poor visuals rejected | Cost per judgment | Latency |
+| --- | --- | --- | --- | --- |
+| `anthropic/claude-haiku-5.5` | 5 / 9 | 4 / 4 | ≈ $0.0002–0.001 | ≈ 3 s |
+| `anthropic/claude-sonnet-5.5` | 5 / 9 | 4 / 4 | ≈ $0.003–0.004 | ≈ 3 s |
+
+Both judges rejected every visual the human rated poor, with accurate reasons ("the parabola opens downward", "the string is a ~15 px stub for a 1 m pendulum", "no closed loop"). They also rejected the four visuals the human rated "fair", citing genuine defects the human had accepted: overprinted labels, an empty tree canvas, invisible planets, arrows ending in empty space. That is too strict for a publication gate (8 of 9 rejected), but precise feedback for repair. The judge is therefore integrated as a **repairable warning** (`visual_quality`) for the one polish attempt and never blocks publication. It is off unless `OPENLEARN_VISUAL_JUDGE_MODEL` is set with a reviewed tariff. Images are billed against an explicit bound: the screenshot is cropped to 720×1200 and reserved at 2,000 tokens. In run F the judge flagged 9 first attempts; the polish that should have used its feedback was blocked by the Claude continuation defect above, so judge-driven improvement is not yet measured.
+
+### 9.4 Science checks
+
+Topic validators (`backend/app/visual_science.py`) run inside the rendered visual for the product's priority topics, taken from the original approved simulations (gradient descent, projectile motion, Ohm's law) and the neural-network domain pack (neuron activation), plus pendulum and transmission-line reflection. A check fails only when it can read the visual's own labeled controls and readouts, and no labeled value matches the governing formula.
+
+Validation over 44 stored artifacts from all benchmark runs: **24 pass, 18 unmeasured, 2 fail**. Both failures are genuine defects:
+
+- an original-pipeline pendulum displayed a period of 0.03 s where 2π√(L/g) = 2.007 s;
+- a Haiku transmission line whose value readouts were never populated, so the only Γ values on the page were explanatory examples.
+
+Validation also exposed two false positives in the first version of the checks. Formula text (`e^(−j2βl)` read as Γ = 2) and worked examples (`so Γ = 0`) were mistaken for values. Both were fixed by requiring `label = value` readouts and by passing when any labeled value matches. Tests pin both cases.
+
+A related generic check, **value displays still empty after setup** (`empty_readout`, a repairable warning), flagged exactly 1 of 101 stored artifacts, that same transmission line, with no false alarms.
+
+### 9.5 Metering defects found and fixed
+
+- **Lost receipts.** CopilotKit ends the agent's read at the tool call, before the provider's trailing usage chunk, so many calls settled at the full conservative reservation (about 10× their real cost; for run E, $0.39 recorded against about $0.07 spent). This over-charges learner allowances and the platform budget, and likely contributes to the finding that the free plan covers only about three visuals per window. The proxy now drains a *finished* generation for its receipt after the client leaves (bounded to 30 s), and aborts an unfinished one, so a cancelled visual is not completed or billed further.
+- **Rejected requests.** A provider rejection before generation (HTTP 4xx/5xx) kept the reservation; it now settles at zero, matching what the provider bills.
+
+Both are covered by `backend/tests/test_visual_metering.py`. Polish calls that end in an upstream error still settle conservatively, as designed.

@@ -10,6 +10,9 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 - Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
 - Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.
 - `backend/scripts/visual_benchmark.py`: a live generative-visual benchmark with task-specific scientific and interaction checks.
+- Science checks for priority topics (pendulum, Ohm's law, projectile motion, gradient descent, neuron activation, transmission-line reflection) test displayed values against the governing formula before a visual is shown.
+- Optional screenshot judge (`OPENLEARN_VISUAL_JUDGE_MODEL`): a reviewed multimodal model's critique of a working first attempt feeds one improvement pass; it never blocks a visual.
+- Paid Claude visual models are supported through `OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS` and `OPENLEARN_VISUAL_TOOL_CHOICE`.
 
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.
@@ -30,6 +33,7 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Fixed
 
+- Visual model calls were often charged at their full conservative reservation because the usage receipt arrived after the agent stopped reading; finished generations are now drained for their receipt, and provider-rejected requests settle at zero.
 - Visual code validation crashed on Windows for any visual containing non-ASCII text (Greek letters, arrows, emoji).
 - Valid visuals that create elements in JavaScript were rejected as missing DOM targets.
 - `(await import('three')).default`, `d3` defaults and the `three/examples/jsm` OrbitControls path now resolve in visual frames.

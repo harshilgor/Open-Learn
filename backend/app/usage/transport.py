@@ -65,7 +65,30 @@ def visual_input_limit():
     return max(48000,min(256000,value))
 
 
-def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=False):
+def bounded_image_payload(payload, per_image_tokens, maximum_images=2):
+    """Serialized size of a payload whose only media are inline data-URL images,
+    with each image counted at an explicit token bound instead of base64 bytes."""
+    images=0
+    def strip(value):
+        nonlocal images
+        if isinstance(value,dict):
+            if value.get('type')=='image_url':
+                url=(value.get('image_url') or {}).get('url','')
+                if not isinstance(url,str) or not url.startswith('data:image/'):
+                    raise UsageError('usage_provider_unavailable','Only inline images have a bounded tariff.',503)
+                images+=1
+                return {'type':'image_url','image_url':{'url':'bounded-image'}}
+            if any(key in value for key in ('input_audio','file_data','video_url')) or value.get('type') in {'input_audio','audio','video','video_url','file','input_file'}:
+                raise UsageError('usage_provider_unavailable','Only inline images have a bounded tariff.',503)
+            return {key:strip(item) for key,item in value.items()}
+        if isinstance(value,list):return [strip(item) for item in value]
+        return value
+    stripped=strip({k:v for k,v in payload.items() if k not in {'model','stream','stream_options'}})
+    if images>maximum_images:raise UsageError('usage_input_limit','Too many images for one request.',422)
+    return len(json.dumps(stripped,ensure_ascii=False).encode('utf-8'))+images*per_image_tokens
+
+
+def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=False, visual_role='producer', image_token_bound=None):
     from .context import current_store, current_root
     policy=Policy.load()
     if policy.mode=='off':return None
@@ -82,7 +105,7 @@ def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=
     if visual_profile and not free_model:
         try:
             from ..visual_pricing import approved_visual_tariff
-            visual_rates=approved_visual_tariff(model)
+            visual_rates=approved_visual_tariff(model, visual_role)
         except (ValueError,KeyError,TypeError):
             raise UsageError('usage_provider_unavailable','Visual model has no reviewed pinned tariff.',503) from None
     if assessment_profile:
@@ -99,8 +122,13 @@ def begin_model(payload, store=None, *, assessment_profile=None, visual_profile=
     # Images/audio require an audited multimodal bound; do not estimate from base64.
     encoded=json.dumps({k:v for k,v in payload.items() if k not in {'model','stream','stream_options'}},ensure_ascii=False)
     if has_multimodal_input(payload):
-        raise UsageError('usage_provider_unavailable','Multimodal billing needs a configured bounded tariff.',503)
-    tokens=len(encoded.encode('utf-8'))
+        # Only the visual judge may send images, each at an explicit token bound
+        # (the screenshot is cropped so the provider charge stays below it).
+        if not (visual_profile and visual_role=='judge' and isinstance(image_token_bound,int) and 0<image_token_bound<=4000):
+            raise UsageError('usage_provider_unavailable','Multimodal billing needs a configured bounded tariff.',503)
+        tokens=bounded_image_payload(payload,image_token_bound)
+    else:
+        tokens=len(encoded.encode('utf-8'))
     input_limit=visual_input_limit() if visual_profile else 48000
     if tokens>input_limit:raise UsageError('usage_input_limit','Narrow this request or its supporting material.',422)
     ledger=Ledger(store or current_store.get() or storage(database_url()),policy)

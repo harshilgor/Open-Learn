@@ -29,21 +29,7 @@ import httpx
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-HELPERS = r"""
-const text = () => document.body.innerText;
-const lower = () => text().toLowerCase();
-const fields = () => [...document.querySelectorAll('input,select')];
-const labelOf = el => ((el.labels && el.labels[0] && el.labels[0].textContent) || el.getAttribute('aria-label') || el.id || el.name || '').toLowerCase();
-const findInput = re => fields().find(el => re.test(labelOf(el)));
-const readout = re => { const m = text().match(re); return m ? {value: Number(m[1]), unit: (m[2] || '').trim(), raw: m[0].slice(0, 80)} : null; };
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const setValue = (el, value) => { el.value = String(value); el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); };
-const button = re => [...document.querySelectorAll('button,[role=button]')].find(el => re.test((el.textContent + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase()));
-const graphics = () => [...document.querySelectorAll('canvas,svg')].filter(el => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 40; });
-const graphicState = () => graphics().map(el => { if (el.tagName === 'svg') return el.innerHTML.length + el.innerHTML.slice(-300);
-  try { return el.toDataURL().slice(-400); } catch (error) { return 'opaque'; } });
-const mentions = words => words.filter(word => !lower().includes(word));
-"""
+from backend.app.visual_science import HELPERS  # noqa: E402 - shared with in-pipeline science checks
 
 
 def check(body: str) -> str:

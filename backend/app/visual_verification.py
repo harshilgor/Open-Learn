@@ -66,9 +66,10 @@ def unavailable_reason() -> str | None:
     return None
 
 
-def content_digest(content: dict, controls=(), control_values=None) -> str:
+def content_digest(content: dict, controls=(), control_values=None, science=()) -> str:
     canonical = json.dumps({'content': {key: content.get(key) for key in ('css', 'html', 'jsFunctions', 'jsExpressions', 'initialHeight')},
-                            'controls': [dict(value) for value in controls], 'values': control_values or {}, 'version': VERSION},
+                            'controls': [dict(value) for value in controls], 'values': control_values or {}, 'version': VERSION,
+                            'science': sorted(science)},
                            sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(canonical.encode('utf-8')).hexdigest()
 
@@ -117,6 +118,13 @@ METRICS_JS = r"""(badPattern) => {
     controlCount: controls.length,
     unlabeled: controls.filter(el => !labelled(el)).slice(0, 6).map(describe),
     badValues: [...new Set(bad)].slice(0, 4),
+    // Value displays still empty after setup: the update routine never ran.
+    // Empty error/status lines are normal and excluded by name.
+    emptyOutputs: [...document.querySelectorAll('output,[aria-live]')].filter(el => {
+      const name = ((el.id || '') + ' ' + (typeof el.className === 'string' ? el.className : '')).toLowerCase();
+      if (/err|status|msg|warn|alert|hint/.test(name) || el.textContent.trim()) return false;
+      return el.tagName === 'OUTPUT' || /out|result|readout|value|display/.test(name);
+    }).slice(0, 6).map(describe),
     // Drawing surfaces sized from a container whose height resolves to ~0
     // (height:100% inside the auto-sized frame) render nothing visible.
     collapsed: [...document.querySelectorAll('canvas,svg')].filter(el => {
@@ -321,27 +329,30 @@ def _remember(digest: str, report: dict):
 
 
 def verify_blocking(content: dict, controls=(), control_values=None, *, probe=True, screenshot_dir=None, timeout=45.0,
-                    checks: dict[str, str] | None = None) -> dict:
+                    checks: dict[str, str] | None = None, science=(), capture=False) -> dict:
     """Verify from any thread. Never raises for candidate defects.
 
     ``checks`` maps names to JavaScript functions evaluated in the settled
     desktop frame (benchmarks use them for task-specific assertions).
     """
-    digest = content_digest(content, controls, control_values)
-    if screenshot_dir is None and not checks and (value := cached(digest)):
+    digest = content_digest(content, controls, control_values, science)
+    if screenshot_dir is None and not checks and not capture and (value := cached(digest)):
         return value | {'cached': True}
     reason = unavailable_reason()
     if reason:
         return {'version': VERSION, 'status': 'unavailable', 'reason': reason, 'findings': [], 'digest': digest}
     runtime = _shared_runtime()
-    future = runtime.submit(_verify(runtime, content, list(controls), control_values or {}, probe, screenshot_dir, digest, checks or {}))
+    from .visual_science import scripts_for
+    future = runtime.submit(_verify(runtime, content, list(controls), control_values or {}, probe, screenshot_dir, digest, checks or {},
+                                    scripts_for(science), capture))
     try:
         report = future.result(timeout=timeout + 15)
     except concurrent.futures.TimeoutError:
         future.cancel()
         report = {'version': VERSION, 'status': 'unavailable', 'reason': 'verifier_timeout', 'findings': [], 'digest': digest}
     if not checks:
-        _remember(digest, report)
+        # Screenshots are handed to the caller once, never cached or persisted.
+        _remember(digest, {key: value for key, value in report.items() if key != 'screenshotPng'})
     return report
 
 
@@ -429,7 +440,8 @@ async def _screenshot(page):
 THEME_BACKDROPS = {'light': {'r': 255, 'g': 255, 'b': 255, 'a': 1}, 'dark': {'r': 31, 'g': 30, 'b': 29, 'a': 1}}
 
 
-async def _viewport_pass(browser, name, content, controls, control_values, probe, screenshot_dir, findings, checks=None, theme='light'):
+async def _viewport_pass(browser, name, content, controls, control_values, probe, screenshot_dir, findings, checks=None, theme='light',
+                         science=None):
     width, height = VIEWPORTS[name]
     label = name if theme == 'light' else f'{name} dark theme'
     blocked: list[str] = []
@@ -457,6 +469,7 @@ async def _viewport_pass(browser, name, content, controls, control_values, probe
             code = 'console_error' if error['kind'] == 'console' else 'runtime_exception'
             findings.append(finding(ERROR, code, f'{name}: {error["message"] or "uncaught error"}', viewport=name))
         png = await _screenshot(page)
+        result['_png'] = png
         if screenshot_dir:
             Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
             (Path(screenshot_dir) / f'{name}-{theme}.png').write_bytes(png)
@@ -473,6 +486,9 @@ async def _viewport_pass(browser, name, content, controls, control_values, probe
             if stats and stats['stddev'] < 1.5:
                 severity = ERROR if region['w'] * region['h'] >= 0.25 * frame_area else WARNING
                 findings.append(finding(severity, 'blank_canvas', f'{name}: a {region["w"]}x{region["h"]} canvas is blank after initialization; the scene or chart did not draw.'))
+        if metrics.get('emptyOutputs') and theme == 'light':
+            findings.append(finding(WARNING, 'empty_readout', f'{name}: value displays are still empty after setup: {", ".join(metrics["emptyOutputs"][:4])}. '
+                                    'Call the update function once during initialization so every readout shows its starting value.'))
         if metrics.get('collapsed'):
             findings.append(finding(ERROR, 'collapsed_graphic', f'{name}: drawing surfaces have almost no size: {", ".join(metrics["collapsed"])}. '
                                     'The frame sizes itself to its content, so height:100% or 100vh resolves to nearly 0; give the '
@@ -513,6 +529,20 @@ async def _viewport_pass(browser, name, content, controls, control_values, probe
                                     f'against their background, e.g. {examples}. Use the theme color variables instead of fixed colors.'))
         if blocked:
             findings.append(finding(INFO, 'network_blocked', f'{name}: {len(blocked)} external requests were blocked during verification ({", ".join(sorted(set(blocked))[:3])}).'))
+        if science:
+            # Topic checks read the visual's labeled controls and readouts and
+            # compare them with the governing formula (visual_science.py).
+            result['science'] = {}
+            for topic, source in science.items():
+                try:
+                    outcome = await asyncio.wait_for(frame.evaluate(source), 12)
+                except Exception as error:  # noqa: BLE001 - an unmeasurable check is not a candidate defect
+                    outcome = {'status': 'unmeasured', 'detail': f'{type(error).__name__}'}
+                result['science'][topic] = outcome
+                if isinstance(outcome, dict) and outcome.get('status') == 'fail':
+                    measured = json.dumps(outcome.get('measured'), ensure_ascii=False)[:300]
+                    findings.append(finding(ERROR, 'science_mismatch', f'{topic.replace("_", " ")}: {outcome.get("detail")} (measured: {measured}). '
+                                            'Compute every displayed value from the governing formula using the current control values.'))
         if checks:
             result['checks'] = {}
             for key, source in checks.items():
@@ -600,7 +630,7 @@ async def _probe(page, frame, findings, events):
     return results
 
 
-async def _verify(runtime, content, controls, control_values, probe, screenshot_dir, digest, checks):
+async def _verify(runtime, content, controls, control_values, probe, screenshot_dir, digest, checks, science=None, capture=False):
     started = time.monotonic()
     findings: list[dict] = []
     try:
@@ -616,7 +646,8 @@ async def _verify(runtime, content, controls, control_values, probe, screenshot_
                 key = name if theme == 'light' else f'{name}-{theme}'
                 passes[key] = await _viewport_pass(browser, name, content, controls, control_values,
                                                    probe and key == 'desktop', screenshot_dir and Path(screenshot_dir), findings,
-                                                   checks if key == 'desktop' else None, theme)
+                                                   checks if key == 'desktop' else None, theme,
+                                                   science if key == 'desktop' else None)
                 if any(item['code'] in {'script_timeout', 'frame_missing'} for item in findings):
                     break
         except Exception as error:  # noqa: BLE001 - an internal verifier fault must not fail a candidate
@@ -631,6 +662,12 @@ async def _verify(runtime, content, controls, control_values, probe, screenshot_
             seen.add(key)
             unique.append(item)
     status = 'failed' if any(item['severity'] == ERROR for item in unique) else 'passed'
+    screenshot = passes.get('desktop', {}).pop('_png', None)
+    for value in passes.values():
+        value.pop('_png', None)
+    if capture and screenshot:
+        return {'version': VERSION, 'status': status, 'findings': unique[:MAX_FINDINGS], 'viewports': passes, 'digest': digest,
+                'durationMs': round((time.monotonic() - started) * 1000), 'screenshotPng': screenshot}
     return {'version': VERSION, 'status': status, 'findings': unique[:MAX_FINDINGS], 'viewports': passes, 'digest': digest,
             'durationMs': round((time.monotonic() - started) * 1000)}
 

@@ -422,7 +422,7 @@ def static_candidate(value: GeneratedVisual) -> GeneratedVisual:
 
 # Warnings worth one extra attempt after an otherwise passing candidate: each is
 # visible to learners. Accessibility and informational findings are reported only.
-REPAIRABLE_WARNINGS = {'unresponsive_control', 'horizontal_overflow', 'height_clipped', 'blank_canvas', 'low_contrast', 'overlapping_text'}
+REPAIRABLE_WARNINGS = {'unresponsive_control', 'horizontal_overflow', 'height_clipped', 'blank_canvas', 'low_contrast', 'overlapping_text', 'empty_readout', 'visual_quality'}
 
 REPAIR_PROMPT = ("Open Learn tested this visual in a sandboxed browser at 720px and 360px widths before showing it to the learner, "
                  "and it cannot be shown yet:\n{findings}\n\nFix every listed problem and call generateSandboxedUi again with the complete "
@@ -433,7 +433,7 @@ POLISH_PROMPT = ("Open Learn tested this visual in a sandboxed browser at 720px 
                  "breaking anything that works. Do not reply with prose.")
 
 
-def assess_candidate(value: GeneratedVisual, carry: dict | None = None) -> dict:
+def assess_candidate(value: GeneratedVisual, carry: dict | None = None, science=(), judge_question: str | None = None) -> dict:
     """Static validation, then headless runtime verification.
 
     Returns ``ok``, the prepared ``value`` (controls extracted, verification
@@ -456,13 +456,25 @@ def assess_candidate(value: GeneratedVisual, carry: dict | None = None) -> dict:
         value.control_values = {key: number for key, number in carry.items() if key in bounds
                                 and isinstance(number, (int, float)) and bounds[key].minimum <= number <= bounds[key].maximum}
     from .visual_verification import repair_feedback, summary, verify_blocking
-    report = verify_blocking(value.content, [control.model_dump() for control in value.controls], value.control_values)
+    from .visual_judge import judge, judge_model
+    capture = bool(judge_question and judge_model())
+    report = verify_blocking(value.content, [control.model_dump() for control in value.controls], value.control_values,
+                             science=science, capture=capture)
     value.verification = summary(report)
     codes = [item['code'] for item in report.get('findings', []) if item['severity'] != 'info']
     if report['status'] == 'failed':
         return {'ok': False, 'value': value, 'code': 'visual_runtime_failed', 'polish': False, 'findings': codes,
                 'feedback': repair_feedback(report)}
     warnings = [item for item in report.get('findings', []) if item['severity'] == 'warning' and item['code'] in REPAIRABLE_WARNINGS]
+    # Optional screenshot review of a working candidate: its problems feed the
+    # single polish attempt and never block publication (visual_judge.py).
+    judgment = judge(report['screenshotPng'], judge_question) if capture and report.get('screenshotPng') else None
+    if judgment is not None:
+        value.verification = (value.verification or {}) | {'judge': {'acceptable': judgment['acceptable'], 'score': judgment['score']}}
+        if not judgment['acceptable'] and judgment['problems']:
+            warnings.append({'severity': 'warning', 'code': 'visual_quality',
+                             'message': 'Screenshot review: ' + '; '.join(judgment['problems'])})
+            codes.append('visual_quality')
     return {'ok': True, 'value': value, 'code': None, 'polish': bool(warnings), 'findings': codes,
             'feedback': repair_feedback({'findings': warnings}) if warnings else ''}
 
@@ -541,6 +553,8 @@ async def generate(owner: str, generation_id: str, prepared: dict, question: str
     if runtime_url != "http://127.0.0.1:8130":
         raise ValueError("visual_runtime_origin_invalid")
     messages = visual_messages(generation_id, prepared, question)
+    from .visual_science import topics_for
+    science = topics_for(question, str(prepared.get('title', '')), str((prepared.get('editTarget') or {}).get('title', '')))
     collector = ActivityCollector(str(prepared.get("title", ""))[:160])
     deadline = time.monotonic() + limits['deadlineSeconds']
     state = {'last_emit': 0.0, 'plan': None, 'attempt': 0}
@@ -642,7 +656,9 @@ async def generate(owner: str, generation_id: str, prepared: dict, question: str
                 await progress('verifying')
                 calls = collector.render_tool_calls[calls_before:]
                 lineage, carry = edit_lineage(prepared.get('editTarget'), calls[-1] if calls else None)
-                verdict = await asyncio.to_thread(assess_candidate, candidates[-1], carry)
+                # The screenshot judge only reviews a first attempt, where a polish can still use it.
+                judge_question = question if state['attempt'] == 1 and limits['polishWarnings'] else None
+                verdict = await asyncio.to_thread(assess_candidate, candidates[-1], carry, science, judge_question)
                 if verdict['ok'] and lineage is not None:
                     verdict['value'].lineage = lineage
                 debug_candidate(generation_id, state['attempt'], candidates[-1], verdict)
@@ -718,6 +734,87 @@ def visual_messages(generation_id: str, prepared: dict, question: str) -> list[d
     return ([{"id": f'{generation_id}_context_{index}', 'role': item['role'], 'content': str(item['content'])[:6000]}
              for index, item in enumerate(conversation)]
             + [{"id": generation_id + "_visual", "role": "user", "content": input_text}])
+
+
+_DRAINS: set[asyncio.Task] = set()
+RECEIPT_DRAIN_SECONDS = 30
+
+
+async def metered_stream(payload: dict, ticket, finish_model, provider_url="https://openrouter.ai/api/v1/chat/completions"):
+    """Relay the provider stream and settle exactly once with its usage receipt.
+
+    The agent stops reading as soon as CopilotKit intercepts the render tool
+    call, before the provider's trailing usage chunk. Settling then keeps the
+    conservative reservation (about ten times the real cost of a typical
+    call). A finished generation is therefore drained in the background for
+    its receipt; an unfinished one (a cancelled visual) is aborted at once and
+    keeps the conservative bound, so nothing extra is generated or billed.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    state = {'receipt': None, 'finished': False, 'detached': False}
+
+    async def pump():
+        try:
+            async with httpx.AsyncClient(timeout=90, trust_env=False) as client:
+                async with client.stream("POST", provider_url, json=payload,
+                                         headers={"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]}) as response:
+                    if not response.is_success:
+                        import logging
+                        body = (await response.aread())[:2000].decode('utf-8', 'replace')
+                        try:
+                            error = json.loads(body).get('error') or {}
+                            detail = str((json.loads(error.get('metadata', {}).get('raw') or '{}') or {}).get('error', {}).get('message')
+                                         or error.get('message'))
+                        except (ValueError, TypeError, AttributeError):
+                            detail = body
+                        logging.getLogger(__name__).warning('Visual model provider HTTP status: %s detail=%s', response.status_code, detail[:300])
+                        if 400 <= response.status_code < 600:
+                            # Rejected before generation: the provider bills nothing, so
+                            # neither does the ledger (no conservative hold is kept).
+                            state['receipt'] = {'prompt_tokens': 0, 'completion_tokens': 0, 'cost': 0}
+                        queue.put_nowait('data: {"error":{"message":"Visual model request failed."}}\n\n')
+                        return
+                    async for line in response.aiter_lines():
+                        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+                            try:
+                                parsed = json.loads(line[5:])
+                                if isinstance(parsed.get("usage"), dict):
+                                    state['receipt'] = parsed["usage"]
+                                if any(isinstance(choice, dict) and choice.get('finish_reason') for choice in parsed.get('choices') or []):
+                                    state['finished'] = True
+                                if isinstance(parsed.get('error'), dict):
+                                    # OpenRouter reports provider failures mid-stream under HTTP 200.
+                                    import logging
+                                    error = parsed['error']
+                                    logging.getLogger(__name__).warning('Visual model provider error mid-stream: code=%s message=%s',
+                                                                        str(error.get('code'))[:20], str(error.get('message'))[:200])
+                            except (ValueError, TypeError, AttributeError):
+                                pass
+                        if not state['detached']:
+                            queue.put_nowait(line + "\n")
+                        elif not state['finished'] or state['receipt'] is not None:
+                            return
+        except Exception as error:  # noqa: BLE001 - transport faults settle conservatively below
+            import logging
+            logging.getLogger(__name__).warning('Visual model stream ended: %s', type(error).__name__)
+        finally:
+            if state['receipt'] is None:
+                import logging
+                logging.getLogger(__name__).warning('Visual model call settled without a receipt (finished=%s, detached=%s)',
+                                                    state['finished'], state['detached'])
+            finish_model(ticket, state['receipt'])
+            queue.put_nowait(None)
+
+    task = asyncio.create_task(asyncio.wait_for(pump(), 90 + RECEIPT_DRAIN_SECONDS))
+    _DRAINS.add(task)
+    task.add_done_callback(lambda done: (_DRAINS.discard(done), done.cancelled() or done.exception()))
+    try:
+        while (item := await queue.get()) is not None:
+            yield item
+    finally:
+        # The client is gone: a finished generation keeps reading for its
+        # receipt (bounded); an unfinished one stops at the next chunk.
+        state['detached'] = True
 
 
 def build_router(store_provider):
@@ -847,7 +944,11 @@ def build_router(store_provider):
             payload["stream_options"] = {"include_usage": True}
         # Visual production depends on advertised tool parameters. Do not let
         # provider fallback silently discard tool_choice and return code prose.
-        payload['provider']={'require_parameters':True}
+        # OpenRouter's capability flag rejects every Anthropic endpoint although
+        # they honor tool_choice, so it is configurable per deployment; a run
+        # that still returns prose produces no artifact and is retried.
+        if os.getenv('OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS', 'true').lower() not in {'0', 'false', 'no', 'off'}:
+            payload['provider']={'require_parameters':True}
         import logging
         choice=payload.get('tool_choice')
         choice_label=choice if isinstance(choice,str) else ((choice or {}).get('function',{}).get('name') if isinstance(choice,dict) else 'auto')
@@ -858,29 +959,8 @@ def build_router(store_provider):
         with usage_scope(store, claim["owner"], "ogui:" + claim["generationId"]):
             ticket = begin_model(payload, store=store, visual_profile=True)
 
-        async def stream():
-            receipt = None
-            try:
-                async with httpx.AsyncClient(timeout=90, trust_env=False) as client:
-                    async with client.stream("POST", "https://openrouter.ai/api/v1/chat/completions", json=payload,
-                        headers={"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]}) as response:
-                        if not response.is_success:
-                            import logging
-                            logging.getLogger(__name__).warning('Visual model provider HTTP status: %s', response.status_code)
-                            yield 'data: {"error":{"message":"Visual model request failed."}}\n\n'
-                            return
-                        async for line in response.aiter_lines():
-                            if line.startswith("data:") and line[5:].strip() != "[DONE]":
-                                try:
-                                    parsed = json.loads(line[5:])
-                                    if isinstance(parsed.get("usage"), dict):
-                                        receipt = parsed["usage"]
-                                except (ValueError, TypeError):
-                                    pass
-                            yield line + "\n"
-            finally:
-                finish_model(ticket, receipt)
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+        return StreamingResponse(metered_stream(payload, ticket, finish_model), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store"})
 
     @router.post("/internal/visuals/jev")
     async def jev_proxy(request: Request, authorization: str | None = Header(default=None)):
