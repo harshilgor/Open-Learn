@@ -471,6 +471,8 @@ Routes, in a new router mounted next to `build_memory_router` in `main.py`. All 
 | GET | `/v1/memory/profile` | Current core profile text + fact IDs |
 | GET/PUT | `/v1/memory/settings` | `learning_enabled` toggle |
 | POST | `/v1/memory/forget-all` | Hard-delete all facts and episodes for the owner (with confirmation token in the body) |
+| PUT | `/v1/memory/facts/{id}/sensitive` | (Phase F1) Per-fact opt-in for a sensitive fact to enter prompts and the core profile |
+| GET | `/v1/memory/forget-all` | (Phase F1) Counts to delete and the current confirmation token |
 | GET | `/v1/memory/changes` | Recent consolidation and learning changes |
 
 UI: replace the developer-oriented fact list in `web/components/source-memory-settings.tsx` with a learner-facing **"What Open Learn remembers about you"** page under Settings → Memory:
@@ -607,6 +609,7 @@ Record answers here before the relevant phase starts:
 - [x] Sensitive facts on explicit request: allow (§2 rule 6), or refuse entirely?
   **Decided 2026-10-12:** allow, only on an explicit remember request, stored with `sensitive=true`, never embedded, and excluded from prompts unless enabled per fact. Inferred sensitive facts are always dropped.
 - [ ] Embeddings for memory facts (requires `AI_TUTOR_EMBEDDING_MODEL`; external provider sees fact text)?
+  Open. Build plan, flags and evaluation gates: [docs/memory/Embeddings_Plan.md](memory/Embeddings_Plan.md).
 - [x] Default for new accounts: memory learning on, with a first-run notice?
   **Decided 2026-10-12:** on by default, with a one-time notice linking to Settings → Memory to review or pause.
 - [ ] Shadow-mode duration and who may review aggregate results.
@@ -731,3 +734,14 @@ Agent appends: date, phase, PR, deviations from this spec and why, open question
   - The Phase E SQL (scheduler, episodes, review flags, change log, profile) passed a smoke run on PostgreSQL.
   - Added `backend/scripts/memory_shadow_report.py` for the §12 shadow review: aggregate counts only, with per-kind counts withheld below 20 distinct owners. The two weeks of real shadow usage still have to elapse before switching extraction to `on`.
   - Still owner decisions: embeddings, and learners under 13/18.
+- **2026-10-12 · Phase F1 · branch `codex/learner-memory-phase-f`** (built on the Phase E PostgreSQL follow-up, PR #36)
+  - Phase F is split into F1 (write APIs and preference precedence), F2 (the "What Open Learn remembers about you" page) and F3 (clean-up and rollout support).
+  - Done (F1): `PATCH /facts/{id}`, `POST /facts/{id}/confirm`, `POST /facts`, `PUT /facts/{id}/sensitive`, and `GET`/`POST /forget-all` in `learner_memory/routes.py`; store functions in `store.py`; `validator.learner_statement`; learner actions in the change log; `PREFERENCE_PRECEDENCE` and `PRECEDENCE_NOTE` in `policy.py`; tests in `test_learner_memory_phase_f.py` (27).
+  - Schema: migration `0088_memory_sensitive_enable` adds `memory_facts.sensitive_enabled` (default false), so §5's "no schema change" for Phase F doesn't hold. It's a plain `ADD COLUMN`: alembic batch mode would rebuild the SQLite table and drop the expression-based one-active-fact-per-subject index. `FACT_COLUMNS` (used by inserts) is unchanged; reads use `SELECT_COLUMNS`. Prompt-facing reads use `(sensitive=false OR sensitive_enabled=true)`; the extraction job's context facts still exclude every sensitive fact.
+  - Edit (§10): the new fact is `user_confirmed`, active, with 90-day stability (§9.2 "on user correction"). Its ID derives from the old fact and revision, and the old fact becomes `superseded`, so a retried request gets 409 rather than forking the timeline. It keeps the old fact's turn references (for "You said this on…") but not source references, so removing that source doesn't delete the learner's correction. A changed kind changes the subject-key prefix. The sensitive opt-in carries over to the corrected wording.
+  - Learner actions outrank every origin: an edit, a manual add, or confirming a tentative or archived fact supersedes whatever holds that subject slot.
+  - Conflict resolution: there is no separate endpoint. Confirming one side of a `needs_review` pair supersedes the other side and clears both flags; deleting the wrong side also works.
+  - Manual facts and edits skip the instruction denylist (the learner is the author, and facts still render as context, §2 rule 2). Links, contact details and credentials are refused (`IDENTIFIER_DENYLIST`, split out of `INSTRUCTION_DENYLIST` without changing extraction). A sensitive keyword stores the fact as `sensitive`, off by default in prompts.
+  - Forget-all: the confirmation token is a hash of the owner's memory version and counts, served by `GET /forget-all` with the counts the UI shows. It deletes facts (shadow included), episodes, embeddings and the stored core profile, and also dismisses explicit preferences in `memory_derived` so Learn mode stops reading them. Source revisions and continuity summaries stay with their sources. It logs one change entry ("N memories forgotten").
+  - Precedence (§10): when a chat turn includes learner memory, the instructions gain one fixed sentence ordering current request > course memory > global memory > Buddy defaults > account settings. The chat block and the v2 profile already list course-scoped preferences first. Not done yet: the compiler (Learn mode) still reads `identity_preferences` and `memory_derived` directly. F3 moves it to memory facts.
+  - Not changed: learners under 13/18 (still an owner decision), and embeddings (plan in [docs/memory/Embeddings_Plan.md](memory/Embeddings_Plan.md)).
