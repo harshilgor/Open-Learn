@@ -6,6 +6,14 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase F1 (write APIs; used by the memory page in F2):
+  - `PATCH /v1/memory/facts/{id}`: an edit creates a new learner-confirmed fact that supersedes the old one (statements stay immutable). It is guarded by `expectedRevision`, and `DELETE …?undo=true` restores the original.
+  - `POST /v1/memory/facts/{id}/confirm`: confirms a memory (365-day stability; inferred becomes `user_confirmed`). Confirming one side of a `needs_review` conflict resolves it.
+  - `POST /v1/memory/facts`: the learner adds a memory by hand. Links, contact details and passwords are refused.
+  - `PUT /v1/memory/facts/{id}/sensitive`: per-fact opt-in for a sensitive memory to enter the tutor's context and the core profile. Sensitive facts are still never embedded. Adds migration `0088_memory_sensitive_enable` (release head moved).
+  - `GET`/`POST /v1/memory/forget-all`: deletes every memory and session summary, and dismisses saved Settings preferences. It needs a confirmation token that changes whenever memory changes.
+  - Learner actions now appear in `GET /v1/memory/changes` ("1 memory edited by you").
+  - One preference precedence everywhere: current request, then course memory, then global memory, then Buddy defaults, then account settings. Chat prompts that include learner memory state it.
 - Learner memory Phase E (flagged, default off): `OPENLEARN_MEMORY_CONSOLIDATION` runs a daily `memory_consolidate` job for each owner with memory activity in the last 3 days.
   - Forgetting: stale tentative inferences are deleted after 30 days; tentative statements by the learner are archived, never deleted. Reinforced tentative facts are promoted. Facts whose strength falls below 0.05 and deadlines past their 7-day grace are archived, as are episodes older than a year.
   - Near-duplicates in the same kind and scope merge into the older fact (lexical until embeddings are approved). Same-rank conflicts within 24 hours are flagged `needs_review`.

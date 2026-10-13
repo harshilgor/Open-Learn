@@ -10,11 +10,45 @@ class MemorySettingsUpdate(BaseModel):
     expected_revision: int = Field(alias="expectedRevision", ge=0)
 
 
+class FactEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    statement: str = Field(max_length=2000)
+    kind: str
+    course_id: str | None = Field(default=None, alias="courseId", max_length=160)
+    event_date: str | None = Field(default=None, alias="eventDate", max_length=32)
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+
+
+class FactCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    statement: str = Field(max_length=2000)
+    kind: str
+    course_id: str | None = Field(default=None, alias="courseId", max_length=160)
+    event_date: str | None = Field(default=None, alias="eventDate", max_length=32)
+
+
+class FactConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+
+
+class SensitiveUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    enabled: bool
+    expected_revision: int = Field(alias="expectedRevision", ge=1)
+
+
+class ForgetAll(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    confirmation: str = Field(max_length=80)
+
+
 def public_fact(fact: dict) -> dict:
     return {
         "id": fact["id"], "kind": fact["kind"], "statement": fact["statement"],
         "courseId": fact["course_id"], "conceptIds": fact["concept_ids"], "eventDate": fact["event_date"],
         "origin": fact["origin"], "status": fact["status"], "sensitive": fact["sensitive"],
+        "sensitiveEnabled": fact.get("sensitive_enabled", False),
         "learnedAt": fact["learned_at"], "validFrom": fact["valid_from"], "invalidAt": fact["invalid_at"],
         "supersededBy": fact["superseded_by"], "confirmedAt": fact["confirmed_at"], "lastUsedAt": fact["last_used_at"],
         "useCount": fact["use_count"], "needsReview": fact["needs_review"], "revision": fact["revision"],

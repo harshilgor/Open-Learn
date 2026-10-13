@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from dataclasses import replace
 
 from sqlalchemy import bindparam, text
@@ -18,6 +19,10 @@ from . import policy
 FACT_COLUMNS = ("owner_id,id,kind,statement,subject_key,course_id,concept_ids,event_date,origin,status,sensitive,"
                 "confidence,importance,learned_at,valid_from,invalid_at,superseded_by,basis,last_used_at,use_count,"
                 "confirmed_at,stability_days,needs_review,policy_version,revision")
+# Read columns: FACT_COLUMNS plus the learner's per-fact opt-in for sensitive facts.
+SELECT_COLUMNS = FACT_COLUMNS + ",sensitive_enabled"
+# A fact may enter prompts when it is not sensitive, or the learner enabled it (§2 rule 6).
+PROMPT_ELIGIBLE = "(sensitive=:false OR sensitive_enabled=:true)"
 
 
 def fact_id_for_derived(owner: str, derived_id: str) -> str:
@@ -44,6 +49,7 @@ def _decode(row) -> dict:
     fact["basis"] = json.loads(fact.get("basis") or "[]")
     fact["sensitive"] = bool(fact["sensitive"])
     fact["needs_review"] = bool(fact["needs_review"])
+    fact["sensitive_enabled"] = bool(fact.get("sensitive_enabled"))
     return fact
 
 
@@ -55,13 +61,13 @@ def bump_version(conn, owner, *, now=None):
 
 
 def get_fact(conn, owner, fact_id):
-    row = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND id=:id"),
+    row = conn.execute(text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND id=:id"),
                        {"owner": owner, "id": fact_id}).mappings().first()
     return _decode(row) if row else None
 
 
 def _active_same_subject(conn, owner, subject_key, course_id):
-    row = conn.execute(text(f"""SELECT {FACT_COLUMNS} FROM memory_facts
+    row = conn.execute(text(f"""SELECT {SELECT_COLUMNS} FROM memory_facts
         WHERE owner_id=:owner AND subject_key=:subject AND COALESCE(course_id,'')=:course AND status='active'"""),
         {"owner": owner, "subject": subject_key, "course": course_id or ""}).mappings().first()
     return _decode(row) if row else None
@@ -106,7 +112,7 @@ def record_explicit_preference(conn, owner, *, derived_id, statement, course_id,
 def _facts_referencing(conn, owner, key, value):
     # LIKE narrows the scan to plausible rows; the JSON check is authoritative.
     pattern = "%" + json.dumps(value)[1:-1].replace("%", "\\%").replace("_", "\\_") + "%"
-    rows = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND basis LIKE :pattern ESCAPE '\\'"),
+    rows = conn.execute(text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND basis LIKE :pattern ESCAPE '\\'"),
                         {"owner": owner, "pattern": pattern}).mappings().all()
     return [fact for fact in map(_decode, rows) if any(ref.get(key) == value for ref in fact["basis"])]
 
@@ -159,7 +165,7 @@ def list_facts(conn, owner, *, status=None, kind=None, course_id=None, limit=200
         clauses.append("kind=:kind"); params["kind"] = kind
     if course_id:
         clauses.append("course_id=:course"); params["course"] = course_id
-    rows = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE {' AND '.join(clauses)} "
+    rows = conn.execute(text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE {' AND '.join(clauses)} "
                              "ORDER BY learned_at DESC, id LIMIT :limit"), params).mappings().all()
     return [_decode(row) for row in rows]
 
@@ -172,7 +178,7 @@ def fact_history(conn, owner, fact_id, *, limit=50):
     chain, seen = [current], {fact_id}
     head = current
     while len(chain) < limit:
-        row = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND superseded_by=:id ORDER BY valid_from DESC, id LIMIT 1"),
+        row = conn.execute(text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND superseded_by=:id ORDER BY valid_from DESC, id LIMIT 1"),
                            {"owner": owner, "id": head["id"]}).mappings().first()
         if not row or row["id"] in seen:
             break
@@ -188,10 +194,10 @@ def fact_history(conn, owner, fact_id, *, limit=50):
 
 def active_preferences(conn, owner, course_id):
     """Active, non-sensitive preferences for this course or global."""
-    rows = conn.execute(text(f"""SELECT {FACT_COLUMNS} FROM memory_facts
-        WHERE owner_id=:owner AND kind='preference' AND status='active' AND sensitive=:false
+    rows = conn.execute(text(f"""SELECT {SELECT_COLUMNS} FROM memory_facts
+        WHERE owner_id=:owner AND kind='preference' AND status='active' AND {PROMPT_ELIGIBLE}
           AND (course_id IS NULL OR course_id=:course)"""),
-        {"owner": owner, "course": course_id or "", "false": False}).mappings().all()
+        {"owner": owner, "course": course_id or "", "false": False, "true": True}).mappings().all()
     return [_decode(row) for row in rows]
 
 
@@ -247,7 +253,7 @@ def extracted_fact_id(owner, generation_id, subject_key, quote) -> str:
 
 def context_facts(conn, owner, message, *, limit=policy.MAX_CONTEXT_FACTS, pool=500):
     """Active or tentative facts most similar to the message, for supersession proposals."""
-    rows = conn.execute(text(f"""SELECT {FACT_COLUMNS} FROM memory_facts
+    rows = conn.execute(text(f"""SELECT {SELECT_COLUMNS} FROM memory_facts
         WHERE owner_id=:owner AND status IN ('active','tentative') AND sensitive=:false
         ORDER BY learned_at DESC, id LIMIT :pool"""), {"owner": owner, "false": False, "pool": pool}).mappings().all()
     terms = set(re.findall(r"[a-z0-9]{3,}", (message or "").lower()))
@@ -338,7 +344,7 @@ def undo_fact(conn, owner, fact_id, *, now=None, window_seconds=86400):
     fact = get_fact(conn, owner, fact_id)
     if not fact or fact["status"] == "shadow":
         return None
-    predecessors = conn.execute(text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND superseded_by=:id AND status='superseded'"),
+    predecessors = conn.execute(text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND superseded_by=:id AND status='superseded'"),
                                 {"owner": owner, "id": fact_id}).mappings().all()
     delete_fact(conn, owner, fact_id)
     restored = []
@@ -381,8 +387,8 @@ def candidate_facts(conn, owner, course_id, *, kinds=None, limit=policy.CANDIDAT
     Hot path: only the columns ranking needs, as plain rows. ``basis`` is not
     read, and ``concept_ids`` is decoded only when present.
     """
-    params = {"owner": owner, "course": course_id or "", "false": False, "limit": limit}
-    sql = f"""SELECT {','.join(RANKING_COLUMNS)} FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false
+    params = {"owner": owner, "course": course_id or "", "false": False, "true": True, "limit": limit}
+    sql = f"""SELECT {','.join(RANKING_COLUMNS)} FROM memory_facts WHERE owner_id=:owner AND status='active' AND {PROMPT_ELIGIBLE}
         AND (course_id IS NULL OR course_id=:course)"""
     if kinds:
         names = sorted(kinds)
@@ -438,15 +444,15 @@ def memory_version(conn, owner) -> int:
 
 def facts_watermark(conn, owner):
     """The owner's memory version, plus a count as a guard for writers outside store.py."""
-    count = conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false"),
-                         {"owner": owner, "false": False}).scalar_one()
+    count = conn.execute(text(f"SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND {PROMPT_ELIGIBLE}"),
+                         {"owner": owner, "false": False, "true": True}).scalar_one()
     return memory_version(conn, owner), count
 
 
 def static_facts(conn, owner, *, limit=policy.CANDIDATE_CAP):
     rows = conn.execute(text(f"""SELECT {','.join(STATIC_COLUMNS)} FROM memory_facts
-        WHERE owner_id=:owner AND status='active' AND sensitive=:false ORDER BY learned_at DESC, id LIMIT :limit"""),
-        {"owner": owner, "false": False, "limit": limit}).all()
+        WHERE owner_id=:owner AND status='active' AND {PROMPT_ELIGIBLE} ORDER BY learned_at DESC, id LIMIT :limit"""),
+        {"owner": owner, "false": False, "true": True, "limit": limit}).all()
     facts = []
     for row in rows:
         fact = dict(zip(STATIC_COLUMNS, row))
@@ -469,9 +475,9 @@ def watermarks(conn, owner):
     Each is the owner's memory version plus a count, as in facts_watermark
     and episodes_watermark.
     """
-    row = conn.execute(text("""SELECT (SELECT version FROM memory_fact_versions WHERE owner_id=:owner),
-        (SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND sensitive=:false),
-        (SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active')"""), {"owner": owner, "false": False}).one()
+    row = conn.execute(text(f"""SELECT (SELECT version FROM memory_fact_versions WHERE owner_id=:owner),
+        (SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status='active' AND {PROMPT_ELIGIBLE}),
+        (SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner AND status='active')"""), {"owner": owner, "false": False, "true": True}).one()
     version = row[0] or 0
     return (version, row[1]), (version, row[2])
 
@@ -502,7 +508,7 @@ def owners_due_for_consolidation(conn, *, since, day, limit=policy.CONSOLIDATION
 
 
 def facts_with_status(conn, owner, statuses):
-    query = text(f"SELECT {FACT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND status IN :statuses ORDER BY learned_at, id").bindparams(
+    query = text(f"SELECT {SELECT_COLUMNS} FROM memory_facts WHERE owner_id=:owner AND status IN :statuses ORDER BY learned_at, id").bindparams(
         bindparam("statuses", expanding=True))
     return [_decode(row) for row in conn.execute(query, {"owner": owner, "statuses": sorted(statuses)}).mappings()]
 
@@ -591,3 +597,179 @@ def delete_session_episodes(conn, owner, session_id):
     for episode_id in ids:
         delete_episode(conn, owner, episode_id)
     return len(ids)
+
+
+# --- Phase F: learner edits, confirmation, manual facts, forget-all ------------
+
+class RevisionConflict(Exception):
+    """The fact changed since the learner loaded it."""
+
+
+class NotEditable(Exception):
+    """The fact can't take this action in its current state (e.g. already replaced)."""
+
+
+LEARNER_VISIBLE = frozenset({"active", "tentative", "archived"})
+
+
+def course_owned(conn, owner, course_id) -> bool:
+    return course_id is None or conn.execute(text("SELECT 1 FROM courses WHERE owner_id=:owner AND id=:course"),
+                                             {"owner": owner, "course": course_id}).first() is not None
+
+
+def _learner_fact(conn, owner, fact_id, expected_revision):
+    fact = get_fact(conn, owner, fact_id)
+    if not fact or fact["status"] == "shadow":
+        return None
+    if expected_revision is not None and fact["revision"] != expected_revision:
+        raise RevisionConflict()
+    if fact["status"] not in LEARNER_VISIBLE:
+        raise NotEditable()
+    return fact
+
+
+def _supersede(conn, owner, fact_id, by, now):
+    conn.execute(text("""UPDATE memory_facts SET status='superseded',invalid_at=:now,superseded_by=:by,needs_review=:false,revision=revision+1
+        WHERE owner_id=:owner AND id=:id"""), {"now": now, "by": by, "false": False, "owner": owner, "id": fact_id})
+
+
+def _take_slot(conn, owner, subject_key, course_id, new_id, *, now):
+    """A learner action outranks every origin: supersede whatever holds the active slot."""
+    same = _active_same_subject(conn, owner, subject_key, course_id)
+    if same and same["id"] != new_id:
+        _supersede(conn, owner, same["id"], new_id, now)
+        return [same["id"]]
+    return []
+
+
+def edit_fact(conn, owner, fact_id, *, statement, kind, course_id, event_date, sensitive, expected_revision, now=None):
+    """Learner edit (§10): a new user_confirmed fact supersedes the old one.
+
+    Statements are immutable (§2 rule 3), so an edit never rewrites a row.
+    Returns (new_fact_id, superseded_ids), or None when the fact is unavailable.
+    """
+    now = now or time.time()
+    old = _learner_fact(conn, owner, fact_id, expected_revision)
+    if old is None:
+        return None
+    # Derived from the old fact and its revision, so a retried request is a revision conflict, not a second fact.
+    new_id = "fact_" + hashlib.sha256(json.dumps([owner, fact_id, old["revision"], "edit"]).encode()).hexdigest()[:32]
+    subject_key = old["subject_key"] if kind == old["kind"] else kind + ":" + old["subject_key"].split(":", 1)[-1]
+    # Keep where the learner originally said it (for "You said this on…"),
+    # but not source links: removing that source must not delete the edit.
+    basis = [ref for ref in old["basis"] if ref.get("type") == "turn"] + [{"type": "learner", "action": "edit", "previousId": fact_id}]
+    _supersede(conn, owner, fact_id, new_id, now)
+    superseded = [fact_id] + _take_slot(conn, owner, subject_key, course_id, new_id, now=now)
+    conn.execute(text(f"""INSERT INTO memory_facts({FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,:course,:concepts,:event_date,
+        'user_confirmed','active',:sensitive,1.0,:importance,:now,:now,NULL,NULL,:basis,NULL,0,:now,:stability,:false,:policy,1)"""),
+        {"owner": owner, "id": new_id, "kind": kind, "statement": statement, "subject": subject_key, "course": course_id,
+         "concepts": json.dumps(old["concept_ids"]), "event_date": event_date, "sensitive": sensitive,
+         "importance": old["importance"] if kind == old["kind"] else policy.DEFAULT_IMPORTANCE[kind], "now": now,
+         "basis": json.dumps(basis), "stability": policy.CORRECTED_STABILITY_DAYS, "false": False, "policy": policy.MEMORY_POLICY_VERSION})
+    if sensitive and old["sensitive_enabled"]:
+        # The learner's opt-in carries over to the corrected wording.
+        conn.execute(text("UPDATE memory_facts SET sensitive_enabled=:true WHERE owner_id=:owner AND id=:id"),
+                     {"true": True, "owner": owner, "id": new_id})
+    bump_version(conn, owner, now=now)
+    return new_id, superseded
+
+
+def confirm_fact(conn, owner, fact_id, *, expected_revision, now=None):
+    """The learner says this memory is right (§10).
+
+    Lower origins become user_confirmed and stability goes to 365 days. A
+    tentative or archived fact becomes active and takes its subject slot.
+    Confirming one side of a needs_review conflict resolves it: the other
+    side is superseded. Returns the superseded IDs, or None when unavailable.
+    """
+    now = now or time.time()
+    fact = _learner_fact(conn, owner, fact_id, expected_revision)
+    if fact is None:
+        return None
+    origin = "user_confirmed" if policy.ORIGIN_RANK.get(fact["origin"], 0) < policy.ORIGIN_RANK["user_stated"] else fact["origin"]
+    superseded = []
+    if fact["needs_review"]:
+        rivals = conn.execute(text("""SELECT id FROM memory_facts WHERE owner_id=:owner AND subject_key=:subject
+            AND COALESCE(course_id,'')=:course AND needs_review=:true AND id<>:id AND status IN ('active','tentative')"""),
+            {"owner": owner, "subject": fact["subject_key"], "course": fact["course_id"] or "", "true": True, "id": fact_id}).scalars().all()
+        for rival in rivals:
+            _supersede(conn, owner, rival, fact_id, now)
+            superseded.append(rival)
+    if fact["status"] != "active":
+        superseded += _take_slot(conn, owner, fact["subject_key"], fact["course_id"], fact_id, now=now)
+    conn.execute(text("""UPDATE memory_facts SET status='active',origin=:origin,confirmed_at=:now,stability_days=:stability,
+        needs_review=:false,invalid_at=NULL,revision=revision+1 WHERE owner_id=:owner AND id=:id"""),
+        {"origin": origin, "now": now, "stability": policy.CONFIRMED_STABILITY_DAYS, "false": False, "owner": owner, "id": fact_id})
+    bump_version(conn, owner, now=now)
+    return superseded
+
+
+def add_fact(conn, owner, *, kind, statement, course_id, event_date, sensitive, now=None):
+    """The learner adds a memory by hand: user_stated, active, confirmed.
+
+    Adding the same statement again in the same scope returns the existing
+    fact. Returns (fact_id, created).
+    """
+    now = now or time.time()
+    subject_key = f"{kind}:manual-" + hashlib.sha256(normalized(statement).encode()).hexdigest()[:8]
+    same = _active_same_subject(conn, owner, subject_key, course_id)
+    if same and normalized(same["statement"]) == normalized(statement):
+        return same["id"], False
+    fact_id = "fact_" + uuid.uuid4().hex
+    _take_slot(conn, owner, subject_key, course_id, fact_id, now=now)
+    conn.execute(text(f"""INSERT INTO memory_facts({FACT_COLUMNS}) VALUES(:owner,:id,:kind,:statement,:subject,:course,'[]',:event_date,
+        'user_stated','active',:sensitive,1.0,:importance,:now,:now,NULL,NULL,:basis,NULL,0,:now,:stability,:false,:policy,1)"""),
+        {"owner": owner, "id": fact_id, "kind": kind, "statement": statement, "subject": subject_key, "course": course_id,
+         "event_date": event_date, "sensitive": sensitive, "importance": policy.DEFAULT_IMPORTANCE[kind], "now": now,
+         "basis": json.dumps([{"type": "learner", "action": "add"}]), "stability": policy.CONFIRMED_STABILITY_DAYS,
+         "false": False, "policy": policy.MEMORY_POLICY_VERSION})
+    bump_version(conn, owner, now=now)
+    return fact_id, True
+
+
+def set_sensitive_enabled(conn, owner, fact_id, enabled, *, expected_revision):
+    """Per-fact opt-in for a sensitive fact to enter prompts and the core profile (§2 rule 6).
+
+    Returns the updated fact, or None when unavailable; raises NotEditable for
+    a fact that isn't sensitive. Sensitive facts are never embedded either way.
+    """
+    fact = _learner_fact(conn, owner, fact_id, expected_revision)
+    if fact is None:
+        return None
+    if not fact["sensitive"]:
+        raise NotEditable()
+    conn.execute(text("UPDATE memory_facts SET sensitive_enabled=:enabled,revision=revision+1 WHERE owner_id=:owner AND id=:id"),
+                 {"enabled": bool(enabled), "owner": owner, "id": fact_id})
+    bump_version(conn, owner)
+    return get_fact(conn, owner, fact_id)
+
+
+def memory_counts(conn, owner) -> dict:
+    """What "forget everything" deletes: learner-visible facts and every episode."""
+    facts = conn.execute(text("SELECT COUNT(*) FROM memory_facts WHERE owner_id=:owner AND status<>'shadow'"), {"owner": owner}).scalar_one()
+    episodes = conn.execute(text("SELECT COUNT(*) FROM memory_episodes WHERE owner_id=:owner"), {"owner": owner}).scalar_one()
+    return {"facts": facts, "episodes": episodes}
+
+
+def forget_all_token(conn, owner) -> str:
+    """Changes whenever memory changes, so a stale confirmation can't delete newer memories."""
+    counts = memory_counts(conn, owner)
+    material = json.dumps([owner, memory_version(conn, owner), counts["facts"], counts["episodes"]])
+    return "forget_" + hashlib.sha256(material.encode()).hexdigest()[:24]
+
+
+def forget_all(conn, owner, *, now=None) -> dict:
+    """Hard-delete every fact (shadow included), episode and embedding for the owner (§10).
+
+    Explicit preferences saved through Settings are dismissed in
+    ``memory_derived`` too, so Learn mode stops reading them. Source revisions
+    and continuity summaries stay: they belong to the learner's sources.
+    """
+    counts = memory_counts(conn, owner)
+    conn.execute(text("DELETE FROM memory_embeddings WHERE owner_id=:owner"), {"owner": owner})
+    conn.execute(text("DELETE FROM memory_facts WHERE owner_id=:owner"), {"owner": owner})
+    conn.execute(text("DELETE FROM memory_episodes WHERE owner_id=:owner"), {"owner": owner})
+    conn.execute(text("UPDATE memory_derived SET valid=:false WHERE owner_id=:owner AND kind='preference' AND valid=:true"),
+                 {"owner": owner, "false": False, "true": True})
+    bump_version(conn, owner, now=now)
+    return counts
