@@ -1,6 +1,6 @@
 "use client";
 import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
-import { classApi,mergeClassSnapshot,ClassActionRouter,CLASS_CHAT_OPEN_REQUEST_EVENT,findClassReference,parseProfessorReferenceCue,normalizeClassPolicy,type ClassChatOpenRequestDetail,type ClassSnapshot,type ClassOutput,type ClassPolicy,type ClassReference,type ClassPdfManifest,type ClassMaterialOption,type ClassMaterialIntake,type ClassMaterialIntakeCreate,type ClassMaterialIntakeSource,type ClassDriveConnection,type ClassDriveFile,type ClassCanvasSource,type ClassMetrics,type ClassResourceConnector,type ResourceConnectorId,type CourseResourcePreferences,type CourseResourcePreferencesSnapshot,type ResourceMediaType } from '@/lib/in-class';
+import { classApi,mergeClassSnapshot,ClassActionRouter,CLASS_CHAT_OPEN_REQUEST_EVENT,CLASS_SETUP_REQUEST_EVENT,openClassWorkspace,findClassReference,parseProfessorReferenceCue,normalizeClassPolicy,type ClassChatOpenRequestDetail,type ClassSnapshot,type ClassOutput,type ClassPolicy,type ClassReference,type ClassPdfManifest,type ClassMaterialOption,type ClassMaterialIntake,type ClassMaterialIntakeCreate,type ClassMaterialIntakeSource,type ClassDriveConnection,type ClassDriveFile,type ClassCanvasSource,type ClassMetrics,type ClassResourceConnector,type ResourceConnectorId,type CourseResourcePreferences,type CourseResourcePreferencesSnapshot,type ResourceMediaType } from '@/lib/in-class';
 import {useBuddies,BuddyAvatar} from './buddies';
 import {RichContent} from './rich-content';
 import {Button} from './ui/button';
@@ -10,7 +10,8 @@ import { ACCOUNT_CHANGED } from '@/lib/account-session';
 import { uploadMaterialParts } from '@/lib/material-upload';
 import {ClassPdfReader} from './class-pdf-reader';
 import {ClassYoutubeSearch} from './class-youtube-search';
-import {LearningApiError} from '@/lib/api';
+import {LearningApiError,learningApi,request,type CourseSummary} from '@/lib/api';
+import {AudioLines,ArrowRight,BookOpen,Clock3,Mic2} from 'lucide-react';
 
 const mergeSnapshot=(current:ClassSnapshot|null,next:ClassSnapshot)=>typeof mergeClassSnapshot==='function'?mergeClassSnapshot(current,next):next;
 const ACTIVE_INTAKE_STATUSES=new Set(['queued','fetching','uploading','processing']);
@@ -38,12 +39,19 @@ function forgetIntakeCommand(commandId:string){for(let index=localStorage.length
 
 export function InClassWorkspace({classId}:{classId:string|null}){
   const buddies=useBuddies();
+  const [courses,setCourses]=useState<CourseSummary[]>([]);
+  const [coursesLoading,setCoursesLoading]=useState(true);
+  const [coursesError,setCoursesError]=useState('');
+  const [courseChoice,setCourseChoice]=useState('');
+  const [launchTitle,setLaunchTitle]=useState('');
+  useEffect(()=>{let live=true;void learningApi.listCourses().then(value=>{if(live)setCourses(value.filter(course=>!course.archivedAt));}).catch(cause=>{if(live)setCoursesError(cause instanceof Error?cause.message:'Courses could not be loaded.');}).finally(()=>{if(live)setCoursesLoading(false);});return()=>{live=false;};},[]);
   const activeClassIdRef=useRef(classId);activeClassIdRef.current=classId;
   const [identityRevision,setIdentityRevision]=useState(0);
   const [snapshot,setSnapshot]=useState<ClassSnapshot|null>(null);
   const [liveCaptions,setLiveCaptions]=useState<LiveTranscriptionDetail|null>(null);
   const [classMetrics,setClassMetrics]=useState<ClassMetrics|null>(null);const [classMetricsBusy,setClassMetricsBusy]=useState(false);const [classMetricsError,setClassMetricsError]=useState('');
   const [view,setView]=useState('notes');const [error,setError]=useState('');
+  const [transcriptionRetrying,setTranscriptionRetrying]=useState(false);
   const [followStatus,setFollowStatus]=useState('');
   const [cueStatus,setCueStatus]=useState('');const [pendingCueNavigation,setPendingCueNavigation]=useState<string|null>(null);const cueNavigationPending=useRef(false);
   const [policyUpdating,setPolicyUpdating]=useState(false);
@@ -100,6 +108,18 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   const transcriptScrollKey=snapshot?`${snapshot.transcriptGeneration??0}:${snapshot.transcript.length}:${snapshot.transcript[snapshot.transcript.length-1]?.id??''}:${snapshot.transcript[snapshot.transcript.length-1]?.endMs??0}`:'';
   const transcriptById=useMemo(()=>new Map([...(snapshot?.transcript||[]),...Object.values(citationSegments)].map(segment=>[segment.id,segment] as const)),[snapshot?.transcript,citationSegments]);
   const openNeedIds=snapshot?.session.needInfo?.filter(need=>need.status==='open').map(need=>need.id).join('|')||'';
+  async function retryFailedTranscription(){
+    const current=snapshot;
+    if(!current||transcriptionRetrying)return;
+    setTranscriptionRetrying(true);
+    try{
+      const account=await request<{ownerId:string}>('/v1/account');
+      await learningApi.retryLectureFailures(current.session.recordingId,account.ownerId);
+      setError('Transcription retry queued. This class will update as speech is processed.');
+    }catch(cause){
+      setError(cause instanceof Error?cause.message:'Failed audio could not be retried.');
+    }finally{setTranscriptionRetrying(false);}
+  }
   const courseId=snapshot?.session.courseId??null;
   const resourceScope=classId?`${classId}|${courseId??''}|${identityRevision}`:'';
   const currentResourcePreference=resourcePreferenceState?.scope===resourceScope?resourcePreferenceState.snapshot:null;
@@ -246,7 +266,36 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     void classApi.referencePdfManifest(classId,reference.versionId).then(manifest=>{if(live&&referenceRequestEpoch.current===epoch)setReferenceManifest(manifest);}).catch(()=>{if(live&&referenceRequestEpoch.current===epoch)setReferenceManifest(null);});
     return()=>{live=false;};
   },[classId,reference?.versionId]);
-  if(!classId)return <div className={styles.empty}>Start a class session from your course or the conversation mode menu.</div>;
+  if(!classId){
+    const recent=[...(buddies.snapshot?.classes||[])].filter(item=>item.classId).sort((a,b)=>b.startedAt-a.startedAt).slice(0,3);
+    return <section className={styles.classLaunch} aria-labelledby="class-launch-title">
+      <div className={styles.launchIntro}>
+        <span className={styles.launchEyebrow}><AudioLines size={14}/> IN-CLASS</span>
+        <h1 id="class-launch-title">Start a class</h1>
+        <p>Choose a course or keep this session general. Recording settings come next.</p>
+      </div>
+      <div className={styles.launchForm}>
+        <label htmlFor="class-course-choice">Save this class in</label>
+        <select id="class-course-choice" value={courseChoice} onChange={event=>setCourseChoice(event.target.value)} disabled={coursesLoading}>
+          <option value="">General class · No course</option>
+          {courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}
+        </select>
+        {coursesError?<small className={styles.launchError} role="status">{coursesError} You can still start a general class.</small>:null}
+        <label htmlFor="class-launch-title-input">Class title <span>Optional</span></label>
+        <input id="class-launch-title-input" value={launchTitle} onChange={event=>setLaunchTitle(event.target.value)} placeholder={courseChoice?courses.find(course=>course.id===courseChoice)?.name||'Add a title':'Class session'} maxLength={160}/>
+        <Button className={styles.launchAction} onClick={()=>window.dispatchEvent(new CustomEvent(CLASS_SETUP_REQUEST_EVENT,{detail:{courseId:courseChoice||null,title:launchTitle.trim()}}))}>
+          <Mic2 size={16}/> Continue to setup <ArrowRight size={15}/>
+        </Button>
+        <p className={styles.launchPrivacy}><span/> You’ll review recording permission before capture begins.</p>
+      </div>
+      {recent.length?<div className={styles.recentClasses}>
+        <div className={styles.recentHeading}><div><span>YOUR LIBRARY</span><h2>Recent classes</h2></div><Clock3 size={17}/></div>
+        {recent.map(item=><button type="button" key={item.id} onClick={()=>openClassWorkspace(item.classId!)}>
+          <span className={styles.recentIcon}><BookOpen size={15}/></span><span className={styles.recentCopy}><strong>{item.title}</strong><small>{item.courseId?courses.find(course=>course.id===item.courseId)?.name||'Course class':'General class'} · {new Date(item.startedAt*1000).toLocaleDateString()}</small></span><ArrowRight size={15}/>
+        </button>)}
+      </div>:null}
+    </section>;
+  }
   if(!snapshot||snapshot.session.id!==classId)return <div className={styles.empty} role="status">{error||'Connecting to your class… Audio saved on this device continues uploading when connected.'}</div>;
   const outputs=snapshot.outputs;
   const transcriptState=transcriptionStatus(snapshot);
@@ -559,7 +608,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
         </details>:null}
         {policy.showInterimTranscript&&((liveCaptions&&liveCaptions.recordingId===snapshot.session.recordingId&&liveCaptions.status!=='stopped')||(snapshot.liveTranscript?.length??0)>0)?<section className={styles.liveCaptions} aria-label="Provisional live transcript"><strong>Live transcript · provisional</strong><small>Committed captions create provisional drafts. Recorded audio remains authoritative and replaces those drafts when transcription catches up. Interim text expires after ten minutes.</small>{liveCaptions?.error?<p role="status">{liveCaptions.error}</p>:null}{liveCaptions?.persistenceError?<p role="alert">{liveCaptions.persistenceError}</p>:null}<div aria-live="polite" aria-relevant="additions" aria-atomic="false">{(snapshot.liveTranscript??[]).slice(-30).map(segment=><p key={segment.id}>{segment.text}</p>)}{liveCaptions?.turns.filter(turn=>!(snapshot.liveTranscript??[]).some(segment=>segment.providerItemId===turn.id)).slice(-8).map(turn=><p key={turn.id}>{turn.text}<small> · {liveCaptions.persistedTurnIds.includes(turn.id)?'Saved; syncing replay':'Saving to class replay'}</small></p>)}</div>{liveCaptions?.interim?<p aria-live="off">{liveCaptions.interim}</p>:snapshot.interimTranscript?.map(segment=>segment.expiresAt>Date.now()/1000?<p key={segment.id} aria-live="off">{segment.text}</p>:null)}</section>:null}
         {snapshot.recording.captureInterrupted?<p>Capture was interrupted. Saved audio can be recovered; the final moments may be missing.</p>:null}
-        {snapshot.recording.error||snapshot.recording.chunks.failed?<p role="alert">{snapshot.recording.error||'Some audio slices could not be transcribed.'}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open recording recovery</Button></p>:null}
+        {snapshot.recording.error||snapshot.recording.chunks.failed?<div role="alert">{snapshot.recording.error==='Connect an OpenAI API key to transcribe this lecture.'?'The previous transcription attempt failed because OpenAI was not configured. OpenRouter is now configured for In-Class transcription; retry the failed audio to process the saved slices.':snapshot.recording.error||'Some audio slices could not be transcribed.'}{snapshot.recording.chunks.failed>0?<Button size="sm" variant="outline" disabled={transcriptionRetrying} onClick={()=>void retryFailedTranscription()}>{transcriptionRetrying?'Retrying transcription…':'Retry failed audio'}</Button>:null}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open recording recovery</Button></div>:null}
         {snapshot.session.noSpeech?<p>No transcribed speech is available for a revision package. Review the saved recording and its transcription status.</p>:null}
         {snapshot.session.sourceCorrected?<p>Transcript wording was corrected. Updated study material appears here; saved note edits and existing quiz answers are preserved.</p>:null}
         {snapshot.recording.captureComplete&&snapshot.recording.chunks.missing.length?<p>Missing audio slices: {snapshot.recording.chunks.missing.join(', ')}. Full completion waits for recovery.<Button size="sm" variant="outline" onClick={()=>void command('partial_package')}>Prepare available coverage</Button></p>:null}

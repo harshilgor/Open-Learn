@@ -9,12 +9,24 @@ from .models import Concept, GraphVersion
 from .model_provider import LessonProvider
 from .policy_models import ActionContext, TeachingPlan, TeachingStrategy
 from .session_models import ConceptTrust, LessonArtifact, LessonBlock, TeachingActionInput, TeachingGear, TeachingIntent
+from .classification.config import min_score, rollout_mode, should_sample_shadow
+from .classification.service import ClassificationService
 
 
 def classify_intent(request: TeachingActionInput) -> TeachingIntent:
     if request.intent != TeachingIntent.teach:
         return request.intent
     message = (request.message or "").lower()
+    classifier_mode = rollout_mode("teaching_intent")
+    if message and (classifier_mode == "active" or classifier_mode == "shadow" and should_sample_shadow("teaching_intent", message)):
+        try:
+            decision = ClassificationService().teaching_intent(message)
+            if classifier_mode == "active" and decision.score >= min_score("teaching_intent", decision.value, default=0.82):
+                return TeachingIntent(decision.value)
+        except Exception:
+            # A missing JEV key, unavailable usage reservation, or invalid
+            # answer leaves the existing deterministic teaching policy intact.
+            pass
     rules = (
         (("simpler", "simple", "plain language", "easier"), TeachingIntent.simplify),
         (("example", "apply", "application"), TeachingIntent.example),

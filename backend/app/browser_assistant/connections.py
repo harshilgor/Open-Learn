@@ -1,6 +1,8 @@
 import json
+import hashlib
 import os
 import time
+from fastapi import HTTPException
 from sqlalchemy import text
 from .store import AssistantStore, public_connection
 from .policy import origin, timezone, TERMINAL
@@ -23,6 +25,7 @@ class Connections:
         data['approvedOrigins'] = sorted({origin(u) for u in data['approvedOrigins']} - {data['origin']})
         timezone(data['timezone'])
         if data['cloudLogin'] and data['executor'] != 'cloud': fail('invalid_input', 'Cloud login requires a cloud connection.', 422)
+        if data['cloudLogin']: data['browserProfileConsentAt'] = time.time()
         data.update(id=uid('site'), revision=1, status='connected' if data['executor'] == 'public_fetch' else 'unpaired',
                     createdAt=time.time(), lastSuccessfulSync=None, deviceId=None)
         with self.store.transaction() as conn:
@@ -40,7 +43,9 @@ class Connections:
 
     def cloud_login(self, owner, identifier, revision, finish=False):
         from .executors.cloud import (BrowserbaseProvider, TERMINAL_SESSION_STATES,
-                                      queue_context_cleanup, require_cloud_ready, stop_and_settle)
+                                      PROFILE_RETENTION_SECONDS, SESSION_TTL_SECONDS,
+                                      RECONCILIATION_GRACE_SECONDS, queue_context_cleanup,
+                                      readiness, require_cloud_ready, stop_and_settle)
         item = self.repo.read('site_connections', owner, identifier)
         if item['revision'] != revision: fail('revision_conflict', 'Refresh this connection.', 409)
         if item['executor'] != 'cloud' or item['status'] == 'revoked': fail('invalid_input', 'Select a connected cloud browser.', 422)
@@ -64,34 +69,204 @@ class Connections:
                     fail('capability_unavailable', 'The sign-in browser is still being safely closed. Retry shortly.', 503)
 
             context_id = item.get('providerContextId')
-            if context_id:
-                # Old deployments may have left a persistent context behind.
-                # Queue its deletion first so a transient provider failure does
-                # not make the unmetered context unreachable to cleanup.
+            if not item.get('cloudLogin') or not context_id:
+                fail('privacy_consent_required', 'Enable remembered sign-in before saving this browser session.', 403)
+            if not readiness()['privateLoginVerified']:
+                # A deployment may have closed the private-profile gate while
+                # a sign-in handoff was open. Never persist that profile;
+                # enqueue deletion durably before removing its connection pointer.
                 try:
-                    queue_context_cleanup(self.store, owner, {'providerContextId': context_id})
+                    queue_context_cleanup(self.store, owner, {'providerContextId':context_id})
                 except Exception:
-                    fail('capability_unavailable', 'The sign-in browser closed, but saved browser data could not be queued for cleanup. Retry shortly.', 503)
+                    fail('capability_unavailable', 'The private browser session closed, but its saved profile could not be queued for deletion. Retry shortly.', 503)
+                with self.store.transaction() as conn:
+                    fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
+                    if fresh['revision'] != revision: fail('revision_conflict', 'The connection changed.', 409)
+                    for key in ('loginSessionId', 'loginExpiresAt', 'providerContextId',
+                                'browserContextExpiresAt', 'browserContextLastUsedAt',
+                                'browserProfileConsentAt'):
+                        fresh.pop(key, None)
+                    fresh.update(status='connected', cloudLogin=False, revision=revision+1)
+                    conn.execute(text('UPDATE site_connections SET status=:status,revision=:revision,payload=:payload,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                 {'status':fresh['status'],'revision':fresh['revision'],'payload':encoded(self.clean(fresh)),
+                                  'now':time.time(),'id':identifier,'owner':owner})
                 try:
                     provider.delete_context(context_id)
                     with self.store.engine.begin() as conn:
-                        conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'),
-                                     {'id': 'context:' + context_id})
+                        conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'), {'id':'context:'+context_id})
                 except Exception:
+                    # The durable cleanup row will retry provider deletion.
                     pass
+                return public_connection(fresh)
+            # Browserbase persists the encrypted user-data directory as the
+            # session closes. Its docs recommend a short sync window before
+            # reusing the context in another session.
+            time.sleep(3)
             with self.store.transaction() as conn:
                 fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
                 if fresh['revision'] != revision: fail('revision_conflict', 'The connection changed.', 409)
                 fresh.pop('loginSessionId', None)
-                fresh.pop('providerContextId', None)
-                fresh.update(status='unpaired', cloudLogin=False, revision=revision+1)
+                fresh.pop('loginExpiresAt', None)
+                fresh.update(status='connected', cloudLogin=True,
+                             browserContextLastUsedAt=time.time(),
+                             browserContextExpiresAt=time.time() + PROFILE_RETENTION_SECONDS,
+                             revision=revision+1)
                 conn.execute(text('UPDATE site_connections SET status=:status,revision=:revision,payload=:payload WHERE id=:id AND owner_id=:owner'), {'status':fresh['status'],'revision':fresh['revision'],'payload':encoded(self.clean(fresh)),'id':identifier,'owner':owner})
             return public_connection(fresh)
         require_cloud_ready()
-        fail('capability_unavailable',
-             'Cloud sign-in is unavailable until persistent browser contexts have a bounded, metered lifecycle.', 503)
+        if not readiness()['privateLoginVerified']:
+            fail('capability_unavailable', 'Private browser handoff is unavailable until its isolation, link-expiry, and deletion acceptance checks pass.', 503)
+        if not item.get('cloudLogin'):
+            fail('privacy_consent_required', 'Turn on “Remember sign-in” before saving a login in this private browser.', 403)
+        if item.get('loginSessionId'):
+            run_id = 'login:' + identifier
+            with self.store.engine.connect() as conn:
+                lease = conn.execute(text("SELECT status,provider_session,expires_at FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run"),
+                                     {'owner':owner,'run':run_id}).mappings().first()
+            if lease and lease['status']=='login' and lease['expires_at'] > time.time():
+                return {'connection':public_connection(item), 'liveViewUrl':provider.live_view(lease['provider_session'])}
+            fail('login_in_progress', 'The sign-in browser is closing. Wait for cleanup, then retry.', 409)
+
+        with self.store.engine.connect() as conn:
+            active = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND connection_id=:connection AND status IN ('active','login') LIMIT 1"),
+                                  {'owner':owner,'connection':identifier}).first()
+        if active:
+            fail('login_in_progress', 'Finish or wait for the current browser task before starting sign-in.', 409)
+
+        context_id = item.get('providerContextId')
+        context_expires = item.get('browserContextExpiresAt')
+        if context_id and (not isinstance(context_expires, (int, float)) or context_expires <= time.time()):
+            queue_context_cleanup(self.store, owner, item)
+            try:
+                provider.delete_context(context_id)
+                with self.store.engine.begin() as conn:
+                    conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'), {'id':'context:'+context_id})
+            except Exception:
+                pass
+            context_id = None
+
+        created_context = False
+        if not context_id:
+            opaque_name = 'openlearn-' + hashlib.sha256(f'{owner}:{identifier}'.encode()).hexdigest()[:24]
+            try:
+                context = provider.create_context(opaque_name)
+                context_id = context.get('id') if isinstance(context, dict) else None
+                if not isinstance(context_id, str) or not context_id:
+                    raise ValueError('Browserbase returned no context identifier.')
+                created_context = True
+            except Exception:
+                fail('capability_unavailable', 'A private browser profile could not be created. No sign-in session was opened.', 503)
+
+        from ..usage.operations import begin_external, configured_rate, rate_liability
+        from ..usage.ledger import UsageError
+        try:
+            rate = configured_rate('OPENLEARN_BROWSERBASE_USD_PER_MINUTE')
+            liability = rate_liability('OPENLEARN_BROWSERBASE_USD_PER_MINUTE', 10, 1)
+            started_at = time.time()
+            ticket = begin_external('browser', {'milliseconds': SESSION_TTL_SECONDS * 1000}, liability,
+                key=f'browser-login:{owner}:{identifier}:{revision}', root=f'browser-login:{owner}:{identifier}',
+                seconds=SESSION_TTL_SECONDS + RECONCILIATION_GRACE_SECONDS, provider='browserbase', model='chromium',
+                provider_rates={'usd_nano_per_minute':rate})
+        except UsageError as exc:
+            if created_context:
+                queue_context_cleanup(self.store, owner, {'providerContextId':context_id})
+            fail(exc.detail.get('code','usage_provider_unavailable'),
+                 exc.detail.get('message','Cloud browser usage is unavailable.'), exc.status_code)
+        if ticket is None:
+            if created_context:
+                queue_context_cleanup(self.store, owner, {'providerContextId':context_id})
+            fail('usage_accounting_unavailable', 'Cloud sign-in requires an authenticated usage account.', 503)
+
+        session_connection = {**item, 'providerContextId':context_id}
+        session = None
+        payload = {'usageReservationId':ticket[2]['id'], 'usageStartedAt':started_at,
+                   'usageRateNanoPerMinute':rate}
+        try:
+            session = provider.create(session_connection, usage_ticket=ticket, persist_context=True)
+            if not isinstance(session, dict) or not session.get('id') or not session.get('connectUrl'):
+                raise ValueError('Browserbase returned an incomplete sign-in session.')
+            link = provider.live_view(session['id'])
+            from urllib.parse import urlsplit
+            parsed = urlsplit(link)
+            if parsed.scheme != 'https' or parsed.hostname != 'debug.browserbase.com' or parsed.username or parsed.password:
+                raise ValueError('Browserbase returned an unsupported private browser link.')
+            expires_at = started_at + SESSION_TTL_SECONDS
+            payload['connectUrl'] = session['connectUrl']
+            with self.store.transaction() as conn:
+                fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
+                if fresh['revision'] != revision:
+                    fail('revision_conflict', 'The connection changed while the sign-in session was starting.', 409)
+                fresh.update(providerContextId=context_id, loginSessionId=session['id'],
+                             loginExpiresAt=expires_at, browserContextLastUsedAt=started_at,
+                             browserContextExpiresAt=started_at + PROFILE_RETENTION_SECONDS,
+                             status='logging_in', revision=revision+1)
+                conn.execute(text('UPDATE site_connections SET status=:status,revision=:revision,payload=:payload,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                             {'status':fresh['status'],'revision':fresh['revision'],'payload':encoded(self.clean(fresh)),
+                              'now':started_at,'id':identifier,'owner':owner})
+                conn.execute(text('''INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload)
+                    VALUES(:id,:owner,:run,:connection,:session,'login',:expires,:payload)
+                    ON CONFLICT(run_id) DO UPDATE SET connection_id=excluded.connection_id,provider_session=excluded.provider_session,
+                      status='login',expires_at=excluded.expires_at,payload=excluded.payload'''),
+                    {'id':'login_'+identifier,'owner':owner,'run':'login:'+identifier,'connection':identifier,
+                     'session':session['id'],'expires':expires_at,'payload':encoded(payload)})
+            return {'connection':public_connection(fresh), 'liveViewUrl':link}
+        except Exception as exc:
+            # A provider session may already exist even when persisting its
+            # connection state or issuing the private Live View URL fails.
+            # Make a durable lease before reconciling it so shutdown and usage
+            # settlement survive a process restart.
+            session_id = session.get('id') if isinstance(session, dict) else None
+            stopped = False
+            durable_lease = False
+            if isinstance(session_id, str) and session_id:
+                expires_at = locals().get('expires_at', started_at + SESSION_TTL_SECONDS)
+                try:
+                    with self.store.engine.begin() as conn:
+                        conn.execute(text('''INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload)
+                            VALUES(:id,:owner,:run,:connection,:session,'login',:expires,:payload)
+                            ON CONFLICT(run_id) DO UPDATE SET connection_id=excluded.connection_id,provider_session=excluded.provider_session,
+                              status='login',expires_at=excluded.expires_at,payload=excluded.payload'''),
+                            {'id':'login_'+identifier,'owner':owner,'run':'login:'+identifier,'connection':identifier,
+                             'session':session_id,'expires':expires_at,'payload':encoded(payload)})
+                    durable_lease = True
+                    with self.store.engine.connect() as conn:
+                        lease = conn.execute(text('SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run'),
+                                             {'owner':owner,'run':'login:'+identifier}).mappings().first()
+                    if lease:
+                        stopped = stop_and_settle(self.store, provider, lease)
+                except Exception:
+                    stopped = False
+                if stopped:
+                    try:
+                        with self.store.engine.begin() as conn:
+                            fresh = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
+                            if fresh.get('loginSessionId') == session_id:
+                                fresh.pop('loginSessionId', None)
+                                fresh.pop('loginExpiresAt', None)
+                                if created_context:
+                                    for key in ('providerContextId','browserContextExpiresAt','browserContextLastUsedAt'):
+                                        fresh.pop(key, None)
+                                fresh['status'] = 'connected'
+                                fresh['revision'] += 1
+                                conn.execute(text('UPDATE site_connections SET payload=:payload,status=:status,revision=:revision,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                             {'payload':encoded(self.clean(fresh)),'status':fresh['status'],'revision':fresh['revision'],
+                                              'now':time.time(),'id':identifier,'owner':owner})
+                    except HTTPException:
+                        pass  # The connection may have been revoked concurrently.
+                # The cleanup worker waits for all provider leases to close
+                # before deleting this context, so it is safe to queue even if
+                # the immediate stop is still being reconciled.
+                if created_context and durable_lease:
+                    queue_context_cleanup(self.store, owner, {'providerContextId':context_id})
+            # A failed create response is ambiguous: leave the profile alone so
+            # cleanup cannot remove it while an unreported session is still
+            # using it. The provider-side 10-minute session timeout bounds it.
+            if isinstance(exc, HTTPException):
+                raise
+            fail('capability_unavailable', 'The private sign-in browser could not be opened. Any provider session is being safely reconciled.', 503)
 
     def patch(self, owner, identifier, command):
+        cleanup_profile = None
         with self.store.transaction() as conn:
             self.serialize(conn)
             item = self.repo.row(conn, 'site_connections', owner, identifier, lock=True)
@@ -100,11 +275,27 @@ class Connections:
             changes.pop('expectedRevision', None)
             if 'timezone' in changes: timezone(changes['timezone'])
             if 'approvedOrigins' in changes: changes['approvedOrigins'] = [origin(u) for u in changes['approvedOrigins']]
+            if changes.get('cloudLogin') is True:
+                if item['executor'] != 'cloud': fail('invalid_input', 'Remembered sign-in requires a cloud browser connection.', 422)
+                item['browserProfileConsentAt'] = time.time()
+            elif changes.get('cloudLogin') is False:
+                if item.get('loginSessionId'):
+                    fail('login_in_progress', 'Finish or wait for the private sign-in session before turning off remembered sign-in.', 409)
+                active = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND connection_id=:connection AND status IN ('active','login') LIMIT 1"),
+                                      {'owner':owner,'connection':identifier}).first()
+                if active:
+                    fail('login_in_progress', 'Wait for the current browser task to finish before forgetting this sign-in.', 409)
+                if item.get('providerContextId'): cleanup_profile = dict(item)
+                for key in ('providerContextId', 'browserContextExpiresAt', 'browserContextLastUsedAt', 'browserProfileConsentAt'):
+                    item.pop(key, None)
             item.update(changes)
             item['revision'] += 1
             conn.execute(text('UPDATE site_connections SET payload=:payload, revision=:rev,updated_at=:now WHERE id=:id AND owner_id=:owner'),
                          {'payload': encoded(self.clean(item)), 'rev': item['revision'], 'now': time.time(), 'id': identifier, 'owner': owner})
             if item.get('preferred'): self._clear_preferences(conn, owner, identifier, item['category'])
+        if cleanup_profile:
+            from .executors.cloud import queue_context_cleanup
+            queue_context_cleanup(self.store, owner, cleanup_profile)
         return public_connection(item)
 
     @staticmethod

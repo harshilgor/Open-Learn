@@ -12,6 +12,7 @@ from fastapi import HTTPException,FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from backend.tests.test_agent_execution import env,start,answer
+from backend.app.agent_execution.artifacts import Artifacts
 from backend.app.agent_execution.worker import AgentWorker
 from backend.app.agent_execution.connected_actions import ConnectedActions
 from backend.app.agent_execution.connected_contracts import Draft,Decision,ChildRequest,ConnectorError
@@ -38,7 +39,7 @@ def connected(env,monkeypatch):
     monkeypatch.setenv('OPENLEARN_CONNECTORS_ENABLED','true');monkeypatch.setenv('OPENLEARN_DELEGATION_ENABLED','true');monkeypatch.setenv('AI_TUTOR_ENV','development')
     monkeypatch.setenv('OPENLEARN_CONNECTOR_VAULT_KEY',Fernet.generate_key().decode())
     with db.transaction() as conn:
-        conn.execute(text("INSERT INTO agent_app_connections(id,owner_id,created_at,revision,status,payload,secret) VALUES('google','alice',:now,1,'connected',:payload,:secret)"),{'now':time.time(),'payload':encoded({'provider':'google','accountId':'subject1','email':'alice@example.com','capabilities':['gmail_send','gmail_read','calendar_write','drive_read'],'scopes':[]}), 'secret':vault().encrypt(encoded({'access_token':'test-only','expires_at':time.time()+3600}).encode()).decode()})
+        conn.execute(text("INSERT INTO agent_app_connections(id,owner_id,created_at,revision,status,payload,secret) VALUES('google','alice',:now,1,'connected',:payload,:secret)"),{'now':time.time(),'payload':encoded({'provider':'google','accountId':'subject1','email':'alice@example.com','capabilities':['gmail_send','gmail_read','calendar_read','calendar_write','drive_read'],'scopes':[]}), 'secret':vault().encrypt(encoded({'access_token':'test-only','expires_at':time.time()+3600}).encode()).decode()})
     _,run=start(env);fake=FakeGoogle();return db,coordinator,repo,run,fake,ConnectedActions(db,fake)
 
 def mail(connected,key='draft1',**kwargs):
@@ -214,6 +215,114 @@ def test_google_version_conflict_oversize_and_mail_reconciliation(connected):
     with pytest.raises(ConnectorError,match='provider_version_changed'):adapter.request('alice','google','calendar_write','PATCH','calendar/v3/test')
     with pytest.raises(ConnectorError,match='provider_result_too_large'):adapter.request('alice','google','drive_read','GET','drive/v3/test')
     assert adapter.reconcile('alice','google','op',{'kind':'gmail_send','actionHash':'hash'})['providerId']=='sent1'
+
+def test_google_calendar_reads_are_range_bounded_and_paginated(connected):
+    requests=[]
+    def handler(request):
+        requests.append(request)
+        if request.url.params.get('pageToken')=='next':return httpx.Response(200,json={'items':[{'id':'event2'}]})
+        return httpx.Response(200,json={'items':[{'id':'event1'}],'nextPageToken':'next'})
+    adapter=GoogleAdapter(GoogleConnections(connected[0],httpx.Client(transport=httpx.MockTransport(handler))))
+    first=adapter.read('alice','google','calendar',calendar_id='primary',time_min='2026-10-01T00:00:00Z',time_max='2026-10-08T00:00:00Z')
+    second=adapter.read('alice','google','calendar',page=first['nextPageToken'],calendar_id='primary',time_min='2026-10-01T00:00:00Z',time_max='2026-10-08T00:00:00Z')
+    assert first['coverage']=='bounded_page' and not first['complete'] and first['nextPageToken']=='next'
+    assert second['complete'] and second['nextPageToken'] is None
+    assert requests[0].url.path.endswith('/calendars/primary/events')
+    assert requests[0].url.params['maxResults']=='20' and requests[0].url.params['singleEvents']=='true'
+    assert requests[0].url.params['timeMin']=='2026-10-01T00:00:00Z'
+    assert requests[0].url.params['timeMax']=='2026-10-08T00:00:00Z'
+    assert requests[1].url.params['pageToken']=='next'
+    with pytest.raises(ConnectorError,match='calendar_range_invalid'):
+        adapter.read('alice','google','calendar',calendar_id='primary')
+    assert len(requests)==2
+
+def test_calendar_read_oauth_uses_readonly_events_scope(connected,monkeypatch):
+    monkeypatch.setenv('OPENLEARN_GOOGLE_CLIENT_ID','client-test');monkeypatch.setenv('OPENLEARN_GOOGLE_CLIENT_SECRET','secret-test');monkeypatch.setenv('OPENLEARN_GOOGLE_REDIRECT_URI','http://127.0.0.1:8000/oauth/google/callback')
+    service=GoogleConnections(connected[0])
+    query=parse_qs(urlsplit(service.start('alice',['calendar_read'])['authorizationUrl']).query)
+    assert query['scope']==['openid email https://www.googleapis.com/auth/calendar.events.readonly']
+
+def test_conversational_calendar_read_routes_through_agent_and_revocation_hides_result(connected,monkeypatch):
+    from backend.app.agent_execution.artifacts import Artifacts
+    from backend.app.agent_execution.contracts import Message
+    db,coordinator,repo,_,_,_=connected
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE','off')
+    requests=[]
+    def read(self,owner,connection,kind,identifier=None,page=None,*,calendar_id=None,time_min=None,time_max=None):
+        requests.append((owner,connection,kind,page,calendar_id,time_min,time_max))
+        return {'data':{'items':[{'id':'event1','summary':'Physics review','start':{'dateTime':'2026-10-13T10:00:00-07:00'},'end':{'dateTime':'2026-10-13T11:00:00-07:00'},'location':'Room 4'}]}}
+    monkeypatch.setattr(GoogleAdapter,'read',read)
+    response=coordinator.admit('alice',Message(clientMessageId='calendar-chat',sessionId='session',text="What's on my calendar next week?",timezone='America/Los_Angeles'),'calendar-chat')
+    run=repo.read('alice',response['references'][0]['id'])
+    assert run['kind']=='calendar_read' and run['runtime_owner']=='agent_v2'
+    AgentWorker(db).tick();complete=repo.read('alice',run['id'])
+    assert complete['status']=='completed', (complete.get('error'),complete.get('summary'))
+    assert 'Physics review' in complete['summary'] and len(requests)==1
+    assert requests[0][2:5]==('calendar',None,'primary')
+    artifact=next(item for item in complete['artifacts'] if item['name']=='calendar-events.json')
+    record,data=Artifacts(db).download('alice',artifact['id'])
+    manifest=json.loads(data)
+    assert manifest['coverage']['complete'] is True
+    assert manifest['events'][0]['location']=='Room 4'
+    assert record['lineage']['connectionId']=='google'
+    GoogleConnections(db).disconnect('alice','google')
+    with pytest.raises(HTTPException) as unavailable:Artifacts(db).download('alice',artifact['id'])
+    assert unavailable.value.status_code==404
+    with db.engine.connect() as conn:
+        assert conn.execute(text('SELECT status FROM agent_artifacts WHERE id=:id'),{'id':artifact['id']}).scalar_one()=='cleanup_pending'
+
+def test_calendar_read_asks_for_missing_range_then_resumes_from_reply(connected,monkeypatch):
+    from backend.app.agent_execution.contracts import Message
+    db,coordinator,repo,_,_,_=connected
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE','off')
+    requests=[]
+    def read(self,owner,connection,kind,identifier=None,page=None,*,calendar_id=None,time_min=None,time_max=None):
+        requests.append((time_min,time_max))
+        return {'data':{'items':[]}}
+    monkeypatch.setattr(GoogleAdapter,'read',read)
+    response=coordinator.admit('alice',Message(clientMessageId='calendar-range',sessionId='session',text='Check my calendar',timezone='America/Los_Angeles'),'calendar-range')
+    run=repo.read('alice',response['references'][0]['id'])
+    AgentWorker(db).tick();waiting=repo.read('alice',run['id'])
+    assert waiting['status']=='waiting' and waiting['pendingRequests'][0]['inputKind']=='choice'
+    assert waiting['pendingRequests'][0]['options']==['Today','Tomorrow','This week','Next week']
+    answer(coordinator,repo,waiting,client='calendar-range-answer',message='Next week')
+    AgentWorker(db).tick();complete=repo.read('alice',run['id'])
+    assert complete['status']=='completed' and len(requests)==1
+    from datetime import datetime,timedelta
+    start_at=datetime.fromisoformat(requests[0][0]);end_at=datetime.fromisoformat(requests[0][1])
+    assert start_at.weekday()==0 and end_at-start_at==timedelta(days=7)
+
+def test_calendar_read_retains_answered_range_while_waiting_for_account(connected,monkeypatch):
+    from backend.app.agent_execution.contracts import Message
+    db,coordinator,repo,_,_,_=connected
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE','off')
+    GoogleConnections(db).disconnect('alice','google')
+    response=coordinator.admit('alice',Message(clientMessageId='calendar-account',sessionId='session',text='Check my calendar',timezone='America/Los_Angeles'),'calendar-account')
+    run=repo.read('alice',response['references'][0]['id']);worker=AgentWorker(db)
+    worker.tick();waiting=repo.read('alice',run['id'])
+    assert waiting['status']=='waiting' and waiting['pendingRequests'][0]['inputKind']=='choice'
+    answer(coordinator,repo,waiting,client='calendar-date-answer',message='Next week')
+    worker.tick();account_wait=repo.read('alice',run['id'])
+    assert account_wait['status']=='waiting' and account_wait['pendingRequests'][0]['inputKind']=='text'
+    assert account_wait['calendarRead']['timeMin'] and account_wait['calendarRead']['timeMax']
+    assert 'connect google calendar' in account_wait['pendingRequests'][0]['question'].casefold()
+
+def test_calendar_read_stops_at_five_pages_and_marks_partial_coverage(connected,monkeypatch):
+    from backend.app.agent_execution.contracts import Message
+    db,coordinator,repo,_,_,_=connected
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE','off')
+    pages=[]
+    def read(self,owner,connection,kind,identifier=None,page=None,*,calendar_id=None,time_min=None,time_max=None):
+        pages.append(page)
+        index=len(pages)
+        return {'data':{'items':[{'id':f'event-{index}-{n}','summary':f'Event {n}'} for n in range(20)],'nextPageToken':f'page-{index}'}}
+    monkeypatch.setattr(GoogleAdapter,'read',read)
+    response=coordinator.admit('alice',Message(clientMessageId='calendar-partial',sessionId='session',text='Show my calendar this week',timezone='America/Los_Angeles'),'calendar-partial')
+    run=repo.read('alice',response['references'][0]['id']);AgentWorker(db).tick();partial=repo.read('alice',run['id'])
+    assert partial['status']=='completed_partial' and partial['completion']['status']=='partial'
+    assert len(pages)==5 and len(partial['artifacts'])==1
+    manifest=json.loads(Artifacts(db).download('alice',partial['artifacts'][0]['id'])[1])
+    assert manifest['coverage']=={'complete':False,'pagesRead':5,'eventsRead':100,'moreAvailable':True}
 
 def test_http_approval_identity_and_payload_validation(connected,monkeypatch):
     monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true');db=connected[0];app=FastAPI();app.add_middleware(IdentityMiddleware,store_provider=lambda:db);app.include_router(build_connected_router(lambda:db));client=TestClient(app)

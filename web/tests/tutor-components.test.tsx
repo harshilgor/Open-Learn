@@ -5,10 +5,11 @@ import { ExerciseCard } from '@/components/exercise-card';
 import { RichContent } from '@/components/rich-content';
 import { ChatComposer } from '@/components/chat-composer';
 import { MessageActionBar, VerificationBadge } from '@/components/message-action-bar';
+import { NextActionCards } from '@/components/next-action-cards';
 
-const { createWorkspaceNote, deleteWorkspaceNote } = vi.hoisted(() => ({ createWorkspaceNote: vi.fn(async () => ({ id: 'note-1', revision: 1 })), deleteWorkspaceNote: vi.fn(async () => undefined) }));
+const { createWorkspaceNote, deleteWorkspaceNote, getRecommendations, recordRecommendationInteraction } = vi.hoisted(() => ({ createWorkspaceNote: vi.fn(async () => ({ id: 'note-1', revision: 1 })), deleteWorkspaceNote: vi.fn(async () => undefined), getRecommendations: vi.fn(), recordRecommendationInteraction: vi.fn(async () => undefined) }));
 const allowanceState = vi.hoisted(() => ({ snapshot: null as null | { windowId: string | null; windowState: 'ready' | 'active'; serverTime: number; resetsAt: number | null; grantedMicrocredits: number; usedMicrocredits: number; heldMicrocredits: number; availableMicrocredits: number; revision: number; availability: string; reasonCode: string | null }, error: '' }));
-vi.mock('@/lib/api', () => ({ learningApi: { searchWorkspaceNotes: vi.fn(async () => ({ notes: [] })), createWorkspaceNote, deleteWorkspaceNote } }));
+vi.mock('@/lib/api', () => ({ learningApi: { searchWorkspaceNotes: vi.fn(async () => ({ notes: [] })), createWorkspaceNote, deleteWorkspaceNote, getRecommendations, recordRecommendationInteraction } }));
 vi.mock('@/lib/usage-allowance', () => ({ refreshAllowance: vi.fn(), useAllowance: () => allowanceState, usagePercent: (snapshot: NonNullable<typeof allowanceState.snapshot>) => ({ used: snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100, held: snapshot.heldMicrocredits / snapshot.grantedMicrocredits * 100, available: snapshot.availableMicrocredits / snapshot.grantedMicrocredits * 100, label: `${Math.round(snapshot.usedMicrocredits / snapshot.grantedMicrocredits * 100)}%` }) }));
 vi.mock('@/lib/use-app-reduced-motion', () => ({ useAppReducedMotion: () => true }));
 
@@ -20,6 +21,16 @@ function render(node: ReactNode) { act(() => root.render(node)); }
 function button(label: string) { const result = [...container.querySelectorAll('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label); if (!result) throw new Error(`Missing button: ${label}`); return result; }
 function click(element: HTMLElement) { act(() => element.click()); }
 function typeInto(input: HTMLInputElement, value: string) { act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
+
+it('allows text sends during a response while retaining a separate stop control', () => {
+  const send=vi.fn(),stop=vi.fn();
+  render(<ChatComposer value="One more detail" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={send} onCancel={stop} busy allowSendWhileBusy followup gear="Quick" onGearChange={vi.fn()}/>);
+  expect(button('Send message').disabled).toBe(false);
+  click(button('Send message'));expect(send).toHaveBeenCalledOnce();
+  click(button('Stop generating'));expect(stop).toHaveBeenCalledOnce();
+  expect(button('Dictate message').disabled).toBe(true);
+  expect(button('Chat options and attachments').disabled).toBe(true);
+});
 
 describe('composer preferences', () => {
   it('keeps preferences outside the writing surface and changes all explanation depths', () => {
@@ -42,6 +53,28 @@ describe('composer preferences', () => {
     click(find('Reset explanation depth to Quick'));
     expect(button('Explanation depth: Quick')).toBeTruthy();
     expect(container.querySelector('textarea')?.value).toBe('Draft stays here');
+  });
+});
+
+describe('suggested next step', () => {
+  it('shows only the current primary action and runs its learning action', async () => {
+    getRecommendations.mockResolvedValue({
+      id: 'set-1', sessionId: 'session-1', policyVersion: 'immediate-adaptation-v1', status: 'current',
+      createdAt: '2026-10-07T00:00:00Z', recommendations: [
+        { id: 'rec-primary', actionKind: 'quiz', title: 'Quiz Chain rule', rationale: 'A fresh check will show what to do next.', conceptId: 'chain-rule', conceptTitle: 'Chain rule', effortMinutes: 6, context: { sessionId: 'session-1', conceptId: 'chain-rule' }, score: 100, pedagogicalAction: 'check', whyCode: 'taught_without_check', evidenceIds: [], isPrimary: true },
+        { id: 'rec-alternate', actionKind: 'review', title: 'Review Chain rule', rationale: 'An alternate action.', conceptId: 'chain-rule', conceptTitle: 'Chain rule', effortMinutes: 6, context: { sessionId: 'session-1', conceptId: 'chain-rule' }, score: 70, evidenceIds: [], isPrimary: false },
+      ],
+    });
+    const onCheck = vi.fn();
+    render(<NextActionCards sessionId="session-1" enabled onLearn={vi.fn()} onAsk={vi.fn()} onQuiz={vi.fn()} onReview={vi.fn()} onCheck={onCheck}/>);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(container.textContent).toContain('Check Chain rule');
+    expect(container.textContent).not.toContain('Review Chain rule');
+    expect(container.querySelectorAll('[aria-label="Suggested next step"] button')).toHaveLength(2);
+    click(button('Check Chain rule'));
+    expect(onCheck).toHaveBeenCalledOnce();
+    expect(recordRecommendationInteraction).toHaveBeenCalledWith('rec-primary', 'selection');
   });
 });
 
@@ -106,6 +139,21 @@ describe('composer and message actions', () => {
     click(button('Retry connection'));expect(retry).toHaveBeenCalledOnce();
     render(composer('My retained draft',true));
     expect(container.querySelector('textarea')!.disabled).toBe(false);
+  });
+
+  it('hides the generic connection and usage-check notices while preserving the draft and send safeguards', () => {
+    render(<ChatComposer value="My retained draft" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={vi.fn()} busy={false} followup={false} gear="Quick" onGearChange={vi.fn()} unavailable="Open Learn could not connect. You can keep writing your draft." onRetry={vi.fn()}/>);
+    expect(container.textContent).not.toContain('Open Learn could not connect. You can keep writing your draft.');
+    expect(container.querySelector('[aria-label="Retry connection"]')).toBeNull();
+    expect(container.querySelector('textarea')?.value).toBe('My retained draft');
+    expect(button('Send message').disabled).toBe(true);
+
+    allowanceState.snapshot = null;
+    allowanceState.error = 'Usage could not be checked';
+    render(composer('My retained draft'));
+    expect(container.textContent).not.toContain('AI work is paused while usage is checked. Your draft stays here.');
+    expect(container.querySelector('textarea')?.value).toBe('My retained draft');
+    expect(button('Send message').disabled).toBe(true);
   });
 
   it('keeps a draft editable but blocks new work until allowance is loaded', () => {

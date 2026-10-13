@@ -16,6 +16,7 @@ from ...workflow_store import uid, encoded
 SESSION_TTL_SECONDS = 600
 RECONCILIATION_GRACE_SECONDS = 120
 SESSION_TTL_MILLISECONDS = SESSION_TTL_SECONDS * 1000
+PROFILE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 TERMINAL_SESSION_STATES = {'COMPLETED', 'TIMED_OUT', 'ERROR', 'RELEASED', 'STOPPED'}
 
 OBSERVER = Path(__file__).resolve().parents[1] / 'observer.js'
@@ -38,13 +39,15 @@ def readiness():
     return {'enabled': os.getenv('OPENLEARN_CLOUD_BROWSER_ENABLED') == 'true',
             'paidRoutesEnabled': paid_routes,
             'tariffConfigured': tariff_configured,
-            'credentialsConfigured': bool(os.getenv('BROWSERBASE_API_KEY') and os.getenv('BROWSERBASE_PROJECT_ID')),
+            # Browserbase infers the project from the API key. Do not require
+            # or persist a separate project ID in application configuration.
+            'credentialsConfigured': bool(os.getenv('BROWSERBASE_API_KEY')),
             'runtimeInstalled': importlib.util.find_spec('playwright') is not None,
             'egressVerified': os.getenv('OPENLEARN_BROWSER_EGRESS_VERIFIED') == 'true',
             'lifecycleVerified': os.getenv('OPENLEARN_BROWSER_LIFECYCLE_VERIFIED') == 'true',
-            # Browserbase contexts currently outlive their session and have no
-            # metered expiration lifecycle, so configuration cannot enable them.
-            'privateLoginVerified': False}
+            # Set only after dated acceptance proves owner isolation, short-lived
+            # live-view control, provider termination, and profile deletion.
+            'privateLoginVerified': os.getenv('OPENLEARN_BROWSER_PRIVATE_VERIFIED') == 'true'}
 
 
 def require_cloud_ready():
@@ -70,6 +73,27 @@ def _settle_ticket(ticket, started_at, ended_at, rate_nano_per_minute):
     from ...usage.operations import finish_external
     quantities, cost_nano = _actual_browser_usage(started_at, ended_at, rate_nano_per_minute)
     finish_external(ticket, quantities=quantities, cost_nano=cost_nano, source='exact')
+
+
+def guard_browser_request(request_route, connection, blocked_navigation=None):
+    """Enforce Open Learn's read-only and public-URL rules on every request."""
+    request = request_route.request
+    url = request.url
+    try:
+        if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+            request_route.abort()
+            return False
+        from ...url_ingestion import validate_public_url
+        validate_public_url(url)
+        if request.is_navigation_request():
+            check_url(url, connection)
+        request_route.continue_()
+        return True
+    except Exception:
+        if request.is_navigation_request() and blocked_navigation is not None:
+            blocked_navigation.append(url)
+        request_route.abort()
+        return False
 
 
 def stop_and_settle(store, provider, row):
@@ -111,7 +135,7 @@ class BrowserbaseProvider:
         response.raise_for_status()
         return response.json() if response.content else {}
 
-    def create(self, connection, usage_ticket=None):
+    def create(self, connection, usage_ticket=None, *, persist_context=False):
         require_cloud_ready()
         if (not usage_ticket or len(usage_ticket) != 3 or
                 usage_ticket[2].get('component') != 'browser' or
@@ -120,15 +144,29 @@ class BrowserbaseProvider:
         settings = {'recordSession': False, 'logSession': False, 'solveCaptchas': False,
                     'allowedDomains': [urlsplit(u).hostname for u in [connection['origin'], *connection.get('approvedOrigins', [])]],
                     'viewport': {'width': 1280, 'height': 900}}
-        return self.request('POST', 'sessions', {'projectId': os.environ['BROWSERBASE_PROJECT_ID'],
-                             'browserSettings': settings, 'timeout': SESSION_TTL_SECONDS, 'keepAlive': True})
+        context_id = connection.get('providerContextId')
+        if context_id and connection.get('cloudLogin'):
+            if not readiness()['privateLoginVerified']:
+                fail('capability_unavailable', 'Saved browser profiles are unavailable until their isolation and deletion checks pass.', 503)
+            # Ordinary tasks may read a remembered profile but cannot rewrite
+            # it. Only the learner-controlled sign-in handoff persists updates.
+            settings['context'] = {'id': context_id, 'persist': bool(persist_context)}
+        # Ordinary read sessions should end when the controller disconnects.
+        # Only the interactive sign-in handoff needs to remain alive for the
+        # student to use Browserbase's short-lived Live View.
+        payload = {'browserSettings': settings, 'timeout': SESSION_TTL_SECONDS,
+                   'keepAlive': bool(persist_context)}
+        return self.request('POST', 'sessions', payload)
 
     def stop(self, identifier):
-        self.request('POST', f'sessions/{identifier}', {'projectId': os.environ['BROWSERBASE_PROJECT_ID'], 'status': 'REQUEST_RELEASE'})
+        self.request('POST', f'sessions/{identifier}', {'status': 'REQUEST_RELEASE'})
 
-    def create_context(self):
-        fail('capability_unavailable',
-             'Persistent cloud browser contexts are unavailable until their lifecycle is bounded and metered.', 503)
+    def create_context(self, name):
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError('A private browser profile name is required.')
+        # Browserbase resolves the project from the API key. Keep the context
+        # name opaque; never include an email, domain, or learner label.
+        return self.request('POST', 'contexts', {'name': name[:128]})
 
     def delete_context(self, identifier):
         self.request('DELETE', 'contexts/' + identifier)
@@ -151,8 +189,24 @@ class CloudExecutor:
 
     def session(self, connection, run):
         require_cloud_ready()
-        if connection.get('cloudLogin') or connection.get('providerContextId'):
-            fail('capability_unavailable', 'Private cloud login is unavailable until its saved browser context has a bounded, metered lifecycle.', 503)
+        context_id = connection.get('providerContextId')
+        if context_id and connection.get('cloudLogin') and not readiness()['privateLoginVerified']:
+            fail('capability_unavailable', 'Saved browser profiles are unavailable until their isolation and deletion checks pass.', 503)
+        context_expiry = connection.get('browserContextExpiresAt')
+        if context_id and (not connection.get('cloudLogin') or
+                           not isinstance(context_expiry, (int, float)) or context_expiry <= time.time()):
+            queue_context_cleanup(self.store, run['owner_id'], connection)
+            with self.store.engine.begin() as conn:
+                row = conn.execute(text('SELECT payload,revision FROM site_connections WHERE id=:id AND owner_id=:owner'),
+                                   {'id': connection['id'], 'owner': run['owner_id']}).mappings().first()
+                if row:
+                    saved = json.loads(row['payload'])
+                    if saved.get('providerContextId') == context_id:
+                        for key in ('providerContextId', 'browserContextExpiresAt', 'browserContextLastUsedAt', 'loginSessionId'):
+                            saved.pop(key, None)
+                        conn.execute(text('UPDATE site_connections SET payload=:payload,revision=revision+1,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                     {'payload': encoded(saved), 'now': time.time(), 'id': connection['id'], 'owner': run['owner_id']})
+            fail('capability_unavailable', 'The saved sign-in expired. Sign in again from Connected websites, then retry this task.', 409)
         with self.store.transaction() as conn:
             row = conn.execute(text("SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status='active'"),
                                {'owner': run['owner_id'], 'run': run['id'], 'now': time.time()}).mappings().first()
@@ -202,6 +256,21 @@ class CloudExecutor:
             except Exception:
                 pass
             fail('capability_unavailable', 'Cloud browser state could not be saved. The provider session is being safely reconciled.', 503)
+        if connection.get('providerContextId') and connection.get('cloudLogin'):
+            # Successful allocation counts as a use for the application's
+            # inactivity-retention window. The provider profile itself has no
+            # expiry, so Open Learn owns and enforces this boundary.
+            now = time.time()
+            with self.store.engine.begin() as conn:
+                row = conn.execute(text('SELECT payload FROM site_connections WHERE id=:id AND owner_id=:owner'),
+                                   {'id': connection['id'], 'owner': run['owner_id']}).first()
+                if row:
+                    saved = json.loads(row[0])
+                    if saved.get('providerContextId') == connection['providerContextId']:
+                        saved['browserContextLastUsedAt'] = now
+                        saved['browserContextExpiresAt'] = now + PROFILE_RETENTION_SECONDS
+                        conn.execute(text('UPDATE site_connections SET payload=:payload,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                     {'payload': encoded(saved), 'now': now, 'id': connection['id'], 'owner': run['owner_id']})
         return session['id'], session['connectUrl']
 
     def execute(self, action, connection, run, previous=None):
@@ -214,17 +283,7 @@ class CloudExecutor:
                 blocked_navigation = []
                 # Requests are checked in addition to the provider/network egress boundary.
                 def route(request_route):
-                    url = request_route.request.url
-                    try:
-                        if request_route.request.method not in {'GET','HEAD','OPTIONS'}:
-                            request_route.abort(); return
-                        from ...url_ingestion import validate_public_url
-                        validate_public_url(url)
-                        if request_route.request.is_navigation_request(): check_url(url, connection)
-                        request_route.continue_()
-                    except Exception:
-                        if request_route.request.is_navigation_request(): blocked_navigation.append(url)
-                        request_route.abort()
+                    guard_browser_request(request_route, connection, blocked_navigation)
                 context.route('**/*', route)
                 page = context.pages[0] if context.pages else context.new_page()
                 page.set_default_timeout(12000)

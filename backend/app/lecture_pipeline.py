@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import text
 
 from .lecture_models import EntityBatch, LecturePreferences, SectionBatch, SectionProposal, VerificationBatch
-from .lecture_provider import OpenAITranscriptionProvider, TranscriptionFailure, configured_transcription_provider, normalize_text
+from .lecture_provider import TranscriptionFailure, configured_transcription_provider, normalize_text
 from .lecture_service import LectureError, LectureService, encoded, uid
 from .workflow_store import WorkflowStore
 from .execution import job_scope, LeaseHeartbeat
@@ -23,31 +23,16 @@ from .usage.context import usage_scope
 log = logging.getLogger(__name__)
 _worker_lock = threading.Lock()
 JOB_KINDS = ("lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention")
-_CLASS_TRANSCRIPTION_MODELS = frozenset({"gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"})
-
-
 def configured_class_transcription_provider():
-    """Use the class recording's supported OpenAI speech-to-text configuration.
+    """Use the configured speech provider for authoritative class audio too.
 
-    Text generation may use OpenRouter, but authoritative class transcription
-    is intentionally pinned to OpenAI. Keep the legacy ``auto`` setting
-    compatible while preventing an explicit OpenRouter selection from silently
-    changing providers.
+    Class recordings used to be pinned to OpenAI even when the deployed app
+    only had its OpenRouter key configured. That made uploaded class audio
+    fail after capture while ordinary lecture uploads could use OpenRouter.
+    The shared selector honors an explicit transcription-provider override,
+    otherwise follows the configured text provider / available credentials.
     """
-    selected = os.getenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", "auto").strip().lower()
-    if selected not in {"auto", "openai"}:
-        raise TranscriptionFailure(
-            "Class transcription only supports OpenAI; set AI_TUTOR_TRANSCRIPTION_PROVIDER=openai."
-        )
-    model = os.getenv("AI_TUTOR_TRANSCRIPTION_MODEL", "gpt-4o-mini-transcribe").strip()
-    if not model:
-        model = "gpt-4o-mini-transcribe"
-    if model not in _CLASS_TRANSCRIPTION_MODELS:
-        supported = ", ".join(sorted(_CLASS_TRANSCRIPTION_MODELS))
-        raise TranscriptionFailure(
-            f"AI_TUTOR_TRANSCRIPTION_MODEL must be one of: {supported}."
-        )
-    return OpenAITranscriptionProvider(model=model)
+    return configured_transcription_provider()
 
 
 def _stage(store, recording_id: str, stage: str, status: str, *, error: str | None = None):

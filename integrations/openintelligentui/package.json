@@ -1,0 +1,8 @@
+{
+  "name": "openlearn-visual-runtime",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {"mcp":"node mcp.mjs","mcp:http":"node mcp.mjs --http"},
+  "dependencies": { "@copilotkit/runtime": "1.55.2-next.1", "@modelcontextprotocol/sdk":"1.32.1", "zod":"3.25.76" }
+}

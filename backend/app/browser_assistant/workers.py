@@ -109,6 +109,10 @@ class AssistantWorker:
 
     def step(self, job):
         run = self.repo.read('assistant_runs', job['owner_id'], job['target_id'])
+        recovery = run.get('cloudRecovery') or {}
+        if recovery.get('leaseUntil', 0) > time.time():
+            # Do not let a reclaimed job overlap a provider stop/reconciliation.
+            return self.finish_job(job)
         if run.get('runtime_owner') == 'agent_v2':
             return self.finish_job(job)
         if run['status'] in TERMINAL | WAITING:
@@ -125,10 +129,13 @@ class AssistantWorker:
         provider = self.provider_getter()
         if not run.get('intent'):
             connections = self.repo.list('site_connections', run['owner_id'])
-            intent = compile_intent(run['message'], provider, connections, run.get('previousTask'))
+            intent_message = run['message']
+            if run.get('reclassifyWithClarification') and run.get('clarificationAnswer'):
+                intent_message += '\nLearner clarification: ' + run['clarificationAnswer']
+            intent = compile_intent(intent_message, provider, connections, run.get('previousTask'))
             with self.store.transaction() as conn:
                 run = self.repo.run(conn, job['owner_id'], run['id'])
-                run = self.repo.update_run(conn, run, status='resolving', intent=intent.model_dump(by_alias=True))
+                run = self.repo.update_run(conn, run, status='resolving', intent=intent.model_dump(by_alias=True), reclassifyWithClarification=False)
                 self.repo.event(conn, run, 'task.intent', 'Understood the website task.')
         intent = TaskIntent.model_validate(run['intent'])
         if not intent.handled:
@@ -290,7 +297,7 @@ class AssistantWorker:
                 {'id': identifier, 'owner': run['owner_id'], 'run': run['id'], 'job': job['id'], 'generation': job['lease'],
                  'revision': connection['revision'], 'device': connection.get('deviceId'), 'payload': encoded(data), 'expires': time.time()+120, 'now': time.time()})
             fresh = self.repo.update_run(conn, fresh, actionsUsed=fresh['actionsUsed']+1, pendingCommand=identifier)
-            self.repo.event(conn, fresh, 'browser.action', 'Reading ' + safe_url(action.url or (previous or {}).get('url') or connection['origin']) + '.', tool=action.tool)
+            self.repo.event(conn, fresh, 'browser.action', self.action_message(action, previous, connection), tool=action.tool)
             if connection['executor'] == 'local':
                 self.jobs.finish(conn, job, {'status': 'waiting_for_device', 'commandId': identifier}); return
         if self.executor_factory:
@@ -316,6 +323,23 @@ class AssistantWorker:
             if fresh['status'] not in WAITING: self.repo.enqueue(conn, fresh)
             self.jobs.finish(conn, job, {'status': fresh['status']})
         if fresh['status'] in WAITING and fresh.get('browserControl',{}).get('owner','agent') == 'agent': self.close(run['owner_id'], run['id'])
+
+    @staticmethod
+    def action_message(action, previous, connection):
+        url = safe_url(action.url or (previous or {}).get('url') or connection['origin'])
+        messages = {
+            'navigate': f'Opening {url}.',
+            'observe': f'Reading {url}.',
+            'find': 'Searching within the current page.',
+            'click': 'Opening the selected page control.',
+            'fill': 'Entering information into the selected page field.',
+            'press_key': 'Using the requested key on the page.',
+            'scroll': 'Scrolling through the page.',
+            'capture_screenshot': 'Checking the page visually.',
+            'read_document': f'Reading the document at {url}.',
+            'read_platform_resource': 'Reading the selected course resource.',
+        }
+        return messages.get(action.tool, f'Working on {url}.')
 
     def accept_evidence(self, job, run, connection, candidates, snapshots):
         from .reconciliation import save_candidates
@@ -396,6 +420,7 @@ class AssistantWorker:
         CloudExecutor(self.store).close(owner, identifier)
 
     def recover(self):
+        self.recover_cloud_inflight()
         # Device timeout pauses the logical task without pretending the page was read.
         with self.store.transaction() as conn:
             stranded = conn.execute(text("""SELECT r.id,r.owner_id FROM assistant_runs r WHERE r.runtime_owner='browser_legacy' AND r.status IN ('running','resolving')
@@ -417,6 +442,109 @@ class AssistantWorker:
         self.refresh_due()
         self.cleanup()
 
+    def recover_cloud_inflight(self, limit=20):
+        """Reconcile an interrupted cloud-browser action without replaying it.
+
+        The recovery claim is stored on the run before any provider call. If a
+        worker dies during reconciliation, a later pass can reclaim it after
+        the short lease. Human takeover is never granted from this path: the
+        browser session must first be confirmed terminal and its usage hold
+        settled by CloudExecutor.release_control().
+        """
+        now = time.time()
+        candidates = []
+        with self.store.transaction() as conn:
+            rows = conn.execute(text("""SELECT r.id,r.owner_id,r.payload,r.revision,r.status,c.payload AS connection_payload
+                FROM assistant_runs r JOIN site_connections c ON c.id=r.connection_id AND c.owner_id=r.owner_id
+                WHERE r.status IN ('running','paused')
+                ORDER BY r.updated_at LIMIT :limit"""), {'limit': limit}).mappings().all()
+            for row in rows:
+                if json.loads(row['connection_payload']).get('executor') != 'cloud':
+                    continue
+                run = self.repo.run(conn, row['owner_id'], row['id'])
+                pending = run.get('browserInputInFlight')
+                if not pending:
+                    continue
+                control = run.get('browserControl') or {}
+                takeover = run['status'] == 'paused' and control.get('owner') in {'requesting', 'reconciling'}
+                if not takeover:
+                    if run['status'] != 'running' or control.get('owner', 'agent') != 'agent':
+                        continue
+                    step = conn.execute(text('SELECT job_id FROM assistant_steps WHERE id=:id AND owner_id=:owner AND run_id=:run'),
+                                        {'id': pending, 'owner': row['owner_id'], 'run': row['id']}).first()
+                    if not step:
+                        continue
+                    job = conn.execute(text('SELECT status,expires FROM learning_jobs WHERE id=:id AND owner_id=:owner'),
+                                       {'id': step[0], 'owner': row['owner_id']}).first()
+                    if job and job[0] == 'running' and job[1] is not None and job[1] > now:
+                        continue
+                recovery = run.get('cloudRecovery') or {}
+                if recovery.get('leaseUntil', 0) > now:
+                    continue
+                token = uid('browser_recovery')
+                claimed = self.repo.update_run(conn, run, cloudRecovery={
+                    'token': token, 'leaseUntil': now + 45, 'startedAt': now,
+                    'generation': control.get('generation'), 'pendingCommand': pending,
+                    'takeover': takeover,
+                })
+                candidates.append((row['owner_id'], row['id'], token, pending,
+                                   control.get('generation'), takeover, claimed['revision']))
+
+        for owner, run_id, token, pending, generation, takeover, _revision in candidates:
+            from .executors.cloud import CloudExecutor
+            # A missing/ambiguous lease is not treated as proof that the remote
+            # browser is gone. Keep the recovery claim short and fail closed.
+            with self.store.engine.connect() as conn:
+                leases = conn.execute(text("SELECT status FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run"),
+                                      {'owner': owner, 'run': run_id}).scalars().all()
+            if not leases or any(status not in {'active', 'login', 'closed'} for status in leases):
+                closed = False
+            elif all(status == 'closed' for status in leases):
+                closed = True
+            else:
+                closed = CloudExecutor(self.store).release_control(owner, run_id)
+            with self.store.transaction() as conn:
+                try:
+                    run = self.repo.run(conn, owner, run_id)
+                except HTTPException:
+                    continue
+                current = run.get('cloudRecovery') or {}
+                if current.get('token') != token:
+                    continue
+                if not closed:
+                    # Let the durable reconciler retry, while preventing the
+                    # ordinary executor from racing this provider operation.
+                    self.repo.update_run(conn, run, cloudRecovery={**current, 'leaseUntil': time.time() + 30,
+                                                                    'lastAttemptAt': time.time()})
+                    continue
+                if run.get('browserInputInFlight') != pending:
+                    # A normal worker completed the action while the provider
+                    # was stopping. It is safe to continue only after a fresh read.
+                    takeover = takeover or (run['status'] == 'paused' and (run.get('browserControl') or {}).get('owner') == 'requesting')
+                if pending:
+                    conn.execute(text("UPDATE assistant_steps SET status='outcome_unknown' WHERE id=:id AND owner_id=:owner AND run_id=:run AND status IN ('prepared','dispatched','cancelled')"),
+                                 {'id': pending, 'owner': owner, 'run': run_id})
+                if takeover or run['status'] == 'paused':
+                    question = ('The previous browser action may have completed, so I stopped that cloud session. '
+                                'Reply “continue” to open a fresh session and reread the page before doing anything else, '
+                                'or tell me what changed.')
+                    control = run.get('browserControl') or {}
+                    changes = {'status': 'waiting_for_user', 'error': 'outcome_unknown', 'question': question,
+                               'pendingCommand': None, 'browserInputInFlight': None,
+                               'browserControl': {**control, 'owner': 'agent', 'generation': uid('control'), 'executor': 'cloud'},
+                               'cloudRecovery': None, 'reobserve': True}
+                    run = self.repo.update_run(conn, run, **changes)
+                    self.repo.event(conn, run, 'task.attention', question)
+                else:
+                    control = run.get('browserControl') or {}
+                    run = self.repo.update_run(conn, run, status='queued', error='outcome_unknown', question=None,
+                        pendingCommand=None, browserInputInFlight=None, cloudRecovery=None,
+                        browserControl={**control, 'owner': 'agent', 'generation': uid('control'), 'executor': 'cloud'},
+                        reobserve=True)
+                    self.repo.event(conn, run, 'browser.recovering',
+                        'The previous browser action may have completed. The cloud session is closed; rereading the page before another action.')
+                    self.repo.enqueue(conn, run)
+
     def refresh_due(self):
         from .contracts import TaskCreate
         with self.store.transaction() as conn:
@@ -433,17 +561,75 @@ class AssistantWorker:
                 conn.execute(text('UPDATE connection_refresh_schedules SET next_due=:due WHERE id=:id'), {'due': time.time()+payload['intervalHours']*3600, 'id': r['id']})
 
     def cleanup(self):
-        from .executors.cloud import BrowserbaseProvider
+        from .executors.cloud import BrowserbaseProvider, queue_context_cleanup
+        now = time.time()
         with self.store.engine.connect() as conn:
-            sessions = conn.execute(text("SELECT b.id,b.owner_id,b.run_id FROM browser_session_leases b LEFT JOIN assistant_runs r ON r.id=b.run_id WHERE (b.status='login' AND b.expires_at<:now) OR (b.status='active' AND (b.expires_at<:now OR r.id IS NULL OR r.status IN ('completed','completed_partial','cancelled','failed','paused','waiting_for_user','waiting_for_device','waiting_for_login'))) LIMIT 10"), {'now': time.time()}).mappings().all()
+            sessions = conn.execute(text("SELECT b.id,b.owner_id,b.run_id FROM browser_session_leases b LEFT JOIN assistant_runs r ON r.id=b.run_id WHERE (b.status='login' AND b.expires_at<:now) OR (b.status='active' AND (b.expires_at<:now OR r.id IS NULL OR r.status IN ('completed','completed_partial','cancelled','failed','paused','waiting_for_user','waiting_for_device','waiting_for_login'))) LIMIT 10"), {'now': now}).mappings().all()
             cleanup = conn.execute(text('SELECT * FROM browser_provider_cleanup LIMIT 10')).mappings().all()
             objects = conn.execute(text('SELECT * FROM assistant_objects WHERE expires_at<:now LIMIT 20'), {'now': time.time()}).mappings().all()
+            connections = conn.execute(text("SELECT id,owner_id,payload,revision,status FROM site_connections WHERE status<>'revoked' ORDER BY updated_at LIMIT 200")).mappings().all()
         for s in sessions: self.close(s['owner_id'], s['run_id'])
+        # Browserbase contexts have no provider-side expiry. Enforce the
+        # application's 30-day inactivity limit and durably queue deletion.
+        for row in connections:
+            saved = json.loads(row['payload'])
+            context_id = saved.get('providerContextId')
+            expiry = saved.get('browserContextExpiresAt')
+            if not context_id or isinstance(expiry, (int, float)) and expiry > now:
+                continue
+            # Never delete a profile out from under an active provider session.
+            # Session cleanup runs first in this tick; if Browserbase has not
+            # confirmed termination, leave both the profile and its cleanup
+            # request for a later retry.
+            with self.store.engine.connect() as conn:
+                active = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND connection_id=:connection AND status IN ('active','login') LIMIT 1"),
+                                      {'owner':row['owner_id'],'connection':row['id']}).first()
+            if active:
+                continue
+            connection = {**saved, 'providerContextId':context_id}
+            try:
+                queue_context_cleanup(self.store, row['owner_id'], connection)
+                with self.store.engine.begin() as conn:
+                    fresh = conn.execute(text('SELECT payload,revision FROM site_connections WHERE id=:id AND owner_id=:owner'),
+                                         {'id':row['id'],'owner':row['owner_id']}).mappings().first()
+                    if not fresh: continue
+                    current = json.loads(fresh['payload'])
+                    if current.get('providerContextId') != context_id or current.get('browserContextExpiresAt', 0) > now:
+                        continue
+                    for key in ('providerContextId','browserContextExpiresAt','browserContextLastUsedAt','loginSessionId','loginExpiresAt'):
+                        current.pop(key, None)
+                    conn.execute(text('UPDATE site_connections SET payload=:payload,status=:status,revision=revision+1,updated_at=:now WHERE id=:id AND owner_id=:owner'),
+                                 {'payload':encoded(current),'status':'connected' if current.get('executor')=='cloud' else row['status'],
+                                  'now':now,'id':row['id'],'owner':row['owner_id']})
+            except Exception:
+                pass  # Keep profile metadata so the next cleanup tick retries it.
         for item in cleanup:
             try:
                 provider = BrowserbaseProvider()
-                if item['context_id']: provider.delete_context(item['context_id'])
-                if item['session_id']: provider.stop(item['session_id'])
+                if item['session_id']:
+                    with self.store.engine.connect() as conn:
+                        lease = conn.execute(text('SELECT * FROM browser_session_leases WHERE owner_id=:owner AND provider_session=:session AND status IN (\'active\',\'login\')'),
+                                             {'owner':item['owner_id'],'session':item['session_id']}).mappings().first()
+                    if lease:
+                        if not stop_and_settle(self.store, provider, lease):
+                            continue
+                    else:
+                        provider.stop(item['session_id'])
+                        state = provider.request('GET', 'sessions/' + item['session_id']).get('status', '')
+                        if str(state).upper() not in TERMINAL_SESSION_STATES:
+                            continue
+                if item['context_id']:
+                    # Account erasure leaves separate session cleanup records.
+                    # Defer profile deletion until all sessions for that owner
+                    # have been confirmed closed, even if rows arrive unordered.
+                    with self.store.engine.connect() as conn:
+                        active_leases = conn.execute(text("SELECT 1 FROM browser_session_leases WHERE owner_id=:owner AND status IN ('active','login') LIMIT 1"),
+                                                     {'owner':item['owner_id']}).first()
+                        pending_sessions = conn.execute(text('SELECT 1 FROM browser_provider_cleanup WHERE owner_id=:owner AND session_id IS NOT NULL LIMIT 1'),
+                                                        {'owner':item['owner_id']}).first()
+                    if active_leases or pending_sessions:
+                        continue
+                    provider.delete_context(item['context_id'])
                 with self.store.engine.begin() as conn: conn.execute(text('DELETE FROM browser_provider_cleanup WHERE id=:id'), {'id': item['id']})
             except Exception: pass  # Durable cleanup retries without exposing credentials.
         for item in objects:

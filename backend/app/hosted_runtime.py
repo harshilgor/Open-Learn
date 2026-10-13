@@ -30,25 +30,36 @@ def configuration_errors(env=None):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('role',choices=['check','migrate','api','api-free','learning','agent','class','browser','notifications'])
+    parser.add_argument('role',choices=['check','migrate','api','api-free','generation','learning','agent','class','browser','notifications'])
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args()
     errors=configuration_errors()
     if errors:raise SystemExit('Hosted configuration requires: '+', '.join(errors))
     if args.role=='check':print('Hosted configuration shape valid; connectivity not checked.');return
+    os.environ['OPENLEARN_PROCESS_ROLE'] = args.role
     from .database import database_url,run_migrations
     if args.role=='migrate':run_migrations(database_url());return
     if args.role=='api-free':
-        if os.getenv('OPENLEARN_WORKER_MODE') != 'embedded':
-            raise SystemExit('api-free requires OPENLEARN_WORKER_MODE=embedded')
+        worker_mode = os.getenv('OPENLEARN_WORKER_MODE', 'embedded')
+        migrations_external = os.getenv('OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL') == 'true'
+        if worker_mode not in {'embedded', 'external'}:
+            raise SystemExit('api-free requires OPENLEARN_WORKER_MODE=embedded or external')
+        if worker_mode == 'external' and not migrations_external:
+            raise SystemExit('api-free external workers require the release-owned migration job')
         # Free Render has no pre-deploy command. Complete the migration before
         # importing the app or starting its embedded workers. Concurrent boots
         # share a PostgreSQL lock, including during deploy overlap.
-        from .database import run_serialized_migrations
-        run_serialized_migrations(database_url())
+        if migrations_external:
+            from .database import require_current_schema
+            require_current_schema(database_url())
+        else:
+            from .database import run_serialized_migrations
+            run_serialized_migrations(database_url())
     if args.role in {'api','api-free'}:
         import uvicorn
-        uvicorn.run('backend.app.main:app',host='0.0.0.0',port=int(os.getenv('PORT','8000')),workers=1)
+        from .capacity import process_budget
+        uvicorn.run('backend.app.main:app',host='0.0.0.0',port=int(os.getenv('PORT','8000')),workers=1,
+                    limit_concurrency=process_budget().http_concurrency)
         return
     from .storage import Store
     from .model_provider import configured_lesson_provider
@@ -56,7 +67,10 @@ def main():
     for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:stop.set())
     store=Store(database_url())
     try:
-        if args.role=='learning':
+        if args.role=='generation':
+            from .generation_worker import GenerationWorker
+            GenerationWorker(store, configured_lesson_provider).run(stop, args.once)
+        elif args.role=='learning':
             from .worker import run
             run(store,configured_lesson_provider,stop,args.once)
         elif args.role=='notifications':

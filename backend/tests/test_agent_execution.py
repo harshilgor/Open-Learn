@@ -17,6 +17,11 @@ from backend.app.agent_execution.worker import AgentWorker
 from backend.app.agent_execution.artifacts import Artifacts
 
 
+@pytest.fixture(autouse=True)
+def disable_semantic_classification_rollouts(monkeypatch):
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE', 'off')
+
+
 @pytest.fixture
 def env(monkeypatch):
     tmp_path=Path('work')/('agent-tests-'+uuid4().hex)
@@ -52,7 +57,7 @@ def test_complete_flow_semantics_duplicate_and_correction(env):
     assert run['status']=='waiting' and run['checkpointVersion']>0
     reply=answer(svc,repo,run);assert answer(svc,repo,run)==reply
     worker.tick();complete=repo.read('alice',run['id'])
-    assert complete['status']=='completed'
+    assert complete['status']=='completed', (complete.get('error'), complete.get('summary'), complete.get('completion'))
     assert '5 cm/s' in complete['summary'] and '999' not in complete['summary']
     book=next(a for a in complete['artifacts'] if a['name'].endswith('xlsx'))
     _,data=Artifacts(db).download('alice',book['id'])
@@ -113,6 +118,55 @@ def test_cross_owner_stale_answer_and_pause(env):
     assert repo.read('alice',run['id'])['status']=='waiting'
     answer(svc,repo,repo.read('alice',run['id']));worker.tick()
     with pytest.raises(HTTPException):Artifacts(db).download('bob',repo.read('alice',run['id'])['artifacts'][0]['id'])
+
+
+def test_multiple_required_input_requests_resume_only_after_all_answers(env):
+    db,svc,repo=env
+    with repo.transaction() as conn:
+        run=svc.create(conn,'alice','session','Research the attached material','multi-input',None,{},kind='research',research_spec={'query':'photosynthesis'})
+        run,first=repo.request_input(conn,run,{'kind':'ask_user','inputKind':'choice','question':'Which level?','options':['Introductory','Advanced']})
+        run,duplicate=repo.request_input(conn,run,{'kind':'ask_user','inputKind':'choice','question':'Which level?','options':['Introductory','Advanced']})
+        run,second=repo.request_input(conn,run,{'kind':'ask_user','question':'Which format?'})
+    assert duplicate['requestId']==first['requestId']
+    assert len(run['pendingRequests'])==2 and run['status']=='waiting'
+
+    svc.command('alice',run['id'],Command(commandId='level-answer',action='answer_input',expectedRevision=run['revision'],requestId=first['requestId'],expectedRequestRevision=first['revision'],answer={'selectedOption':'Introductory'}))
+    after_first=repo.read('alice',run['id'])
+    assert after_first['status']=='waiting'
+    assert [item['requestId'] for item in after_first['pendingRequests']]==[second['requestId']]
+
+    svc.command('alice',run['id'],Command(commandId='format-answer',action='answer_input',expectedRevision=after_first['revision'],requestId=second['requestId'],expectedRequestRevision=second['revision'],answer={'text':'Markdown'}))
+    after_second=repo.read('alice',run['id'])
+    assert after_second['status']=='queued' and after_second['pendingRequests']==[]
+    with db.engine.connect() as conn:
+        statuses=conn.execute(text('SELECT status FROM agent_input_requests WHERE run_id=:run ORDER BY created_at,id'),{'run':run['id']}).scalars().all()
+    assert statuses==['answered','answered']
+
+
+def test_execution_context_tracks_operational_note_revision_and_excludes_it_from_assessment(env):
+    from backend.app.context_compiler import ContextCompiler
+    db,svc,repo=env
+    with db.transaction() as conn:
+        conn.execute(text("INSERT INTO agent_responsibilities(id,owner_id,session_id,course_id,revision,status,payload,event_after,last_checked) VALUES('responsibility-1','alice','session','course',1,'active',:payload,0,0)"),
+                     {'payload':json.dumps({'sessionId':'session','courseId':'course'})})
+        conn.execute(text("INSERT INTO agent_operational_notes(id,owner_id,responsibility_id,revision,payload) VALUES('note-1','alice','responsibility-1',1,:payload)"),
+                     {'payload':json.dumps({'text':'Use the instructor’s preferred short, evidence-first explanation.'})})
+    compiler=ContextCompiler(db)
+    refs=[{'id':'note-1','revision':1}]
+    packet=compiler.compile('alice','session','execution','Research this topic',operational_note_refs=refs,token_budget=4096,reserve_output_tokens=500)
+    assert packet['status']=='ready'
+    assert 'evidence-first explanation' in packet['text']
+    assert any(dependency['kind']=='agent_operational_note' and dependency['record_id']=='note-1' and dependency['revision']==1 for dependency in packet['dependencies'])
+    with db.transaction() as conn:
+        compiler.validate_commit(conn,'alice',packet)
+        conn.execute(text("UPDATE agent_operational_notes SET revision=2,payload=:payload WHERE id='note-1'"),
+                     {'payload':json.dumps({'text':'Correction: keep answers concise.'})})
+        with pytest.raises(HTTPException) as stale:
+            compiler.validate_commit(conn,'alice',packet)
+        assert stale.value.status_code==409
+    with pytest.raises(HTTPException) as denied:
+        compiler.compile('alice','session','assessment','Research this topic',operational_note_refs=refs)
+    assert denied.value.status_code==403
 
 
 def test_crash_after_storage_reclaims_one_operation_and_final(env):

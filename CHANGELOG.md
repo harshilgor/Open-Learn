@@ -6,6 +6,51 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase F3 (clean-up and rollout support):
+  - Explicit preferences (Settings and chat "remember…") are stored only as learner memory facts; `memory_derived` no longer gets preference rows.
+  - Learn mode's context compiler reads preference and constraint facts, ordered course-specific first, then learner-stated, then newest. It states the precedence order, and drops a packet at commit if a fact it used was forgotten meanwhile.
+  - Forgetting or rewording a preference also retires the hidden source that held its old words, so they can't come back through note search or a retried save.
+  - The memory page shows each Buddy's settings read-only, with a link to the Buddy editor. The duplicate "remember a preference" form left the Advanced source tools.
+  - CI runs the Phase F backend and web memory tests. `docs/memory/Rollout_Runbook.md` describes the hosted rollout step by step.
+- Learner memory Phase F2: a new Settings → Memory page, "What Open Learn remembers about you".
+  - Memories are grouped by type, with a course filter. Each shows "You said this on {date} in {chat}" (linking back to the chat) and the learner's own words, with Edit, Forget (asks first), History and, for unconfirmed or faded memories, Confirm.
+  - Also on the page: a "Needs your review" section for conflicting memories ("Keep this one"), the core profile ("What the tutor always knows"), "Recently updated", session summaries with delete, the "Pause learning new memories" switch, a per-memory switch for personal topics, "Add a memory", and "Forget everything" (shows what will be deleted first).
+  - The source revision tools moved from Privacy & data to "Advanced: sources" on this page. "View" on the "Saved to memory" chip now opens this page.
+- Learner memory Phase F1 (write APIs; used by the memory page in F2):
+  - `PATCH /v1/memory/facts/{id}`: an edit creates a new learner-confirmed fact that supersedes the old one (statements stay immutable). It is guarded by `expectedRevision`, and `DELETE …?undo=true` restores the original.
+  - `POST /v1/memory/facts/{id}/confirm`: confirms a memory (365-day stability; inferred becomes `user_confirmed`). Confirming one side of a `needs_review` conflict resolves it.
+  - `POST /v1/memory/facts`: the learner adds a memory by hand. Links, contact details and passwords are refused.
+  - `PUT /v1/memory/facts/{id}/sensitive`: per-fact opt-in for a sensitive memory to enter the tutor's context and the core profile. Sensitive facts are still never embedded. Adds migration `0088_memory_sensitive_enable` (release head moved).
+  - `GET`/`POST /v1/memory/forget-all`: deletes every memory and session summary, and dismisses saved Settings preferences. It needs a confirmation token that changes whenever memory changes.
+  - Learner actions now appear in `GET /v1/memory/changes` ("1 memory edited by you").
+  - One preference precedence everywhere: current request, then course memory, then global memory, then Buddy defaults, then account settings. Chat prompts that include learner memory state it.
+- Learner memory Phase E (flagged, default off): `OPENLEARN_MEMORY_CONSOLIDATION` runs a daily `memory_consolidate` job for each owner with memory activity in the last 3 days.
+  - Forgetting: stale tentative inferences are deleted after 30 days; tentative statements by the learner are archived, never deleted. Reinforced tentative facts are promoted. Facts whose strength falls below 0.05 and deadlines past their 7-day grace are archived, as are episodes older than a year.
+  - Near-duplicates in the same kind and scope merge into the older fact (lexical until embeddings are approved). Same-rank conflicts within 24 hours are flagged `needs_review`.
+  - Episodes: idle sessions (2 hours) get an extractive `memory_episode` (questions, answer headings, lesson titles, concept IDs; no model call). Questions that read as instructions or touch a sensitive category are left out. Deleting a conversation deletes its episodes.
+  - Core profile: a deterministic, byte-stable list of the learner's most durable facts, stored in `context_records`, rewritten only when its bytes change, and cached in the new Redis `learner_profile` namespace. It replaces the Phase D profile section; forgotten facts leave it immediately.
+  - New `GET /v1/memory/profile` and `GET /v1/memory/changes` (content-free counts, e.g. "3 memories archived, 1 updated").
+  - Evaluation adds 15 forgetting cases (all must pass; no learner-stated fact may be deleted). Consolidation of 2,000 facts takes 0.76 s on SQLite; warm retrieval p95 with the core profile is 14.9 ms.
+  - The memory read path now makes 2 database round trips per turn instead of 7 (combined watermark query, per-process core-profile cache, lazy course names). PostgreSQL warm p95 drops from 34.8 ms to 20.8 ms with consolidation on.
+  - `backend/scripts/memory_shadow_report.py`: aggregate-only shadow-extraction review (counts, rejection reasons; small samples withheld).
+- Generated visuals are runtime-verified before learners see them: a headless sandbox mounts each candidate exactly like the chat card at desktop and mobile widths, checks for errors, blank or empty renders, invalid readouts, clipped layouts and dead controls, and feeds specific findings back to the model for bounded repair.
+- Conversational visual editing: follow-ups such as "add air resistance to this" revise the existing visual from its exact source, carry over saved control values, and record lineage ("Version 2") while leaving the earlier version untouched.
+- Visual progress shows sandbox testing and repair attempts; generated visuals can be opened full screen.
+- `backend/scripts/visual_benchmark.py`: a live generative-visual benchmark with task-specific scientific and interaction checks.
+- Science checks for priority topics (pendulum, Ohm's law, projectile motion, gradient descent, neuron activation, transmission-line reflection) test displayed values against the governing formula before a visual is shown.
+- Optional screenshot judge (`OPENLEARN_VISUAL_JUDGE_MODEL`): a reviewed multimodal model's critique of a working first attempt feeds one improvement pass; it never blocks a visual.
+- Paid Claude visual models are supported through `OPENLEARN_VISUAL_REQUIRE_PROVIDER_PARAMETERS` and `OPENLEARN_VISUAL_TOOL_CHOICE`.
+- Learner memory Phase D (flagged, default off): `OPENLEARN_MEMORY_RETRIEVAL_V2` replaces the Phase A block with ranked retrieval for chat and Learn mode.
+  - Ranking parses time phrases in the learner's message (today, last week, next Friday, "in November", dates, "when is my…"). It then scores facts and past-session episodes by lexical BM25, concept overlap and time fit, weighted by a strength that decays with disuse (§9.2) plus origin and course bonuses.
+  - Selection applies diversity limits and token budgets. The block renders as byte-stable text with a Profile section (preferences and constraints).
+  - Assessment context gets only preferences and constraints.
+  - Use is recorded at turn commit (stability grows at most once a day). The context inspector shows a content-free `memoryTrace`.
+  - Static ranking rows are cached per process and revalidated by a per-owner version counter (migration `0087_memory_fact_versions`; release head moved). Warm retrieval p95 is 19 ms at 2,000 facts on SQLite.
+  - The evaluation suite adds 50 retrieval cases with recall@5 gates. Benchmark script: `backend/scripts/memory_retrieval_benchmark.py`.
+- Learner memory Phase C (flagged, default off): `OPENLEARN_MEMORY_EXTRACTION=off|shadow|on` with `OPENLEARN_MEMORY_EXTRACTION_MODEL` queues a `memory_extract` job in each chat turn's commit transaction. The job proposes facts with a strict-schema model call billed to the learner's allowance, and a deterministic validator keeps only facts backed by a verbatim quote from the learner's own typed words (not code, block quotes, pasted text, or other people). The validator also enforces an injection denylist, sensitive-category rules (stored only on explicit request, flagged `sensitive`), deadline dates, course matching, and per-turn/per-day caps. Changed facts supersede older ones in the same scope, and Undo restores them. The web client marks pasted text, sends its timezone, shows "Saved to memory · View · Undo" under the turn, and shows a one-time notice. New `GET /v1/memory/facts?generation_id=` and `DELETE /v1/memory/facts/{id}?undo=true`. A deterministic evaluation suite (`evaluation_runner --memory`, 50 cases) gates promotion from shadow. The usage ledger accepts Claude Haiku 5.5 when it is the configured memory model.
+- Learner memory Phase B: migration `0086_learner_memory` adds `memory_facts` (add-only, with a timeline and a one-active-fact-per-subject index), `memory_episodes`, `memory_embeddings`, and `memory_settings`, and backfills existing saved preferences as facts. Saving a preference (Settings or "remember that…") also writes a fact in the same transaction; dismissing it or removing its source deletes the fact, and revising the source archives it. New owner-scoped, `no-store` APIs: `GET /v1/memory/facts`, `GET /v1/memory/facts/{id}/history`, `GET`/`DELETE /v1/memory/episodes`, and `GET`/`PUT /v1/memory/settings`. The chat memory block now reads preferences from `memory_facts`. The release contract schema head is now `0086_learner_memory`.
+- Learner memory Phase A (flagged, default off): `OPENLEARN_MEMORY_CHAT_CONTEXT` adds a bounded `learnerMemory` context block to default chat with explicit saved preferences, course dates in the next 30 days, and a five-item learner-state snapshot; `OPENLEARN_MEMORY_SKIP_UNUSED_COMPILE` skips the shared context compile that streamed chat turns discarded.
+- Optional Redis cache-aside layer (`backend/app/cache.py`) for polled and repeated reads: web evidence results, material blocks, concept graph, courses, calendar, and usage display aggregates. Off by default (`OPENLEARN_CACHE_ENABLED`, `REDIS_URL`); fail-open with a circuit breaker; per-namespace enable and shadow modes; generation-based invalidation flushed after commit; erasure on account deletion; Render Key Value in the Blueprints and Redis connection budget. See `docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md`.
 - Persistent chat history in the sidebar with time grouping, search, rename, delete, and per-learner isolation.
 - Living study notes: each Learn chat owns a linked note; the tutor proposes concise sections (turns, side explorations, quiz checklists) with accept/edit/reject and tutor/user/shared ownership plus revision protection.
 - Fullscreen Settings with General, API keys, Notifications, Data & privacy, and About; browser clients can save provider keys to the local service configuration.
@@ -20,7 +65,20 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Changed
 
+- Visual generation limits are configurable (`OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS`, default 16000; `OPENLEARN_VISUAL_DEADLINE_SECONDS`, default 600; `OPENLEARN_VISUAL_MAX_ATTEMPTS`, default 3; `OPENLEARN_VISUAL_MAX_INPUT_BYTES`, default 160000).
+- Turns where no visual is useful end without a visual-model call.
+- The shared context compiler estimates tokens as UTF-8 bytes / 3 (matching the generation context engine) instead of one token per byte, so compiled packets admit about three times more content within the same budget. Remembered items are ranked course-scoped, explicit, newest first and capped at 12.
 - Updated the repository README and installation guide around the local desktop beta and GitHub Releases distribution.
+
+### Fixed
+
+- Visual model calls were often charged at their full conservative reservation because the usage receipt arrived after the agent stopped reading; finished generations are now drained for their receipt, and provider-rejected requests settle at zero.
+- Visual code validation crashed on Windows for any visual containing non-ASCII text (Greek letters, arrows, emoji).
+- Valid visuals that create elements in JavaScript were rejected as missing DOM targets.
+- `(await import('three')).default`, `d3` defaults and the `three/examples/jsm` OrbitControls path now resolve in visual frames.
+- Claude visual models: repair and polish attempts failed with HTTP 400 (orphaned tool calls in the continuation). Feedback now continues the thread as a user message, and tool calls are paired before each model call.
+- Claude visual models: visuals often never started because a malformed trailing `jsExpressions` argument was dropped. It is now recovered and verified like any other code, and a declared `editOf` is recovered from the same arguments.
+- Edits that keep the original visual's structure are recognized even when the model omits `editOf`.
 
 ### Known limitations
 

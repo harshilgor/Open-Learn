@@ -250,6 +250,9 @@ class MaterialService:
                 text("INSERT INTO materials(id,owner_id,title,role,deleted,course_id) VALUES(:id,:owner,:title,:role,false,:course_id)"),
                 {"id": mid, "owner": owner, "title": request.title, "role": request.role, "course_id": course_id},
             )
+            if course_id:
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(owner))
             c.execute(
                 text("INSERT INTO material_versions(id,material_id,version,object_key,media_type,byte_count,status,payload) VALUES(:id,:mid,1,:key,:media,:size,'uploaded',:payload)"),
                 {"id": vid, "mid": mid, "key": uid("object"), "media": request.media_type, "size": request.byte_count, "payload": encoded({"issues": [], "parser": "text-v1"})},
@@ -405,7 +408,6 @@ class MaterialService:
         now = time.time()
         # Keep abandoned-part storage bounded without a separate maintenance worker.
         # The current version is excluded so its caller can resume after expiry.
-        expired_keys = []
         with self.store.transaction() as conn:
             expired = conn.execute(text(
                 "SELECT version_id FROM material_upload_sessions "
@@ -413,10 +415,11 @@ class MaterialService:
                 "ORDER BY expires_at LIMIT 20"
             ), {"now": now, "version": vid}).scalars().all()
             for expired_version in expired:
-                expired_keys.extend(conn.execute(
+                expired_version_keys = conn.execute(
                     text("SELECT object_key FROM material_upload_parts WHERE version_id=:version"),
                     {"version": expired_version},
-                ).scalars().all())
+                ).scalars().all()
+                self._queue_object_cleanup(conn, expired_version_keys)
                 conn.execute(text("DELETE FROM material_upload_sessions WHERE version_id=:version"), {"version": expired_version})
             row = conn.execute(text(
                 "SELECT * FROM material_upload_sessions WHERE version_id=:version"
@@ -445,12 +448,40 @@ class MaterialService:
                     ), {"expiry": now + 86400, "id": upload_id})
             result = conn.execute(text("SELECT * FROM material_upload_sessions WHERE id=:id"), {"id": upload_id}).mappings().one()
             receipt = self._upload_session_receipt(dict(result), conn)
-        for key in expired_keys:
+        self.process_object_cleanup()
+        return receipt
+
+    @staticmethod
+    def _queue_object_cleanup(conn, keys):
+        for key in dict.fromkeys(keys):
+            conn.execute(text(
+                "INSERT INTO object_cleanup_queue(object_key,created_at,next_attempt_at) "
+                "VALUES(:key,:now,:now) ON CONFLICT(object_key) DO NOTHING"
+            ), {"key": key, "now": time.time()})
+
+    def process_object_cleanup(self, limit=20):
+        """Retry idempotent object deletes recorded before their DB references disappear."""
+        now = time.time()
+        with self.store.engine.connect() as conn:
+            keys = conn.execute(text(
+                "SELECT object_key FROM object_cleanup_queue WHERE next_attempt_at<=:now "
+                "ORDER BY created_at LIMIT :limit"
+            ), {"now": now, "limit": max(1, min(100, int(limit)))}).scalars().all()
+        cleaned = 0
+        for key in keys:
             try:
                 self.objects.delete(key)
             except Exception:
-                pass
-        return receipt
+                with self.store.transaction() as conn:
+                    conn.execute(text(
+                        "UPDATE object_cleanup_queue SET attempts=attempts+1, "
+                        "next_attempt_at=:next WHERE object_key=:key"
+                    ), {"next": now + 300, "key": key})
+                continue
+            with self.store.transaction() as conn:
+                conn.execute(text("DELETE FROM object_cleanup_queue WHERE object_key=:key"), {"key": key})
+            cleaned += 1
+        return cleaned
 
     def upload_session(self, owner, upload_id):
         row = self._upload_session_row(owner, upload_id)
@@ -561,14 +592,9 @@ class MaterialService:
                 ), {"now": time.time(), "id": upload_id, "lease": lease}).rowcount
                 if not changed:
                     problem("upload_lease_lost", "This upload must be resumed before finalizing it.", 409)
+                self._queue_object_cleanup(conn, keys)
                 conn.execute(text("DELETE FROM material_upload_parts WHERE version_id=:version"), {"version": material["version_id"]})
-            for key in keys:
-                try:
-                    self.objects.delete(key)
-                except Exception:
-                    # The completed ledger no longer references these parts;
-                    # a storage cleanup failure must not make completion fail.
-                    pass
+            self.process_object_cleanup(limit=len(keys))
             return result
         except Exception:
             with self.store.transaction() as conn:
@@ -609,8 +635,8 @@ class MaterialService:
             ids = c.execute(text(query), params).scalars().all()
         return [self.details(owner, mid) for mid in ids]
 
-    def session(self, owner, sid):
-        session = self.store.get_session(sid)
+    def session(self, owner, sid, connection=None):
+        session = self.store.get_session(sid, connection) if connection is not None else self.store.get_session(sid)
         if session is None or session.learner_id != owner:
             problem("session_not_found", "Session is not available", 404)
         return session
@@ -671,10 +697,23 @@ class MaterialService:
                 invalidate_material_access(c,session_id=sid,owner=owner)
 
     def blocks(self, owner, vid):
-        self.version(owner, vid)
-        with self.store.engine.connect() as c:
-            rows = c.execute(text("SELECT * FROM material_blocks WHERE version_id=:id ORDER BY ordinal"), {"id": vid}).mappings().all()
-        return [{"id": r["id"], "versionId": vid, "pageIndex": r["page_index"], "kind": r["kind"], "text": r["text"], **json.loads(r["payload"])} for r in rows]
+        # Ownership/deletion check stays uncached so a deleted material 404s at once.
+        version = self.version(owner, vid)
+
+        def load():
+            with self.store.engine.connect() as c:
+                rows = c.execute(text("SELECT * FROM material_blocks WHERE version_id=:id ORDER BY ordinal"), {"id": vid}).mappings().all()
+            return [{"id": r["id"], "versionId": vid, "pageIndex": r["page_index"], "kind": r["kind"], "text": r["text"], **json.loads(r["payload"])} for r in rows]
+        if version["status"] != "ready":
+            return load()
+        from .cache import get_or_load, json_codec, owner_child_scope
+        return get_or_load("material_blocks", owner_child_scope(owner, vid), {}, load, ttl_seconds=24 * 3600, **json_codec())
+
+    @staticmethod
+    def invalidate_blocks(owner, vid):
+        """Call inside the transaction that rewrites a version's material_blocks."""
+        from .cache import invalidate, owner_child_scope
+        invalidate("material_blocks", owner_child_scope(owner, vid))
 
     def pdf_manifest(self, owner, vid, version=None):
         version = version or self.version(owner, vid)
@@ -943,6 +982,7 @@ class MaterialService:
             from .material_index import MaterialIndexService
             MaterialIndexService(self.store).erase(c, v["id"])
             c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
+            self.invalidate_blocks(job["owner_id"], v["id"])
             for ordinal, b in enumerate(blocks):
                 c.execute(text("INSERT INTO material_blocks(id,version_id,page_index,ordinal,kind,text,payload) VALUES(:id,:vid,:page,:ordinal,:kind,:text,:payload)"), {"id": b["id"], "vid": v["id"], "page": b["page"], "ordinal": ordinal, "kind": b["kind"], "text": b["text"], "payload": encoded({"extractionStatus": b["extractionStatus"], "textHash": hashlib.sha256(b["text"].encode()).hexdigest(), "pageLabel": b.get("pageLabel"), "geometry": b.get("geometry"), "ocrConfidence": b.get("ocrConfidence")})})
             parser = "pypdf-text-v1" if v["media_type"] == "application/pdf" else "vision-context-v1" if v["media_type"].startswith("image/") else "utf8-v1"
@@ -1005,12 +1045,15 @@ class MaterialService:
             from .agent_execution.sandbox_inputs import erase_versions
             erase_versions(c,owner,{v['id'] for v in versions})
             c.execute(text("UPDATE materials SET deleted=true WHERE id=:id AND owner_id=:owner"), {"id": mid, "owner": owner})
+            from .cache import invalidate, owner_scope
+            invalidate("course", owner_scope(owner))
             from .flashcards.class_adapter import invalidate_source
             for v in versions:
                 invalidate_source(self.store,c,owner,v["id"])
                 from .material_index import MaterialIndexService
                 MaterialIndexService(self.store).erase(c, v['id'])
                 c.execute(text("DELETE FROM material_blocks WHERE version_id=:id"), {"id": v["id"]})
+                self.invalidate_blocks(owner, v["id"])
                 c.execute(text("DELETE FROM material_attachments WHERE version_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_jobs SET status='cancelled' WHERE target_id=:id"), {"id": v["id"]})
                 c.execute(text("UPDATE material_versions SET status='deleted',payload='{}' WHERE id=:id"), {"id": v["id"]})

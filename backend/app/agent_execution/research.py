@@ -37,6 +37,32 @@ def _public_url(value):
         return None
 
 
+_NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s?%?(?![\w.])")
+
+
+def _numeric_literals(value):
+    """Return normalized numeric surface forms, not a semantic verifier."""
+    return {match.group(0).replace(",", "").replace(" ", "").lower() for match in _NUMBER.finditer(value or "")}
+
+
+def _claim_evidence_checks(claim, sources_by_id):
+    cited = [sources_by_id[source_id] for source_id in claim.source_ids]
+    quote_matches = any(claim.text in source.get("excerpt", "") for source in cited)
+    if claim.support == "quoted" and not quote_matches:
+        raise ResearchUnavailable("unsupported_quote")
+    literals = _numeric_literals(claim.text)
+    source_literals = set().union(*(_numeric_literals(source.get("excerpt", "")) for source in cited))
+    numeric_status = "not_applicable" if not literals else "pass" if literals <= source_literals else "unknown"
+    return [
+        {"criterion": "source_references", "status": "pass"},
+        {"criterion": "exact_quote", "status": "pass" if claim.support == "quoted" and quote_matches else "not_applicable"},
+        {"criterion": "numeric_literals", "status": numeric_status},
+        # Presence of a source pointer and matching numbers cannot verify the
+        # meaning of a generated paraphrase. Keep that claim explicitly open.
+        {"criterion": "semantic_support", "status": "pass" if claim.support == "quoted" and quote_matches else "unknown"},
+    ]
+
+
 class ResearchService:
     def __init__(self, store, *, evidence_service=None, model_provider=None, retention_seconds=None):
         self.store = store
@@ -228,12 +254,17 @@ class ResearchService:
         if any(not set(claim.source_ids).issubset(source_ids) for claim in synthesis.claims):
             raise ResearchUnavailable("source_unavailable")
         semantic_unknown = any(claim.support != "quoted" for claim in synthesis.claims)
+        claim_checks = [_claim_evidence_checks(claim, {row["id"]: row for row in sources}) for claim in synthesis.claims]
+        numeric_unknown = any(check["status"] == "unknown" for checks in claim_checks for check in checks if check["criterion"] == "numeric_literals")
         report = ["# Research evidence report", "", _markdown(spec.query), "",
                   "Sources are untrusted evidence. Retrieved excerpts and a model's synthesis are not proof of learning or independent verification.", ""]
         labels = {row["id"]: f"S{index}" for index, row in enumerate(sources, 1)}
-        for claim in synthesis.claims:
+        for claim, checks in zip(synthesis.claims, claim_checks):
             refs = ", ".join(labels[identifier] for identifier in claim.source_ids)
-            report += [f"- {_markdown(claim.text)} [{refs}] ({claim.support})"]
+            evidence_status = "semantic support unknown" if claim.support != "quoted" else "exact quote checked"
+            if any(check["criterion"] == "numeric_literals" and check["status"] == "unknown" for check in checks):
+                evidence_status += "; numeric literals not confirmed in cited excerpts"
+            report += [f"- {_markdown(claim.text)} [{refs}] ({claim.support}; {evidence_status})"]
         report += ["", "## Sources", ""]
         for row in sources:
             report += [f"- {labels[row['id']]}: {_markdown(row['title'])}; retrieved {_markdown(row['retrievedAt'])}; source ID {row['id']}."]
@@ -245,21 +276,29 @@ class ResearchService:
             limitations.append("No supported claims were produced.")
         if semantic_unknown:
             limitations.append("Model synthesis source references were validated; semantic support has not been independently verified.")
+        if numeric_unknown:
+            limitations.append("Numeric literals in one or more generated claims were not found in the cited excerpts; those claims remain unverified.")
         report += ["", "## Limitations", ""] + [f"- {_markdown(item)}" for item in limitations]
         public_sources = [{k: v for k, v in row.items() if k != "excerpt"} for row in sources]
+        claims = []
+        for claim, checks in zip(synthesis.claims, claim_checks):
+            item = claim.model_dump(mode="json", by_alias=True)
+            item["checks"] = checks
+            claims.append(item)
         manifest = {"schemaVersion": 2, "taskId": task["id"], "inputRevision": task["desired_input_revision"],
-                    "query": spec.query, "claims": synthesis.model_dump(mode="json", by_alias=True)["claims"],
+                    "query": spec.query, "claims": claims,
                     "sources": public_sources, "limitations": limitations, "semanticSupport": "unknown" if semantic_unknown else "quoted_only"}
         content = "\n".join(report).encode()
         machine = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
         json.loads(machine)  # Deterministic format validation before publication.
-        partial = bool(journal["warnings"] or semantic_unknown or not synthesis.claims)
+        partial = bool(journal["warnings"] or semantic_unknown or numeric_unknown or not synthesis.claims)
         lineage = {"sourceIds": sorted(source_ids), "inputRevision": task["desired_input_revision"], "toolVersion": "research-v1",
                    "researchRunId": key}
         completion = {"policyVersion": "research-v1", "status": "partial" if partial else "verified",
                       "checks": [{"criterion": "source_references", "status": "pass"},
                                  {"criterion": "readable_markdown_and_json", "status": "pass"},
                                  {"criterion": "semantic_support", "status": "unknown" if semantic_unknown else "pass"},
+                                 {"criterion": "numeric_literals", "status": "unknown" if numeric_unknown else "pass" if any(_numeric_literals(claim.text) for claim in synthesis.claims) else "not_applicable"},
                                  {"criterion": "coverage", "status": "unknown"}], "limitations": limitations}
         return {"outputs": [{"name": "research-report.md", "mediaType": "text/markdown", "content": content, "lineage": lineage},
                             {"name": "research-sources.json", "mediaType": "application/json", "content": machine, "lineage": lineage}],

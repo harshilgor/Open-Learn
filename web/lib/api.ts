@@ -1,7 +1,8 @@
 import { isDesktopApp, isLocalWeb, serviceConnectionMessage } from './product-runtime';
 import { ACCOUNT_CHANGED, authenticatedFetch, sessionToken } from './account-session';
 import { ApiReadCache, readFreshness } from './api-read-cache';
-import { recordApiTiming } from './api-performance';
+import { crossTabRead, invalidateCrossTabReads } from './cross-tab-reads';
+import { createPerformanceTraceId, recordApiTiming } from './api-performance';
 import { uploadMaterialParts, type MaterialUploadSession } from './material-upload';
 /**
  * Browser client for the learning-kernel API.
@@ -373,6 +374,8 @@ export function apiBaseUrl(): string {
     ? undefined
     : (window as Window & { formaDesktop?: { apiBaseUrl?: string } }).formaDesktop?.apiBaseUrl;
   if (desktop) return desktop.replace(/\/$/, '');
+  // Local web previews use the development proxy, avoiding port-specific CORS.
+  if (process.env.NODE_ENV === 'development' && isLocalWeb()) return '';
   if (configured) {
     try {
       const parsed = new URL(configured);
@@ -402,8 +405,9 @@ export async function authenticatedResource(path:string):Promise<{url:string;htt
 
 const readCache = new ApiReadCache();
 let cacheEpoch = 0;
-function invalidateReads() { cacheEpoch++; readCache.clear(); }
+function invalidateReads() { cacheEpoch++; readCache.clear(); invalidateCrossTabReads(); }
 if (typeof window !== 'undefined') {
+  window.addEventListener('openlearn-read-invalidated', () => { cacheEpoch++; readCache.clear(); });
   window.addEventListener(ACCOUNT_CHANGED, invalidateReads);
   window.addEventListener('focus', invalidateReads);
   window.addEventListener('online', invalidateReads);
@@ -428,11 +432,31 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (epoch !== cacheEpoch) return request<T>(path, init);
   const headers = [...new Headers(init.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
   const key = JSON.stringify([epoch, identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
-  return readCache.read(key, () => requestUncached<T>(path, init), init.cache === 'no-cache' ? 0 : readFreshness(path));
+  const freshness = init.cache === 'no-cache' ? 0 : readFreshness(path);
+  const sharedKey = JSON.stringify([identity || '', desktopToken() || '', url(path), headers, init.credentials || '', init.cache || '']);
+  return readCache.read(key, () => crossTabRead(sharedKey, () => requestUncached<T>(path, init),
+    identity || desktopToken() ? freshness : 0, () => epoch === cacheEpoch), freshness);
+}
+
+export type ChatOutboxMetrics = {
+  clientId: string; queuedCount: number; sendingCount: number; acceptedCount: number;
+  failedCount: number; choiceCount: number; oldestPendingAgeSeconds: number;
+};
+
+/** Send aggregate queue health without invalidating unrelated read caches or uploading message text. */
+export async function recordChatOutboxMetrics(sessionId: string, metrics: ChatOutboxMetrics): Promise<void> {
+  const headers = new Headers({ 'Content-Type': 'application/json', 'Accept': 'application/json' });
+  const token = desktopToken();
+  if (token) headers.set('X-Forma-Desktop-Token', token);
+  const response = await authenticatedFetch(url(`/v1/sessions/${encodeURIComponent(sessionId)}/outbox-metrics`), {
+    method: 'PUT', headers, body: JSON.stringify(metrics),
+  });
+  if (!response.ok) throw new LearningApiError(response.status, 'outbox_metrics_failed', 'Could not record chat outbox status.');
 }
 
 async function requestUncached<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
+  if (!headers.has('X-OpenLearn-Trace-Id')) headers.set('X-OpenLearn-Trace-Id', createPerformanceTraceId());
   headers.set('Accept', 'application/json');
   const token = desktopToken();
   if (token) headers.set('X-Forma-Desktop-Token', token);
@@ -443,12 +467,14 @@ async function requestUncached<T>(path: string, init: RequestInit = {}): Promise
   try {
     response = await authenticatedFetch(url(path), { ...init, headers });
   } catch (cause) {
-    recordApiTiming(path, startedAt, 0);
+    recordApiTiming(path, startedAt, 0, undefined, init.method || 'GET');
     if (init.signal?.aborted) throw cause;
     throw new LearningApiError(503, 'service_unavailable', serviceConnectionMessage());
   }
-  const text = await response.text();
-  recordApiTiming(path, startedAt, response.status);
+  let text: string;
+  try { text = await response.text(); }
+  catch (cause) { recordApiTiming(path, startedAt, response.status, response.headers, init.method || 'GET', 'body_read_failed'); throw cause; }
+  recordApiTiming(path, startedAt, response.status, response.headers, init.method || 'GET');
   let body: unknown = null;
   if (text) {
     try {
@@ -595,6 +621,7 @@ export type ChatSessionSummary = {
   courseId?: string | null;
   updatedAt: string;
   turnCount: number;
+  preview?: string | null;
 };
 
 export type ChatSessionList = {
@@ -721,6 +748,8 @@ export type WorkspaceNoteSummary = {
   updatedAt: string;
 };
 
+export type WorkspaceNotePage = { notes: WorkspaceNoteSummary[]; nextCursor: string | null };
+
 export type WorkspaceNote = Omit<WorkspaceNoteSummary, 'preview' | 'noteType'> & {
   learnerId: string;
   body: string;
@@ -791,7 +820,7 @@ export const learningApi = {
     return request<KnowledgeGraph>(`/v1/graphs/${encodeURIComponent(graphId)}${suffix}`, { signal: params.signal });
   },
 
-  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null; buddyId?: string }): Promise<LearningSession> {
+  createSession(input: { graphId?: string; topic?: string; gear?: Gear; graphRevision?: number; goal?: string; courseId?: string | null; buddyId?: string; parentSessionId?:string }): Promise<LearningSession> {
     return request<LearningSession>('/v1/sessions', {
       method: 'POST',
       body: JSON.stringify({
@@ -1015,12 +1044,23 @@ export const learningApi = {
     });
   },
 
+  listWorkspaceNotesPage(cursor?: string | null, learnerId = 'local'): Promise<WorkspaceNotePage> {
+    const query = new URLSearchParams({ limit: '50' });
+    if (cursor) query.set('cursor', cursor);
+    return request<WorkspaceNotePage>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/page?${query}`, {
+      headers: { 'X-Dev-Learner-Id': learnerId },
+    });
+  },
+
   searchWorkspaceNotes(query: string, learnerId = 'local'): Promise<{ notes: WorkspaceNoteSummary[] }> {
     return request<{ notes: WorkspaceNoteSummary[] }>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/search?${new URLSearchParams({ query })}`, {
       headers: { 'X-Dev-Learner-Id': learnerId },
     });
   },
 
+  getWorkspaceNoteVersions(noteId:string,learnerId='local'):Promise<{versions:{id:string;noteRevision:number;title:string;body:string;savedAt:string}[]}> {
+    return request(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}/versions`,{cache:'no-store'});
+  },
   getWorkspaceNote(noteId: string, learnerId = 'local'): Promise<WorkspaceNote> {
     return request<WorkspaceNote>(`/v1/learners/${encodeURIComponent(learnerId)}/workspace-notes/${encodeURIComponent(noteId)}`, {
       headers: { 'X-Dev-Learner-Id': learnerId },

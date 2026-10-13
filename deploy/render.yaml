@@ -1,5 +1,13 @@
 # Free development deployment. Upgrade only when the owner opts into paid compute.
 services:
+  # Disposable cache-aside copies only; PostgreSQL stays authoritative.
+  # Free plan: 25 MB, 50 connections (see deploy/connection-budget.json).
+  - type: keyvalue
+    name: openlearn-cache-free
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
   - type: web
     name: openlearn-api
     runtime: docker
@@ -11,10 +19,21 @@ services:
     autoDeployTrigger: off
     envVars:
       - fromGroup: openlearn-production
+      # Cache invalidation needs Redis wherever cached data is written.
+      # Caching stays off until OPENLEARN_CACHE_ENABLED=true (see
+      # docs/REDIS_CACHE_ASIDE_IMPLEMENTATION.md).
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: openlearn-cache-free
+          property: connectionString
       - key: OPENLEARN_WORKER_MODE
         value: embedded
       - key: OPENLEARN_MIGRATE_ON_START
         value: 'false'
+      # Apply only after enabling the single migration job in platform-release.yml.
+      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+        value: 'true'
       - key: AI_TUTOR_PROVIDER
         value: openrouter
       - key: OPENROUTER_MODEL
@@ -26,7 +45,7 @@ services:
       - key: OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD
         value: '10'
       - key: OPENLEARN_PROVIDER_RATE_VERSION
-        value: haiku55-2026-10-07-v1
+        value: haiku55-browserbase-2026-10-08-v1
       - key: OPENLEARN_HAIKU55_INPUT_USD_PER_MILLION
         value: '0.10'
       - key: OPENLEARN_HAIKU55_OUTPUT_USD_PER_MILLION
@@ -36,6 +55,16 @@ services:
       - key: OPENLEARN_SANDBOX_ENABLED
         value: 'false'
       - key: OPENLEARN_BROWSER_ASSISTANT_ENABLED
+        value: 'true'
+      - key: OPENLEARN_CLOUD_BROWSER_ENABLED
+        value: 'true'
+      - key: OPENLEARN_BROWSERBASE_USD_PER_MINUTE
+        value: '0.002'
+      - key: OPENLEARN_BROWSER_EGRESS_VERIFIED
+        value: 'true'
+      - key: OPENLEARN_BROWSER_LIFECYCLE_VERIFIED
+        value: 'true'
+      - key: OPENLEARN_BROWSER_PRIVATE_VERIFIED
         value: 'false'
       - key: OPENLEARN_AGENT_ADMISSION_ENABLED
         value: 'false'

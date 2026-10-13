@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -39,29 +39,49 @@ class Store:
 
     @contextmanager
     def transaction(self) -> Iterator[Connection]:
-        with self.engine.begin() as connection:
-            from .execution import active_job
-            from .workflow_store import WorkflowStore
-            job = active_job.get()
-            if job is not None:
-                WorkflowStore(self).validate_lease(connection, job)
-            from .identity import principal_context, assert_principal_active
-            principal = principal_context.get()
-            if principal:
-                assert_principal_active(connection, principal)
-            yield connection
-            if principal:
-                assert_principal_active(connection, principal)
-            if job is not None:
-                status = connection.execute(text("SELECT status FROM learning_jobs WHERE id=:id"), {"id": job["id"]}).scalar_one_or_none()
-                if status == "running":
+        # Cache invalidations raised inside this transaction are flushed only
+        # after it commits and are discarded if it rolls back.
+        from .cache import begin_pending, end_pending
+        pending = begin_pending()
+        committed = False
+        try:
+            with self.engine.begin() as connection:
+                from .execution import active_job
+                from .workflow_store import WorkflowStore
+                job = active_job.get()
+                if job is not None:
                     WorkflowStore(self).validate_lease(connection, job)
+                from .identity import principal_context, assert_principal_active
+                principal = principal_context.get()
+                if principal:
+                    assert_principal_active(connection, principal)
+                yield connection
+                if principal:
+                    assert_principal_active(connection, principal)
+                if job is not None:
+                    status = connection.execute(text("SELECT status FROM learning_jobs WHERE id=:id"), {"id": job["id"]}).scalar_one_or_none()
+                    if status == "running":
+                        WorkflowStore(self).validate_lease(connection, job)
+            committed = True
+        finally:
+            end_pending(pending, committed)
 
     def close(self) -> None:
         self.engine.dispose()
 
     @staticmethod
     def _put(connection: Connection, table: str, key_column: str, key: str, values: dict[str, Any]) -> None:
+        if connection.dialect.name == 'postgresql':
+            # All callers use the table's primary key. Keep owner/revocation
+            # checks in the surrounding transaction; remove the existence RTT.
+            insert_values = {key_column: key, **values}
+            quote = connection.dialect.identifier_preparer.quote
+            columns = ', '.join(quote(column) for column in insert_values)
+            parameters = ', '.join(f':{column}' for column in insert_values)
+            assignments = ', '.join(f'{quote(column)} = EXCLUDED.{quote(column)}' for column in values)
+            connection.execute(text(f'INSERT INTO {quote(table)} ({columns}) VALUES ({parameters}) '
+                f'ON CONFLICT ({quote(key_column)}) DO UPDATE SET {assignments}'), insert_values)
+            return
         exists = connection.execute(
             text(f"SELECT 1 FROM {table} WHERE {key_column} = :key"), {"key": key}
         ).first()
@@ -85,9 +105,7 @@ class Store:
 
     def get_scope(self, scope_id: str) -> TopicScope | None:
         with self.engine.connect() as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "topic_scopes", scope_id)
-            row = connection.execute(text("SELECT payload FROM topic_scopes WHERE id = :id"), {"id": scope_id}).mappings().first()
+            row = self._owned_payload(connection, 'topic_scopes', scope_id)
         return TopicScope.model_validate_json(row["payload"]) if row else None
 
     def save_job(self, job: GraphJob) -> None:
@@ -98,9 +116,7 @@ class Store:
 
     def get_job(self, job_id: str) -> GraphJob | None:
         with self.engine.connect() as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "graph_jobs", job_id)
-            row = connection.execute(text("SELECT payload FROM graph_jobs WHERE id = :id"), {"id": job_id}).mappings().first()
+            row = self._owned_payload(connection, 'graph_jobs', job_id)
         return GraphJob.model_validate_json(row["payload"]) if row else None
 
     def save_graph(self, graph: GraphVersion) -> None:
@@ -109,12 +125,26 @@ class Store:
             grant_resource(connection, "graph_versions", graph.id)
             self._put(connection, "graph_versions", "id", graph.id, {"scope_id": graph.scope_id, "payload": graph.model_dump_json()})
 
-    def get_graph(self, graph_id: str) -> GraphVersion | None:
-        with self.engine.connect() as connection:
-            from .identity import authorize_resource
-            authorize_resource(connection, "graph_versions", graph_id)
-            row = connection.execute(text("SELECT payload FROM graph_versions WHERE id = :id"), {"id": graph_id}).mappings().first()
+    def get_graph(self, graph_id: str, connection: Connection | None = None) -> GraphVersion | None:
+        with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
+            row = self._owned_payload(connection, 'graph_versions', graph_id)
         return GraphVersion.model_validate_json(row["payload"]) if row else None
+
+    @staticmethod
+    def _owned_payload(connection, table, identifier):
+        """Keep resource authorization in the same SQL read as its payload."""
+        from .identity import principal_context, fail
+        principal = principal_context.get()
+        quoted = connection.dialect.identifier_preparer.quote(table)
+        if principal is None:
+            return connection.execute(text(f'SELECT payload FROM {quoted} WHERE id=:id'), {'id': identifier}).mappings().first()
+        row = connection.execute(text(f'''
+            SELECT data.payload FROM identity_resources rights LEFT JOIN {quoted} data ON data.id=rights.id
+            WHERE rights.kind=:kind AND rights.id=:id AND rights.owner_id=:owner
+        '''), {'kind': table, 'id': identifier, 'owner': principal.owner_id}).mappings().first()
+        if row is None:
+            fail('resource_not_found', 'Resource not found.', 404)
+        return row if row['payload'] is not None else None
 
     def save_session(self, session: LearningSession) -> None:
         with self.transaction() as connection:
@@ -139,9 +169,14 @@ class Store:
                 "payload": session.model_dump_json(),
             })
             connection.execute(text('INSERT INTO buddy_chats(id,owner_id,buddy_id) VALUES(:id,:owner,:buddy) ON CONFLICT(id) DO NOTHING'), {'id':session.id,'owner':session.learner_id,'buddy':buddy})
+            if previous is None and session.course_id:
+                # A new session changes its course's session count. Ordinary
+                # per-turn saves must not invalidate (it would empty the cache).
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(session.learner_id))
 
-    def get_session(self, session_id: str) -> LearningSession | None:
-        with self.engine.connect() as connection:
+    def get_session(self, session_id: str, connection: Connection | None = None) -> LearningSession | None:
+        with (nullcontext(connection) if connection is not None else self.engine.connect()) as connection:
             row = connection.execute(text("SELECT payload FROM learning_sessions WHERE id = :id"), {"id": session_id}).mappings().first()
         from .identity import principal_context, fail
         principal = principal_context.get()
@@ -164,17 +199,30 @@ class Store:
         return ([LearningSession.model_validate_json(row["payload"]) for row in rows], int(total))
 
     def journey_turn_count(self, owner: str, session_id: str) -> int:
+        return self.journey_history_metadata(owner, session_id)["turn_count"]
+
+    def journey_history_metadata(self, owner: str, session_id: str) -> dict:
+        """Bounded learner-message preview; never expose lesson or answer content."""
         with self.engine.connect() as connection:
             row = connection.execute(
                 text("SELECT payload FROM practice_records WHERE id = :id AND owner_id = :owner"),
                 {"id": f"journey_{session_id}", "owner": owner},
             ).mappings().first()
         if row is None:
-            return 0
+            return {"turn_count": 0, "preview": None}
         try:
-            return len(json.loads(row["payload"]).get("turns", []))
+            turns = json.loads(row["payload"]).get("turns", [])
+            if not isinstance(turns, list):
+                return {"turn_count": 0, "preview": None}
+            preview = next((turn.get("question") for turn in reversed(turns)
+                            if isinstance(turn, dict) and isinstance(turn.get("question"), str)
+                            and turn["question"].strip()), None)
+            if preview:
+                preview = " ".join(preview.split())
+                preview = preview[:177] + "…" if len(preview) > 180 else preview
+            return {"turn_count": len(turns), "preview": preview}
         except (ValueError, AttributeError):
-            return 0
+            return {"turn_count": 0, "preview": None}
 
     def rename_session(self, session_id: str, owner: str, title: str) -> LearningSession | None:
         session = self.get_session(session_id)
@@ -215,6 +263,9 @@ class Store:
             return False
         journey_id = f"journey_{session_id}"
         with self.transaction() as connection:
+            if session.course_id:
+                from .cache import invalidate, owner_scope
+                invalidate("course", owner_scope(owner))
             from .in_class_service import invalidate_material_access
             invalidate_material_access(
                 connection, session_id=session_id, owner=owner,
@@ -234,6 +285,8 @@ class Store:
                 text("DELETE FROM context_records WHERE session_id = :sid AND owner_id = :owner"),
                 {"sid": session_id, "owner": owner},
             )
+            from .learner_memory.store import delete_session_episodes
+            delete_session_episodes(connection, owner, session_id)
             connection.execute(
                 text("DELETE FROM generation_records WHERE session_id = :sid AND owner_id = :owner"),
                 {"sid": session_id, "owner": owner},

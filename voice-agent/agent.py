@@ -60,7 +60,7 @@ class Buddy(Agent):
             yield ''
 
 
-@server.rtc_session(agent_name='openlearn-voice')
+@server.rtc_session(agent_name=os.getenv('OPENLEARN_VOICE_AGENT_NAME', 'openlearn-voice'))
 async def entrypoint(ctx: JobContext):
     metadata = json.loads(ctx.job.metadata)
     sid = metadata['sessionId']

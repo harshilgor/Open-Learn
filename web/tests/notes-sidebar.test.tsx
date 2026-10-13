@@ -9,8 +9,8 @@ import { workspacePath, sidebarTabFromPath } from '@/lib/workspace-navigation';
 import type { CourseSummary, WorkspaceNoteSummary, LectureStatus } from '@/lib/api';
 import type { LocalLecture } from '@/lib/lecture-local-store';
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), update: vi.fn(), create: vi.fn(), chats: vi.fn(), refresh: vi.fn() }));
-vi.mock('@/lib/api', async original => ({ ...await original<object>(), learningApi: { listWorkspaceNotes: mocks.list, getWorkspaceNote: mocks.get, updateWorkspaceNote: mocks.update, createWorkspaceNote: mocks.create, listChatSessions: mocks.chats, refreshNoteTitles: mocks.refresh } }));
+const mocks = vi.hoisted(() => ({ list: vi.fn(), page: vi.fn(), get: vi.fn(), update: vi.fn(), create: vi.fn(), chats: vi.fn(), refresh: vi.fn() }));
+vi.mock('@/lib/api', async original => ({ ...await original<object>(), learningApi: { listWorkspaceNotes: mocks.list, listWorkspaceNotesPage: mocks.page, getWorkspaceNote: mocks.get, updateWorkspaceNote: mocks.update, createWorkspaceNote: mocks.create, listChatSessions: mocks.chats, refreshNoteTitles: mocks.refresh } }));
 const buddyFixture = vi.hoisted(() => ({ snapshot: { chats: { s1: 'buddy', s2: 'buddy' }, profiles: [{ id: 'buddy', name: 'Buddy' }] }, active: { id: 'buddy' }, refresh: vi.fn(async () => {}) }));
 vi.mock('@/components/buddies', () => ({ useBuddies: () => buddyFixture }));
 vi.mock('@/components/study-note-bar', () => ({ StudyNoteBar: () => null }));
@@ -31,6 +31,7 @@ beforeEach(() => {
   vi.useFakeTimers(); localStorage.clear(); vi.clearAllMocks();
   HTMLElement.prototype.scrollIntoView = vi.fn();
   mocks.refresh.mockResolvedValue({updated:0,skipped:0}); mocks.list.mockResolvedValue(notes);
+  mocks.page.mockResolvedValue({notes,nextCursor:null});
   mocks.get.mockImplementation(async id => ({...notes.find(n=>n.id===id),body:'## Motion\n\nVelocity describes motion.',createdAt:'2026-09-28',learnerId:'local'}));
   mocks.chats.mockResolvedValue({sessions:[{id:'s1',title:'Physics chat',courseId:'physics',updatedAt:new Date().toISOString(),createdAt:new Date().toISOString()},{id:'s2',title:'Math chat',courseId:'math',updatedAt:new Date().toISOString(),createdAt:new Date().toISOString()}]});
   mocks.create.mockImplementation(async input=>({...input,id:'new',revision:1,frontmatter:input.frontmatter,createdAt:'2026-09-29',updatedAt:'2026-09-29',learnerId:'local'}));
@@ -75,22 +76,22 @@ describe('unified sidebar and notes',()=>{
     act(()=>root.render(<Harness/>));await settle();
     const list=container.querySelector('#sidebar-body-notes')!;
     expect(list.textContent).toContain('Folders');expect(list.textContent).toContain('Generated');expect(list.textContent).toContain('Your notes');expect(list.textContent).toContain('Velocity describes motion.');
-    act(()=>container.querySelector<HTMLButtonElement>('[title="Motion"]')!.click());await settle();click('Discuss this note');
+    act(()=>container.querySelector<HTMLButtonElement>('[title="Motion"]')!.click());await settle();click('Discuss this note');await settle();
     expect(container.querySelector('[aria-label="Note discussion"]')?.textContent).toContain('Velocity describes motion.');
     expect(container.querySelector('[aria-current="page"]')).not.toBeNull();
   });
-  it('renders mutually exclusive empty and blank editor states and hides empty formatting tools',async()=>{
-    act(()=>root.render(<Harness/>));await settle();expect(container.textContent).toContain('Capture what matters');
+  it('renders mutually exclusive empty and blank editor states and keeps formatting available while editing',async()=>{
+    act(()=>root.render(<Harness/>));await settle();expect(container.textContent).toContain('Your notes');
     expect(container.querySelector('[aria-label="Note title"]')).toBeNull();
-    click('Test new note');expect(container.textContent).not.toContain('Capture what matters');
-    expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();expect(container.querySelector('[data-note-toolbar]')).toBeNull();
+    click('Test new note');await settle();expect(container.textContent).not.toContain('Start writing, or save something from your conversation.');
+    expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();expect(container.querySelector('[data-note-toolbar]')).not.toBeNull();
     const editor=container.querySelector<HTMLElement>('[contenteditable="true"]')!;
     act(()=>{editor.textContent='My first sentence.';editor.dispatchEvent(new Event('input',{bubbles:true}));});await settle(800);
     expect(mocks.create).toHaveBeenCalled();expect(mocks.create.mock.calls[0][0].body).toContain('My first sentence.');
     expect(container.querySelector('[data-note-toolbar]')).not.toBeNull();
   });
   it('creates a folder through the shared Notes command',async()=>{
-    act(()=>root.render(<Harness/>));await settle();click('Test new folder');
+    act(()=>root.render(<Harness/>));await settle();click('Test new folder');await settle();
     const input=container.querySelector<HTMLInputElement>('[aria-label="Folder name"]')!;
     act(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'Lab notes');input.dispatchEvent(new Event('input',{bubbles:true}));});
     act(()=>input.closest('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));

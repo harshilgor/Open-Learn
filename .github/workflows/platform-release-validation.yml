@@ -1,0 +1,64 @@
+name: Platform release validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment containing Vercel credentials
+        type: choice
+        options: [production, staging]
+        default: production
+      api_origin:
+        description: HTTPS backend origin already deployed to staging or production
+        required: true
+        type: string
+      backend_sha:
+        description: Expected full backend commit SHA
+        required: true
+        type: string
+      frontend_origin:
+        description: HTTPS frontend preview or production origin
+        required: true
+        type: string
+      frontend_sha:
+        description: Expected full frontend commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: ${{ inputs.environment || 'production' }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+      API_ORIGIN: ${{ inputs.api_origin }}
+      BACKEND_SHA: ${{ inputs.backend_sha }}
+      FRONTEND_ORIGIN: ${{ inputs.frontend_origin }}
+      FRONTEND_SHA: ${{ inputs.frontend_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install 'httpx>=0.27,<1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install matching deployment CLI
+        run: npm install --global vercel@59.11.2
+      - name: Validate credentials and link project
+        run: |
+          python -c 'import os; keys=["VERCEL_TOKEN","VERCEL_ORG_ID","VERCEL_PROJECT_ID"]; missing=[key for key in keys if not os.getenv(key)]; assert not missing, "Missing validation configuration: " + ", ".join(missing)'
+          mkdir -p .vercel
+          printf '{"projectId":"%s","orgId":"%s"}\n' "$VERCEL_PROJECT_ID" "$VERCEL_ORG_ID" > .vercel/project.json
+      - name: Read staged frontend metadata without deployment or promotion
+        run: python -m backend.scripts.frontend_release_metadata --frontend "$FRONTEND_ORIGIN" --expected-sha "$FRONTEND_SHA" --out "$RUNNER_TEMP/frontend-release.json"
+      - name: Verify backend-first release and frontend compatibility
+        run: python -m backend.scripts.release_gate --api "$API_ORIGIN" --expected-sha "$BACKEND_SHA" --frontend "$FRONTEND_ORIGIN" --expected-frontend-sha "$FRONTEND_SHA" --frontend-metadata "$RUNNER_TEMP/frontend-release.json"

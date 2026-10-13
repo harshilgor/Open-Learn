@@ -28,6 +28,7 @@ class ConnectionPatch(Contract):
     label: str | None = Field(default=None, min_length=1, max_length=120)
     aliases: list[str] | None = Field(default=None, max_length=12)
     preferred: bool | None = None
+    cloud_login: bool | None = None
     approved_origins: list[str] | None = Field(default=None, max_length=12)
     timezone: str | None = None
 
@@ -66,6 +67,8 @@ class TaskCommand(Contract):
     connection_id: str | None = None
     course_id: str | None = None
     answer: str | None = Field(default=None, max_length=4000)
+    reply_to_request_id: str | None = Field(default=None, max_length=160)
+    expected_request_revision: int | None = Field(default=None, ge=1)
 
 
 class TaskIntent(Contract):

@@ -13,10 +13,16 @@ from backend.app.learning_routes import build_learning_router
 from backend.app.material_routes import material_owner
 from backend.app.usage.context import usage_scope
 import json
-import os
 import httpx
 from pathlib import Path
 from uuid import uuid4
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def disable_unrelated_classification_rollouts(monkeypatch):
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("OPENLEARN_CLASSIFIER_MODE_INTENT_MODE", "off")
 
 
 def _setup_test_db(tmp_path):
@@ -362,16 +368,17 @@ def test_accepted_transition_recovers_until_destination_is_applied(tmp_path):
     store.close()
 
 
-def test_ambiguous_classification_uses_configured_provider_with_short_timeout(tmp_path):
+def test_ambiguous_classification_uses_configured_provider_with_short_timeout(tmp_path, monkeypatch):
     store, session = _setup_test_db(tmp_path)
-    previous_mode = os.environ.get("AI_TUTOR_MODE_CLASSIFICATION")
-    os.environ["AI_TUTOR_MODE_CLASSIFICATION"] = "provider"
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "provider")
 
     class FakeProvider:
         def complete_json(self, prompt, max_tokens, *, request_timeout=None):
             assert request_timeout == 2.5
             assert "Help me prepare for my quiz." in prompt
             return {"decision": "request_transition", "targetMode": "quiz",
+                    "requestType": "explicit", "confidence": 0.93,
                     "reasonCode": "quiz_prep", "rationale": "You asked to practice."}
 
     try:
@@ -384,14 +391,87 @@ def test_ambiguous_classification_uses_configured_provider_with_short_timeout(tm
         assert result.classification_source == "model"
     finally:
         store.close()
-        if previous_mode is None:
-            os.environ.pop("AI_TUTOR_MODE_CLASSIFICATION", None)
-        else:
-            os.environ["AI_TUTOR_MODE_CLASSIFICATION"] = previous_mode
+
+
+def test_hybrid_classifier_handles_paraphrased_quiz_intent(tmp_path, monkeypatch):
+    store, session = _setup_test_db(tmp_path)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid")
+
+    class FakeProvider:
+        def complete_json(self, prompt, max_tokens, *, request_timeout=None):
+            assert "meaning and conversation context rather than matching a fixed vocabulary" in prompt
+            assert "hello dude test my maths" in prompt
+            return {"decision": "request_transition", "targetMode": "quiz",
+                    "requestType": "explicit", "confidence": 0.91,
+                    "reasonCode": "requested_practice", "rationale": "They asked to be tested on maths."}
+
+    try:
+        result = ModeTransitionService(store).classify(
+            current_message="hello dude test my maths", recent_turns=[], current_mode="ask",
+            session_id=session.id, owner="local", concept_title="Mathematics",
+            concept_id="maths", provider=FakeProvider())
+        assert result.decision == "request_transition"
+        assert result.target_mode == "quiz"
+        assert result.classification_source == "model"
+        assert result.confidence == 0.91
+    finally:
+        store.close()
+
+
+def test_hybrid_classifier_abstains_below_confidence_threshold(tmp_path, monkeypatch):
+    store, session = _setup_test_db(tmp_path)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid")
+
+    class FakeProvider:
+        def complete_json(self, prompt, max_tokens, *, request_timeout=None):
+            return {"decision": "suggest", "targetMode": "quiz", "requestType": "implicit",
+                    "confidence": 0.7, "reasonCode": "maybe_practice", "rationale": "Possibly helpful."}
+
+    try:
+        result = ModeTransitionService(store).classify(
+            current_message="Could use some help with maths.", recent_turns=[], current_mode="ask",
+            session_id=session.id, owner="local", concept_title="Mathematics",
+            concept_id="maths", provider=FakeProvider())
+        assert result.decision == "stay"
+        assert result.suggestion is None
+        assert result.reason == "model_low_confidence"
+    finally:
+        store.close()
+
+
+def test_hybrid_classification_api_uses_configured_provider(tmp_path, monkeypatch):
+    store, session = _setup_test_db(tmp_path)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid")
+
+    class FakeProvider:
+        def complete_json(self, prompt, max_tokens, *, request_timeout=None):
+            assert "Could we check how much attention I remember?" in prompt
+            return {"decision": "request_transition", "targetMode": "quiz",
+                    "requestType": "explicit", "confidence": 0.9,
+                    "reasonCode": "requested_recall", "rationale": "The learner wants a recall check."}
+
+    app = FastAPI()
+    app.include_router(build_learning_router(lambda: store, lambda: FakeProvider()))
+    app.dependency_overrides[material_owner] = lambda: "local"
+    client = TestClient(app)
+    try:
+        response = client.post(f"/v1/sessions/{session.id}/mode-classification", json={
+            "message": "Could we check how much attention I remember?", "currentMode": "ask",
+        })
+        assert response.status_code == 200
+        assert response.json()["decision"] == "request_transition"
+        assert response.json()["suggestion"]["targetMode"] == "quiz"
+    finally:
+        store.close()
 
 
 def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch):
     store, session = _setup_test_db(None)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("OPENLEARN_CLASSIFIER_MODE_INTENT_MODE", "active")
     monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.setenv("OPENLEARN_JEV_USD_PER_REQUEST", "0.001")
@@ -401,11 +481,13 @@ def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch):
 
     def post(url, **kwargs):
         captured.update(url=url, **kwargs)
-        return httpx.Response(200, request=httpx.Request("POST", url), json={"answers": {
+        return httpx.Response(200, request=httpx.Request("POST", url), json={"id":"gen-dec-mode-test", "usage":{"cost":0.000014994}, "answers": {
             "quiz_now": {"type": "noul", "noul": 0.96},
             "quiz_discussed_or_deferred": {"type": "noul", "noul": 0.03},
             "workflow": {"type": "choice", "choice": "quiz", "confidence": 0.9,
                          "probabilities": {"ask": 0.02, "learn": 0.02, "quiz": 0.94, "none": 0.02}},
+            "request_type": {"type": "choice", "choice": "implicit", "confidence": 0.9,
+                             "probabilities": {"explicit": 0.05, "implicit": 0.9, "none": 0.05}},
         }})
 
     monkeypatch.setattr(httpx, "post", post)
@@ -423,13 +505,15 @@ def test_jev_ambiguous_classification_uses_openrouter_decisions(monkeypatch):
     with store.engine.connect() as conn:
         event = conn.execute(text("SELECT component,cost_nano,source FROM usage_events WHERE owner_id='local'")).one()
     assert event.component == "tool"
-    assert event.cost_nano > 0
-    assert event.source == "estimated"
+    assert event.cost_nano == 14_994
+    assert event.source == "exact"
     _close_test_db(store)
 
 
 def test_jev_missing_usage_rate_falls_back_without_network(monkeypatch):
     store, session = _setup_test_db(None)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("OPENLEARN_CLASSIFIER_MODE_INTENT_MODE", "active")
     monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
     monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
@@ -451,6 +535,8 @@ def test_jev_missing_usage_rate_falls_back_without_network(monkeypatch):
 
 def test_jev_missing_key_and_uncertain_result_fall_back_safely(monkeypatch, tmp_path):
     store, session = _setup_test_db(tmp_path)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("OPENLEARN_CLASSIFIER_MODE_INTENT_MODE", "active")
     monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     service = ModeTransitionService(store)
@@ -464,8 +550,10 @@ def test_jev_missing_key_and_uncertain_result_fall_back_safely(monkeypatch, tmp_
     monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
     monkeypatch.setattr(httpx, "post", lambda url, **kwargs: httpx.Response(200,
         request=httpx.Request("POST", url), json={"answers": {
-            "quiz_now": {"noul": 0.51}, "quiz_discussed_or_deferred": {"noul": 0.3},
-            "workflow": {"choice": "quiz", "confidence": 0.55},
+            "quiz_now": {"type":"noul", "noul": 0.51},
+            "quiz_discussed_or_deferred": {"type":"noul", "noul": 0.3},
+            "workflow": {"type":"choice", "choice":"quiz", "probabilities":{"ask":0.2,"learn":0.2,"quiz":0.55,"none":0.05}},
+            "request_type": {"type":"choice", "choice":"implicit", "probabilities":{"explicit":0.1,"implicit":0.55,"none":0.35}},
         }}))
     with usage_scope(store, "local", session.id):
         uncertain = service.classify("Help me prepare for my quiz.", [], "ask", session_id=session.id)
@@ -474,12 +562,30 @@ def test_jev_missing_key_and_uncertain_result_fall_back_safely(monkeypatch, tmp_
     store.close()
 
 
-def test_jev_does_not_call_api_for_explicit_rules(monkeypatch, tmp_path):
+def test_jev_classifies_explicit_request_instead_of_bypassing(monkeypatch, tmp_path):
     store, session = _setup_test_db(tmp_path)
+    monkeypatch.setenv("OPENLEARN_CLASSIFICATION_MODE", "off")
+    monkeypatch.setenv("OPENLEARN_CLASSIFIER_MODE_INTENT_MODE", "active")
     monkeypatch.setenv("AI_TUTOR_MODE_CLASSIFICATION", "jev")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-openrouter-key")
-    monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected network")))
-    result = ModeTransitionService(store).classify("Quiz me on this.", [], "ask", session_id=session.id)
+    monkeypatch.setenv("OPENLEARN_JEV_USD_PER_REQUEST", "0.001")
+    monkeypatch.setenv("OPENLEARN_USAGE_PAID_ROUTES_ENABLED", "true")
+    monkeypatch.setenv("OPENLEARN_PROVIDER_RATE_VERSION", "test-provider-rates-v1")
+    captured = {}
+
+    def post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return httpx.Response(200, request=httpx.Request("POST", url), json={"answers": {
+            "workflow": {"choice": "quiz", "probabilities": {"ask": 0.01, "learn": 0.01, "quiz": 0.96, "none": 0.02}},
+            "request_type": {"choice": "explicit", "probabilities": {"explicit": 0.96, "implicit": 0.02, "none": 0.02}},
+            "quiz_now": {"noul": 0.97}, "quiz_discussed_or_deferred": {"noul": 0.01},
+        }})
+
+    monkeypatch.setattr(httpx, "post", post)
+    with usage_scope(store, "local", session.id):
+        result = ModeTransitionService(store).classify("Quiz me on this.", [], "ask", session_id=session.id)
+
+    assert captured["url"] == "https://openrouter.ai/api/alpha/decisions"
     assert result.decision == "request_transition"
     assert result.target_mode == "quiz"
     store.close()

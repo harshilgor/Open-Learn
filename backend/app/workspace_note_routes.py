@@ -14,6 +14,7 @@ from .workspace_note_models import (
     WorkspaceNoteLinkCreate,
     WorkspaceNoteLinkRecord,
     WorkspaceNoteLinksResponse,
+    WorkspaceNotePage,
     WorkspaceNoteRecord,
     WorkspaceNoteReindexResponse,
     WorkspaceNoteSearchResponse,
@@ -59,6 +60,21 @@ def build_workspace_note_router(store_provider: Any) -> APIRouter:
                    x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> list[WorkspaceNoteSummary]:
         authorize(learner_id, x_dev_learner_id)
         return translate(lambda: service().list(learner_id))
+
+    @router.get("/learners/{learner_id}/workspace-notes/page", response_model=WorkspaceNotePage)
+    def list_notes_page(learner_id: str = learner_path(), limit: int = Query(default=50, ge=1, le=100),
+                        cursor: str | None = Query(default=None, max_length=2048),
+                        x_dev_learner_id: str | None = Header(default=None, alias="X-Dev-Learner-Id")) -> WorkspaceNotePage:
+        authorize(learner_id, x_dev_learner_id)
+        return translate(lambda: service().list_page(learner_id, limit, cursor))
+
+    @router.get("/learners/{learner_id}/workspace-notes/{note_id}/versions")
+    def note_versions(note_id: str, learner_id: str = learner_path()):
+        authorize(learner_id, None)
+        translate(lambda: service().get(learner_id, note_id))
+        from .workflow_store import WorkflowStore
+        versions = WorkflowStore(store_provider()).listing_by_parent(learner_id, 'note_version', note_id)
+        return {'versions': sorted(versions, key=lambda item:item['noteRevision'], reverse=True)[:50]}
 
     @router.post("/learners/{learner_id}/workspace-notes/refresh-titles")
     def refresh_titles(learner_id: str = learner_path(),

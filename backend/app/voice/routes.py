@@ -33,8 +33,13 @@ def _voice_acceptance_mode():
         seconds = int(os.getenv('OPENLEARN_VOICE_SESSION_SECONDS', '1800'))
     except ValueError:
         return False
+    local_identity_enabled = (
+        os.getenv('AI_TUTOR_ENV', '').lower() in {'development', 'local', 'test'} and
+        os.getenv('AI_TUTOR_DEV_IDENTITY', 'true').lower() in {'true', '1', 'yes'} and
+        os.getenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED') == 'true'
+    )
     return (os.getenv('OPENLEARN_VOICE_ACCEPTANCE_MODE') == 'true' and
-            bool(os.getenv('OPENLEARN_VOICE_TEST_EMAILS', '').strip()) and
+            (bool(os.getenv('OPENLEARN_VOICE_TEST_EMAILS', '').strip()) or local_identity_enabled) and
             os.getenv('OPENLEARN_VOICE_MAX_CONCURRENT') == '1' and
             60 <= seconds <= 120)
 
@@ -43,6 +48,11 @@ def _voice_account_allowed():
     if not _voice_acceptance_mode():
         return os.getenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED') == 'true'
     principal = principal_context.get()
+    if (principal and principal.kind == 'local' and
+            os.getenv('AI_TUTOR_ENV', '').lower() in {'development', 'local', 'test'} and
+            os.getenv('AI_TUTOR_DEV_IDENTITY', 'true').lower() in {'true', '1', 'yes'} and
+            os.getenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED') == 'true'):
+        return True
     allowed = {value.strip().lower() for value in os.getenv('OPENLEARN_VOICE_TEST_EMAILS', '').split(',') if value.strip()}
     return bool(principal and principal.kind == 'web' and principal.email in allowed)
 

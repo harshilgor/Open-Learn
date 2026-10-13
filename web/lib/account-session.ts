@@ -14,6 +14,11 @@ if (typeof window !== 'undefined') window.addEventListener(ACCOUNT_CHANGED, () =
   identityEpoch++;
 });
 
+/** Return the owner resolved for the current authenticated session, if available. */
+export function cachedAccountOwnerId(): string | undefined {
+  return account?.ownerId;
+}
+
 // A cancelled caller must not cancel authentication for every other caller.
 function withCallerSignal<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   if (!signal) return promise;
@@ -41,7 +46,7 @@ function resolveIdentity(token: string, input: string, headers: Headers): Promis
       if (!saved) throw error;
       return undefined;
     });
-    if (response) recordApiTiming('/v1/account', startedAt, response.status);
+    if (response) recordApiTiming('/v1/account', startedAt, response.status, response.headers);
     if (epoch !== identityEpoch) throw new Error('The account changed while loading. Please retry.');
     if (response && !response.ok) return response;
     const ownerId = response ? (await response.clone().json() as { ownerId: string }).ownerId : saved;

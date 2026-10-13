@@ -1,11 +1,12 @@
 import json
+import re
 import secrets
 import time
 from contextlib import nullcontext
 from sqlalchemy import text
 from .contracts import TaskCreate, TaskCommand, BrowserResult, ConnectionCreate
 from .connections import Connections
-from .store import AssistantStore, public_run
+from .store import AssistantStore, pending_request, public_run
 from .policy import TERMINAL, WAITING, checksum, require_course
 from .evidence import retain_snapshot
 from ..identity import fail, assert_owner_active, current_principal
@@ -72,6 +73,11 @@ class AssistantService:
             if run.get('runtime_owner') == 'agent_v2': fail('invalid_input', 'Use the versioned execution command contract.', 422)
             if run['revision'] != command.expected_revision: fail('revision_conflict', 'The task changed. Refresh before continuing.', 409)
             if run['status'] in TERMINAL: return public_run(run)
+            if command.action in {'resume', 'resolve'} and run['status'] in WAITING:
+                request = pending_request(run)
+                if request and (not command.reply_to_request_id or command.reply_to_request_id != request['requestId']
+                                or command.expected_request_revision != request['revision']):
+                    fail('revision_conflict', 'This website question changed. Refresh it before continuing.', 409)
             if command.action in {'resume','resolve'} and run.get('browserControl',{}).get('owner','agent') != 'agent':
                 fail('control_not_ready','Return browser control before continuing automation.',409)
             if command.action in {'cancel', 'pause'}:
@@ -100,6 +106,61 @@ class AssistantService:
         if command.action in {'cancel', 'pause'}:
             from .executors.cloud import CloudExecutor
             CloudExecutor(self.store).close(owner, identifier)
+        return public_run(run)
+
+    def resolve_conversation_input(self, conn, owner: str, task_id: str, request_id: str,
+                                   expected_task_revision: int, expected_request_revision: int,
+                                   answer: str, message_id: str):
+        """Answer one open browser clarification inside the shared admission transaction."""
+        normalized = re.sub(r'\s+', ' ', str(answer or '')).strip()
+        if not normalized:
+            fail('invalid_input', 'Enter an answer before continuing.', 422)
+        if len(normalized) > 4000:
+            fail('invalid_input', 'Keep the answer under 4,000 characters.', 422)
+        if not message_id:
+            fail('invalid_input', 'A stable message identity is required to answer this question.', 422)
+
+        run = self.repo.run(conn, owner, task_id)
+        if run.get('runtime_owner') == 'agent_v2':
+            fail('not_found', 'Website task unavailable.', 404)
+        answer_digest = checksum(normalized)
+        if run.get('lastResolvedInputMessageId') == message_id:
+            if run.get('lastResolvedInputDigest') != answer_digest:
+                fail('idempotency_conflict', 'That message identity has different answer text.', 409)
+            return public_run(run)
+        if run.get('revision') != expected_task_revision:
+            fail('revision_conflict', 'The website task changed. Refresh the current question before answering.', 409)
+        request = pending_request(run)
+        if run.get('inputRequestId') != request_id:
+            fail('not_found', 'Website question unavailable.', 404)
+        if (run.get('status') != 'waiting_for_user' or not request
+                or request['revision'] != expected_request_revision):
+            fail('revision_conflict', 'This website question is no longer open. Refresh the task before replying.', 409)
+        if request['inputKind'] != 'text':
+            fail('invalid_state', 'Use the website task controls to complete this step.', 409)
+
+        prior_error = run.get('error')
+        changes = {'status': 'queued', 'error': None, 'question': None, 'pendingCommand': None,
+                   'activeSince': time.time(), 'clarificationAnswer': normalized,
+                   'inputRequestState': 'answered', 'lastResolvedInputMessageId': message_id,
+                   'lastResolvedInputDigest': answer_digest}
+        if prior_error == 'connection_required':
+            # Re-run intent extraction with the learner's destination so a URL
+            # supplied in chat is validated and resolved by the ordinary path.
+            changes['intent'] = None
+            changes['reclassifyWithClarification'] = True
+        if prior_error in {'course_required', 'ambiguous_course'}:
+            name = re.sub(r'\s+', ' ', normalized).strip().casefold()
+            matches = conn.execute(text('SELECT id,name FROM courses WHERE owner_id=:owner AND archived_at IS NULL'),
+                                   {'owner': owner}).mappings().all()
+            selected = [item for item in matches if re.sub(r'\s+', ' ', item['name']).strip().casefold() == name]
+            if len(selected) == 1:
+                changes['courseId'] = selected[0]['id']
+        run = self.repo.update_run(conn, run, **changes)
+        self.repo.event(conn, run, 'task.input_answered', 'Thanks — continuing with your answer.',
+                        replyToRequestId=request_id, requestRevision=expected_request_revision,
+                        inputRequestState='answered')
+        self.repo.enqueue(conn, run, 'assistant_intent' if not run.get('intent') else 'assistant_step')
         return public_run(run)
 
     def poll(self, principal):

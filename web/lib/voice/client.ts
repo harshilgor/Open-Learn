@@ -1,6 +1,6 @@
 import { request, requestStream } from '../api';
 
-export type VoiceFocus = { revision: number; note_id?: string | null; quiz_id?: string | null; presentation_id?: string | null; lesson_id?: string | null; visualization_id?: string | null; expected_revision?: number | null };
+export type VoiceFocus = { revision: number; note_id?: string | null; quiz_id?: string | null; presentation_id?: string | null; lesson_id?: string | null; visualization_id?: string | null; expected_revision?: number | null; selection_start?:number|null; selection_end?:number|null; selected_text?:string|null;source_span_id?:string|null };
 export type VoiceSession = { id: string; chatId: string; status: string; epoch: number; sequence: number; expiresAt: number; token: string; url: string };
 export type VoiceEvent = { sequence: number; type: string; voiceSessionId: string; text?: string; epoch?: number; segmentId?: string; callId?: string; tool?: string; status?: string; arguments?: Record<string, unknown>; argumentsHash?: string; confirmationMessage?: string; userMessage?: string; message?: string; result?: Record<string, unknown>; uiIntent?: { action: string; targetId?: string }; artifactRef?: { kind: string; id: string } };
 export const VOICE_FOCUS = 'openlearn-voice-focus';

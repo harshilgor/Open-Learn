@@ -1,5 +1,7 @@
 import { request } from './api';
-export type Buddy = { id:string; name:string; avatar:'spark'|'owl'|'cat'|'leaf'|'planet'; color:'sage'|'blue'|'violet'|'rose'|'amber'; style:'calm'|'encouraging'|'playful'|'direct'; concise:boolean; examples:boolean; proactive:boolean; revision:number; archived:boolean };
+export type BuddyAppearance = {shape:number; accessories:('Beanie'|'Cap'|'Scarf'|'Glasses'|'Backpack')[]; face:'classic'|'round'|'soft'; celebration:'auto'|'roll'|'dance'|'bounce'; palette:'original'|'ocean'|'berry'; keepsake:'none'|'star'|'heart'; sleepy:boolean};
+export const defaultAppearance:BuddyAppearance={shape:0,accessories:[],face:'classic',celebration:'auto',palette:'original',keepsake:'none',sleepy:true};
+export type Buddy = { id:string; name:string; avatar:'spark'|'owl'|'cat'|'leaf'|'planet'; color:'sage'|'blue'|'violet'|'rose'|'amber'; style:'calm'|'encouraging'|'playful'|'direct'; concise:boolean; examples:boolean; proactive:boolean; appearance?:BuddyAppearance; focus?:string; hintsFirst?:boolean; exampleTheme?:'general'|'music'|'sports'|'games'|'everyday'; rememberPreferences?:boolean; revision:number; archived:boolean };
 export type BuddySnapshot = { profiles:Buddy[]; defaultBuddyId:string; courses:Record<string,string>; chats:Record<string,string>; modes:Record<string,string>; responsibilities:Record<string,number>; lastChats:Record<string,string>; unread:Record<string,number>; classes:{classId?:string|null;id:string;title:string;status:string;courseId:string|null;noteId:string;startedAt:number;buddyId:string|null}[] };
 export type BuddyInput = Omit<Buddy,'id'|'revision'|'archived'>;
 export const buddyApi = {

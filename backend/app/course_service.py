@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
+
+from pydantic import TypeAdapter
 
 from sqlalchemy import Connection, text
 
@@ -123,10 +125,25 @@ def _generate_tailored_curriculum(
     return nodes
 
 
+_COURSE_ADAPTER = TypeAdapter(Optional[CoursePublic])
+_SUMMARIES_ADAPTER = TypeAdapter(list[CourseSummary])
+# Course summaries count sessions, notes, materials and due reviews. Writers of
+# those rows invalidate on insert/delete/course change; due_review_count follows
+# review activity and may lag by up to this TTL.
+COURSE_CACHE_TTL_SECONDS = 60
+
+
 class CourseService:
     def __init__(self, store: Store, provider: Any = None):
         self.store = store
         self.provider = provider
+
+    @staticmethod
+    def _invalidate(owner_id: str) -> None:
+        """Queue course (and calendar, which filters on courses) invalidation after commit."""
+        from .cache import invalidate, owner_scope
+        invalidate("course", owner_scope(owner_id))
+        invalidate("calendar", owner_scope(owner_id))
 
     def create_course(self, owner_id: str, input_data: CourseCreate) -> CoursePublic:
         course_id = f"course_{uuid4().hex}"
@@ -135,6 +152,7 @@ class CourseService:
         reminder_prefs = input_data.reminder_preferences or CourseReminderPreferences()
 
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             conn.execute(
                 text(
                     "INSERT INTO courses(id, owner_id, name, goal, teaching_preferences, reminder_preferences, created_at, updated_at) "
@@ -158,6 +176,12 @@ class CourseService:
         return result
 
     def get_course(self, owner_id: str, course_id: str) -> CoursePublic | None:
+        from .cache import get_or_load, model_codec, owner_scope
+        return get_or_load("course", owner_scope(owner_id), {"course": course_id},
+                           lambda: self._load_course(owner_id, course_id),
+                           ttl_seconds=COURSE_CACHE_TTL_SECONDS, **model_codec(_COURSE_ADAPTER))
+
+    def _load_course(self, owner_id: str, course_id: str) -> CoursePublic | None:
         with self.store.engine.connect() as conn:
             row = conn.execute(
                 text("SELECT * FROM courses WHERE id = :id AND owner_id = :owner"),
@@ -262,6 +286,12 @@ class CourseService:
         )
 
     def list_courses(self, owner_id: str, include_archived: bool = False) -> list[CourseSummary]:
+        from .cache import get_or_load, model_codec, owner_scope
+        return get_or_load("course", owner_scope(owner_id), {"list": bool(include_archived)},
+                           lambda: self._load_course_list(owner_id, include_archived),
+                           ttl_seconds=COURSE_CACHE_TTL_SECONDS, **model_codec(_SUMMARIES_ADAPTER))
+
+    def _load_course_list(self, owner_id: str, include_archived: bool) -> list[CourseSummary]:
         with self.store.engine.connect() as conn:
             query = "SELECT id FROM courses WHERE owner_id = :owner"
             if not include_archived:
@@ -295,6 +325,7 @@ class CourseService:
 
         assignments = ", ".join(f"{col} = :{col}" for col in updates)
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             conn.execute(
                 text(f"UPDATE courses SET {assignments} WHERE id = :id AND owner_id = :owner"),
                 {**updates, "id": course_id, "owner": owner_id},
@@ -308,6 +339,7 @@ class CourseService:
             return False
 
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             # Unlink associated sessions, notes, and materials rather than deleting them
             from .in_class_service import invalidate_material_access
             invalidate_material_access(conn,course_id=course_id,owner=owner_id,clear_class_course=True)
@@ -362,6 +394,7 @@ class CourseService:
         if not self.get_course(owner_id, course_id):
             return False
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             row = conn.execute(
                 text("SELECT payload, course_id FROM learning_sessions WHERE id = :sid AND learner_id = :owner"),
                 {"sid": session_id, "owner": owner_id},
@@ -417,6 +450,7 @@ class CourseService:
         if not course:
             return False
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             previous_course_id=conn.execute(text("SELECT course_id FROM materials WHERE id=:mid AND owner_id=:owner AND deleted=false"),{"mid":material_id,"owner":owner_id}).scalar_one_or_none()
             result = conn.execute(
                 text("UPDATE materials SET course_id = :cid WHERE id = :mid AND owner_id = :owner AND deleted = false"),
@@ -437,6 +471,7 @@ class CourseService:
         if not course:
             return False
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             result = conn.execute(
                 text("UPDATE materials SET course_id = NULL WHERE id = :mid AND course_id = :cid AND owner_id = :owner"),
                 {"mid": material_id, "cid": course_id, "owner": owner_id},
@@ -472,6 +507,7 @@ class CourseService:
         )
 
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             if replace_existing:
                 conn.execute(
                     text("DELETE FROM course_roadmap_nodes WHERE course_id = :id"),
@@ -520,6 +556,7 @@ class CourseService:
         order_index = int(max_order) + 1
 
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             conn.execute(
                 text(
                     "INSERT INTO course_roadmap_nodes(id, course_id, phase, concept_id, title, status, order_index, created_at) "
@@ -586,6 +623,7 @@ class CourseService:
 
         assignments = ", ".join(f"{col} = :{col}" for col in updates)
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             conn.execute(
                 text(f"UPDATE course_roadmap_nodes SET {assignments} WHERE id = :id AND course_id = :cid"),
                 {**updates, "id": node_id, "cid": course_id},
@@ -609,6 +647,7 @@ class CourseService:
             return False
 
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             result = conn.execute(
                 text("DELETE FROM course_roadmap_nodes WHERE id = :id AND course_id = :cid"),
                 {"id": node_id, "cid": course_id},
@@ -628,6 +667,7 @@ class CourseService:
 
         now = utc_now()
         with self.store.transaction() as conn:
+            self._invalidate(owner_id)
             for idx, nid in enumerate(node_ids):
                 conn.execute(
                     text("UPDATE course_roadmap_nodes SET order_index = :idx WHERE id = :id AND course_id = :cid"),
@@ -715,6 +755,7 @@ class CourseService:
 
             if target_status != current_status:
                 with self.store.transaction() as conn:
+                    self._invalidate(owner_id)
                     conn.execute(
                         text("UPDATE course_roadmap_nodes SET status = :status WHERE id = :id AND course_id = :cid"),
                         {"status": target_status, "id": node.id, "cid": course_id},

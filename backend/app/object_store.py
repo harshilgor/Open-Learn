@@ -55,8 +55,14 @@ class LocalObjectStore:
             os.fsync(output.fileno())
         try:
             try:
-                # Atomic create-without-overwrite; readers never see a partial file.
-                os.link(temporary, destination)
+                # Restricted Windows workspaces can deny hard links. Rename
+                # is atomic on the same volume there and Windows refuses to
+                # overwrite an existing destination; POSIX retains link's
+                # atomic create-without-overwrite behavior.
+                if os.name == "nt":
+                    os.rename(temporary, destination)
+                else:
+                    os.link(temporary, destination)
             except FileExistsError:
                 if destination.read_bytes() != content:
                     raise ValueError("An immutable object already occupies this key")
@@ -80,7 +86,10 @@ class LocalObjectStore:
             os.fsync(output.fileno())
         try:
             try:
-                os.link(temporary, destination)
+                if os.name == "nt":
+                    os.rename(temporary, destination)
+                else:
+                    os.link(temporary, destination)
             except FileExistsError:
                 existing_size, existing_digest = _file_digest(destination)
                 if existing_size != byte_count or existing_digest != sha256:

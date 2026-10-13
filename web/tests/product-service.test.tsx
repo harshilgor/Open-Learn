@@ -6,6 +6,15 @@ vi.mock('@/lib/account-session',()=>({ACCOUNT_CHANGED:'openlearn-account-changed
 afterEach(()=>{vi.unstubAllGlobals();vi.unstubAllEnvs();delete (window as Window & {formaDesktop?:unknown}).formaDesktop;});
 
 describe('product service boundaries',()=>{
+  it('only proxies the fixed local API for a development loopback preview',async()=>{
+    vi.stubEnv('NODE_ENV','development');vi.stubEnv('OPENLEARN_API_ORIGIN','');
+    const fetch=vi.fn(async(_input:RequestInfo|URL)=>new Response('{"ownerId":"local"}',{headers:{'content-type':'application/json'}}));vi.stubGlobal('fetch',fetch);
+    expect((await proxyHostedApi(new Request('http://127.0.0.1:3001/v1/account'),['account'])).status).toBe(200);
+    expect(String(fetch.mock.calls[0][0])).toBe('http://127.0.0.1:8000/v1/account');
+    vi.stubEnv('NODE_ENV','production');fetch.mockClear();
+    expect((await proxyHostedApi(new Request('http://127.0.0.1:3001/v1/account'),['account'])).status).toBe(503);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('defaults to same-origin on hosted web and honors the desktop bridge',()=>{
     vi.stubEnv('NEXT_PUBLIC_LEARNING_API_URL','');
     vi.stubGlobal('window',{location:{hostname:'open-learn-eta.vercel.app'}});

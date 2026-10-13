@@ -11,6 +11,15 @@ const task={id:'task',schemaVersion:2,revision:7,sessionId:'session',kind:'lab_a
 beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.clearAllMocks();sessionStorage.clear();mocks.request.mockImplementation(async(path:string)=>path==='/v1/usage/allowance'?{windowId:null,windowState:'ready',serverTime:100,resetsAt:null,grantedMicrocredits:100_000_000,usedMicrocredits:0,heldMicrocredits:0,availableMicrocredits:100_000_000,revision:0,availability:'available',reasonCode:null}:{admissionEnabled:true});mocks.snapshot.mockResolvedValue({cursor:1,hasMore:false,items:[{id:'question',sequence:1,type:'input.requested',taskId:'task'}],tasks:[task]});mocks.sendMessage.mockResolvedValue({handled:true,references:[]});container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
 afterEach(()=>{act(()=>root.unmount());container.remove();});
 async function mount(){await act(async()=>{root.render(<ExecutionPanel sessionId="session" onSession={vi.fn()}/>);await new Promise(resolve=>setTimeout(resolve,20));});}
+it('clears a polling outage after recovery without showing a failed message alert',async()=>{
+  await mount();
+  mocks.snapshot.mockRejectedValueOnce(new Error('Service unavailable'));
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(container.textContent).toContain('Task updates are reconnecting');
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(container.textContent).not.toContain('Task updates are reconnecting');
+});
 it('answers the exact task/question with steering and revision',async()=>{
   await mount();
   await act(async()=>[...container.querySelectorAll('button')].find(b=>b.textContent==='Centimeters; ignore trial 3')!.click());
@@ -39,4 +48,17 @@ it('shows and sends the explicit agent-task maximum',async()=>{
   const form=container.querySelector('input[aria-label="Agent request"]')!.closest('form')!;
   await act(async()=>form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
   expect(mocks.sendMessage).toHaveBeenCalledWith(expect.objectContaining({capability:'lab_analysis',acceptedUsageCapMicro:50_000_000}),expect.any(String));
+});
+it('resnapshots and replaces stale activity after the server prunes the replay cursor',async()=>{
+  mocks.snapshot.mockResolvedValueOnce({cursor:1,hasMore:false,resnapshotRequired:false,items:[{id:'old',sequence:1,type:'user.message',text:'Old replayed item'}],tasks:[task]})
+    .mockResolvedValueOnce({cursor:4,hasMore:false,resnapshotRequired:true,prunedThrough:3,items:[],tasks:[task]})
+    .mockResolvedValueOnce({cursor:4,hasMore:false,resnapshotRequired:false,prunedThrough:3,items:[{id:'new',sequence:4,type:'user.message',text:'Fresh item'}],tasks:[task]});
+  await mount();
+  expect(container.textContent).toContain('Old replayed item');
+  await act(async()=>{window.dispatchEvent(new Event('openlearn-agent-activity-changed'));await new Promise(resolve=>setTimeout(resolve,20));});
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(1,'session',undefined);
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(2,'session',1);
+  expect(mocks.snapshot).toHaveBeenNthCalledWith(3,'session');
+  expect(container.textContent).toContain('Fresh item');
+  expect(container.textContent).not.toContain('Old replayed item');
 });

@@ -33,6 +33,9 @@ class ReminderCreate(BaseModel):
     quietStart: int = Field(default=22,ge=0,le=23)
     quietEnd: int = Field(default=8,ge=0,le=23)
     catchupMinutes: int = Field(default=120,ge=1,le=1440)
+    calendarPresentation: Literal['automation','study_session'] = 'automation'
+    calendarId: str | None = Field(default=None,max_length=160)
+    durationMinutes: int = Field(default=30,ge=5,le=480)
 
     @model_validator(mode='after')
     def timing(self):
@@ -113,6 +116,8 @@ class ReminderService:
         data=command.model_dump(); digest=hashlib.sha256(encoded(data).encode()).hexdigest()
         identifier='reminder_'+hashlib.sha256(f'{owner}:{key}'.encode()).hexdigest()[:32]
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             # Serialize per-user cap checks without a process-local lock.
             from .buddy_service import BuddyService
@@ -127,6 +132,9 @@ class ReminderService:
             if command.courseId:
                 from .browser_assistant.policy import require_course
                 require_course(conn,owner,command.courseId)
+            if command.calendarId:
+                calendar=conn.execute(text("SELECT id FROM calendar_calendars WHERE id=:id AND owner_id=:owner AND status='active'"),{'id':command.calendarId,'owner':owner}).first()
+                if not calendar:fail('not_found','Calendar unavailable.',404)
             if command.buddyId:buddy_service.profile(conn,owner,command.buddyId)
             for action in command.actions:
                 if action.args.get('sessionId'):
@@ -163,6 +171,8 @@ class ReminderService:
 
     def cancel(self,owner,identifier):
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -175,6 +185,8 @@ class ReminderService:
     def snooze(self,owner,identifier,minutes,key):
         if not 1<=minutes<=10080:fail('invalid_input','Snooze between one minute and one week.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -199,6 +211,8 @@ class ReminderService:
         replacement = 'move_' + hashlib.sha256(f'{owner}:{identifier}:{key}'.encode()).hexdigest()[:32]
         request_hash = hashlib.sha256(encoded([identifier, when, timezone]).encode()).hexdigest()
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn, owner)
             existing = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': replacement, 'owner': owner}).mappings().first()
             if existing:
@@ -224,6 +238,8 @@ class ReminderService:
             second=next_fire(command.schedule,command.timezone,first)
             if second and second-first<300:fail('invalid_time','Recurring reminders must be at least five minutes apart.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text("SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner AND kind='routine'"),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Routine unavailable.',404)
@@ -251,6 +267,10 @@ class ReminderService:
             for row in rows:
                 assert_owner_active(conn,row['owner_id'])
                 payload=json.loads(row['payload']);policy=None
+                if payload.get('calendarEventId'):
+                    from .calendar.reminders import calendar_fire_current
+                    if not calendar_fire_current(conn,row):
+                        conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id"),{'id':row['id']});continue
                 if row['policy_id']:
                     policy=conn.execute(text('SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner'),{'id':row['policy_id'],'owner':row['owner_id']}).mappings().first()
                     if not policy or not policy['active'] or policy['revision']!=row['policy_revision']:

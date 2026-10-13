@@ -16,6 +16,7 @@ from .models import utc_now
 from .state_models import EvidenceCreate
 from .state_service import LearnerStateService
 from .workflow_store import WorkflowStore, uid
+from .assessment_profiles import resolve_provider, profile_snapshot
 
 Origin = Literal["quiz", "review", "learn_inline", "fresh_check"]
 
@@ -106,16 +107,18 @@ class AssessmentLifecycle:
         parent_id: str,
         parent_kind: Literal["quiz", "review"] = "quiz",
     ) -> tuple[Candidate, dict[str, Any], dict[str, Any]]:
-        if self.provider is None:
+        profiles = context.get("modelProfiles", profile_snapshot())
+        author_provider = resolve_provider(self.provider, "quiz_author", profiles)
+        if author_provider is None:
             problem("provider_required", "Connect a model and attach reference material to generate checked questions.", 503)
         try:
-            item, author, check = generate_item(self.provider, context, previous)
+            item, author, check = generate_item(self.provider, {**context, "modelProfiles": profiles}, previous)
         except QualityRejected as rejected:
             self.persist_rejections(owner, parent_id, rejected.artifacts)
             raise
         if self.exposure_count(owner, item.stem) >= 3:
             problem("item_overexposed", "A similar question has already been shown often. Generate a new question.", 409)
-        public = item.model_dump(exclude={"solution", "correct_ids", "criteria", "hints"})
+        public = item.model_dump(include={"concept_id", "kind", "stem", "options", "reasoning_target", "family", "source_ids"})
         item_id, presentation_id = uid("item"), uid("presentation")
         options = public["options"][:]
         random.SystemRandom().shuffle(options)
@@ -126,8 +129,11 @@ class AssessmentLifecycle:
             "checker": check,
             "qualityStatus": "approved",
             "contextId": context.get("manifestId"),
-            "provider": getattr(self.provider, "provider_name", None),
+            "provider": getattr(author_provider, "provider_name", None),
+            "modelProfiles": profiles,
             "itemVersion": 1,
+            "createdAt": utc_now().isoformat(),
+            "numericVerification": "verified_arithmetic" if item.numeric_check else "not_requested",
             "origin": origin,
             "contentFingerprint": fingerprint(item.stem),
             "semanticCluster": fingerprint(item.stem),
@@ -147,6 +153,9 @@ class AssessmentLifecycle:
             "hintCount": len(item.hints),
             "workflowKind": parent_kind,
             "workflowId": parent_id,
+            "modelProfiles": profiles,
+            "feedbackPolicy": context.get("feedbackPolicy", "practice_immediate"),
+            "rationaleRequested": (context.get("questionPlan") or {}).get("rationale_requested", False),
         }
         if parent_kind == "quiz":
             presentation["quizId"] = parent_id
@@ -237,8 +246,8 @@ class AssessmentLifecycle:
             row = conn.execute(text("SELECT payload FROM item_solutions WHERE item_id=:id"), {"id": presentation["itemId"]}).one()
         return presentation, Candidate.model_validate_json(row[0])
 
-    def evaluate_response(self, owner: str, presentation_id: str, command: dict[str, Any]) -> tuple[dict[str, Any], Candidate, dict[str, Any]]:
-        presentation, item = self.load_private(owner, presentation_id)
+    @staticmethod
+    def validate_response(item: Candidate, command: dict[str, Any]):
         outcome = command.get("outcome") or "answer"
         response = command.get("response") or ""
         selected_ids = list(command.get("selected_ids") or command.get("selectedIds") or [])
@@ -249,10 +258,30 @@ class AssessmentLifecycle:
                 problem("invalid_selection", "Select a valid answer.")
             if item.kind == "single" and len(selected_ids) != 1:
                 problem("invalid_selection", "Select one answer.")
+        return outcome, response, selected_ids
+
+    def evaluate_response(self, owner: str, presentation_id: str, command: dict[str, Any]) -> tuple[dict[str, Any], Candidate, dict[str, Any]]:
+        presentation, item = self.load_private(owner, presentation_id)
+        outcome, response, selected_ids = self.validate_response(item, command)
         from .assessment_assistance import assistance_for
         with self.store.engine.connect() as conn:
             assistance = assistance_for(conn, owner, presentation, item, bool(command.get("external_help") or command.get("externalHelp")))
-        result = evaluate(self.provider, item, {"outcome": outcome, "response": response, "selected_ids": selected_ids})
+        evaluator = resolve_provider(self.provider, "written_answer_evaluator", presentation.get("modelProfiles", {}))
+        result = evaluate(evaluator, item, {"outcome": outcome, "response": response, "selected_ids": selected_ids})
+        if item.kind != "short" and outcome == "answer" and str(response).strip():
+            rationale = evaluate(evaluator, item.model_copy(update={"kind": "short", "options": [], "correct_ids": []}),
+                {"outcome": "answer", "response": response, "selected_ids": []})
+            result["rationaleEvaluation"] = rationale
+            if rationale.get("score") != result["score"] or rationale.get("status") == "uncertain":
+                result.update(status="uncertain", evidenceExcluded=True, uncertaintyReason="choice_reasoning_disagreement",
+                    feedback="Your choice and explanation need a closer check. The choice score is saved, but this is not independent evidence of understanding.")
+        result["feedbackDetails"] = {
+            "schemaVersion": 2,
+            "demonstrated": [{"criterionId": c["id"], "description": c["reason"], "spans": c.get("spans", [])} for c in result.get("criteria", []) if c["score"] > 0],
+            "gaps": [{"criterionId": c["id"], "description": c["reason"]} for c in result.get("criteria", []) if c["score"] < 1],
+            "explanation": result["feedback"], "uncertainty": result.get("uncertaintyReason"),
+            "nextAction": "clarify" if result["status"] == "uncertain" else "continue" if result.get("score") == 1 else "review_reasoning",
+        }
         attempt = {
             **result,
             "id": uid("attempt"),
@@ -271,6 +300,7 @@ class AssessmentLifecycle:
             "evidenceId": None,
             "conceptState": None,
             "createdAt": utc_now().isoformat(),
+            "evaluationProfile": getattr(evaluator, "assessment_profile", None),
         }
         return presentation, item, attempt
 
@@ -296,7 +326,12 @@ class AssessmentLifecycle:
             )
         presentation["attemptId"] = attempt["id"]
         self.records.put(conn, owner, "presentation", presentation, expected=presentation["revision"])
-        if attempt["score"] is not None:
+        if presentation.get("feedbackPolicy") == "exam_deferred" and not presentation.get("examFinalized"):
+            attempt["examPending"] = True
+            self.records.put(conn, owner, "attempt", attempt, parent_id or presentation.get("quizId"))
+            return attempt
+        generated_basis = bool(presentation.get("sources")) and all(str(source.get("spanId", "")).startswith("quiz-context:") for source in presentation["sources"])
+        if attempt["score"] is not None and not generated_basis and not attempt.get("evidenceExcluded"):
             provenance = {
                 "attemptId": attempt["id"],
                 "itemId": presentation["itemId"],
@@ -327,7 +362,8 @@ class AssessmentLifecycle:
             attempt["evidenceId"] = admitted.evidence.id
             attempt["conceptState"] = admitted.learner_state.status.value if admitted.learner_state else None
         parent = parent_id or presentation.get("quizId") or presentation.get("reviewSessionId") or presentation["id"]
-        self.records.put(conn, owner, "attempt", attempt, parent)
+        previous_revision = attempt.get("revision") if attempt.pop("examPending", False) else None
+        self.records.put(conn, owner, "attempt", attempt, parent, expected=previous_revision)
         evaluation_id = uid("evaluation")
         self.records.put(conn, owner, "assessment_evaluation", {
             "id": evaluation_id,
@@ -354,15 +390,17 @@ class AssessmentLifecycle:
             rubric=RevisionRef(kind="item", id=presentation["itemId"], revision=1),
             assistance=attempt.get("assistanceLineage", {}).get("condition", "unknown"),
             outcome="ungraded" if attempt["score"] is None else "correct" if attempt["score"] == 1 else "partial" if attempt["score"] > 0 else "incorrect",
-            admission="not_performance" if attempt["outcome"] == "skip" else "excluded" if attempt["score"] is None or generated_basis else "admitted",
-            exclusion_reasons=("unverified_generated_study_context",) if generated_basis and attempt["outcome"] != "skip" else ("contested_or_incomplete_evaluation",) if attempt["score"] is None and attempt["outcome"] != "skip" else ())
-        if attempt.get("solution") and attempt["outcome"] != "skip":
+            admission="not_performance" if attempt["outcome"] == "skip" else "excluded" if attempt["score"] is None or generated_basis or attempt.get("evidenceExcluded") else "admitted",
+            exclusion_reasons=("unverified_generated_study_context",) if generated_basis and attempt["outcome"] != "skip" else ("contested_or_incomplete_evaluation",) if (attempt["score"] is None or attempt.get("evidenceExcluded")) and attempt["outcome"] != "skip" else ())
+        if attempt.get("solution") and (presentation.get("feedbackPolicy") != "exam_deferred" or presentation.get("examFinalized")):
             EvidenceLedger(self.store).emit(conn, owner, "solution:" + attempt["id"], "ANSWER_EXPOSED",
                 concept_id=item.concept_id, family_id=item.family, activity_id=parent, occurred_at=attempt["createdAt"])
         return attempt
 
     def record_hint(self, conn, owner: str, presentation_id: str) -> dict[str, Any]:
         presentation, item = self.load_private(owner, presentation_id)
+        if presentation.get("feedbackPolicy") == "exam_deferred":
+            problem("exam_hints_disabled", "Hints are unavailable during exam practice.", 409)
         if presentation["attemptId"]:
             problem("already_answered", "Hints are only available before answering.", 409)
         index = len(presentation["hints"])
@@ -395,5 +433,8 @@ class AssessmentLifecycle:
         parent = presentation.get("quizId") or presentation.get("reviewSessionId") or presentation_id
         self.records.put(conn, owner, "challenge", challenge, parent)
         # The review runs as a separate durable command after exclusion commits.
-        self.records.enqueue(owner, challenge["id"], "adjudicate", {}, "adjudicate:" + challenge["id"], connection=conn)
+        from .quiz_policy import deferred
+        exam_active = bool(presentation.get("quizId")) and deferred(self.records.read(owner, presentation["quizId"], "quiz", conn))
+        if not exam_active:
+            self.records.enqueue(owner, challenge["id"], "adjudicate", {}, "adjudicate:" + challenge["id"], connection=conn)
         return challenge

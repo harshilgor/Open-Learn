@@ -2,7 +2,8 @@
 from .execution import schedule_local
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 import logging
-from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, RevisionCommand
+import time
+from .assessment_models import AnswerCommand, ChallengeCommand, JourneyCommand, QuizCreate, QuizUsefulnessFeedback, RevisionCommand, QuizQuestionRevision
 from .material_routes import material_owner
 from .material_service import MaterialService, problem
 from .model_provider import ModelProviderError
@@ -15,6 +16,7 @@ from .study_note_models import ProposalCreate
 from .study_note_service import StudyNoteService
 from .mode_transition_models import ModeClassificationRequest, ModeTransitionInteraction, ModeTransitionResponse
 from .mode_transition_service import ModeTransitionService
+from .mode_transition_routing import classify_mode_for_session
 
 
 from .usage.context import usage_job
@@ -27,6 +29,9 @@ def run_job(store, provider, job_id):
     if kind in {'voice_turn', 'voice_action'}:
         from .voice.worker import run_voice_job
         return run_voice_job(store, provider, job_id)
+    if kind == 'visual_generate':
+        from .visual_runs import run_visual_job
+        return run_visual_job(store, provider, job_id)
     records = WorkflowStore(store)
     job = records.claim(job_id)
     if not job:
@@ -36,6 +41,8 @@ def run_job(store, provider, job_id):
     owner, target, payload, kind = job["owner_id"], job["target_id"], job["payload"], job["kind"]
     quiz, journey, drafts = QuizService(store, provider), JourneyService(store, provider), NoteDraftService(store, provider)
     synthesis = StudyNoteService(store, provider)
+    operation_started = time.monotonic()
+    operation_status = "failed"
     try:
         prepared = None
         if kind == 'voice_teach':
@@ -47,10 +54,10 @@ def run_job(store, provider, job_id):
             prepared = synthesis.prepare(owner, target, ProposalCreate.model_validate(payload))
         elif kind == "note_draft":
             prepared = drafts.prepare(owner, target, CreateNoteDraft.model_validate(payload))
-        elif kind == "next":
+        elif kind in {"next", "quiz_prefetch"}:
             prepared = quiz.prepare(owner, target, payload["expected_revision"])
         elif kind == "answer":
-            prepared = quiz.grade(owner, target, AnswerCommand.model_validate(payload))
+            prepared = quiz.grade(owner, target, AnswerCommand.model_validate(payload), job_id=job["id"])
         elif kind == "adjudicate":
             from .assessment_adjudication import ChallengeService
             prepared = ChallengeService(store, provider).prepare(owner, target)
@@ -71,6 +78,8 @@ def run_job(store, provider, job_id):
                 result = drafts.commit(conn, owner, prepared)
             elif kind == "next":
                 result = quiz.commit_prepared(conn, owner, prepared)
+            elif kind == "quiz_prefetch":
+                result = quiz.commit_prefetch(conn, owner, prepared)
             elif kind == "answer":
                 result = quiz.commit_grade(conn, owner, prepared)
             elif kind == "hint":
@@ -81,6 +90,8 @@ def run_job(store, provider, job_id):
                 result = quiz.resume(conn, owner, target, payload["expected_revision"])
             elif kind == "pause":
                 result = quiz.pause(conn, owner, target, payload["expected_revision"])
+            elif kind == "quiz_finish":
+                result = quiz.finish(conn, owner, target, payload["expected_revision"])
             elif kind == "challenge":
                 attempt = records.read(owner, target, "attempt", conn)
                 result = quiz.challenge(conn, owner, attempt["presentationId"], payload["reason"])
@@ -92,6 +103,7 @@ def run_job(store, provider, job_id):
             else:
                 raise ValueError("Unsupported job")
             records.finish(conn, job, result)
+            operation_status = "completed"
             from .execution import Outbox
             Outbox.emit(conn, owner, "learning.command.completed", target, job["id"],
                         {"jobId": job["id"], "kind": kind, "result": result})
@@ -104,10 +116,17 @@ def run_job(store, provider, job_id):
             from .execution import failure_policy
             code, retryable = failure_policy(exc)
             records.fail(job, code, retryable=retryable)
+            if kind == "answer" and records.job(owner, job["id"])["status"] == "failed":
+                quiz.release_submission(owner, target)
         except HTTPException:
             pass  # Cancellation or a replacement worker already owns the outcome.
     finally:
         heartbeat.close()
+        if kind in {"create", "next", "quiz_prefetch", "answer", "quiz_finish"}:
+            logging.getLogger(__name__).info("assessment_command", extra={
+                "assessment_command_kind": kind, "assessment_command_status": operation_status,
+                "assessment_execution_ms": round((time.monotonic() - operation_started) * 1000),
+                "assessment_queued_to_completion_ms": round(max(0, time.time() - job.get("created_at", time.time())) * 1000)})
 
 
 def build_learning_router(store_provider, provider_getter):
@@ -127,7 +146,13 @@ def build_learning_router(store_provider, provider_getter):
 
     @router.post("/learning-jobs/{job_id}/cancel")
     def cancel_job(job_id: str, owner=Depends(material_owner), db=Depends(store_provider)):
-        return WorkflowStore(db).cancel(owner, job_id)
+        result = WorkflowStore(db).cancel(owner, job_id)
+        from sqlalchemy import text
+        with db.engine.connect() as conn:
+            row = conn.execute(text("SELECT target_id,kind FROM learning_jobs WHERE id=:id AND owner_id=:owner"), {"id": job_id, "owner": owner}).first()
+        if row and row[1] == "answer":
+            QuizService(db, None).release_submission(owner, row[0])
+        return result
 
     @router.get("/sessions/{sid}/journey")
     def get_journey(sid: str, owner=Depends(material_owner), db=Depends(store_provider)):
@@ -135,32 +160,9 @@ def build_learning_router(store_provider, provider_getter):
 
     @router.post("/sessions/{sid}/mode-classification")
     def classify_mode(sid: str, command: ModeClassificationRequest, owner=Depends(material_owner), db=Depends(store_provider)):
-        session = MaterialService(db).session(owner, sid)
-        journey = JourneyService(db, None).get(owner, sid)
-        transitions = ModeTransitionService(db)
-        provider = provider_getter() if __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "rules").lower() == "provider" else None
-        if command.bypass_suggestion_id:
-            if not transitions.valid_bypass(owner, sid, command.bypass_suggestion_id):
-                problem("transition_unavailable", "This transition request has expired.", 409)
-            # A bypass only suppresses the same one-shot classification after the
-            # learner chose to continue in the current mode. It does not change mode.
-            result = transitions.classify(command.message, journey.get("turns", []),
-                command.current_mode, session_id=sid, owner=owner, concept_title=journey.get("steps", [{}])[journey.get("position", 0)].get("title") if journey.get("steps") else session.goal,
-                course_id=session.course_id, provider=provider, bypass_suggestion_id=command.bypass_suggestion_id)
-        else:
-            graph = db.get_graph(session.graph_id)
-            step = journey.get("steps", [])
-            position = min(journey.get("position", 0), max(0, len(step) - 1))
-            concept_title = step[position].get("title") if step else (graph.title if graph else session.goal)
-            concept_id = step[position].get("conceptId") if step else session.current_concept_id
-            result = transitions.classify(command.message, journey.get("turns", []),
-                command.current_mode, session_id=sid, owner=owner, concept_title=concept_title,
-                concept_id=concept_id, course_id=session.course_id, provider=provider)
-        if result.suggestion:
-            suggestion = result.suggestion.model_copy(update={"source_turn_id": f"request:{sid}:{journey.get('revision', 1)}",
-                "mode_revision": journey.get("modeRevision", 1)})
-            result.suggestion = suggestion
-            transitions.attach_suggestion_metadata(owner, sid, suggestion)
+        classifier = __import__("os").getenv("AI_TUTOR_MODE_CLASSIFICATION", "hybrid").lower()
+        provider = provider_getter() if classifier in {"provider", "hybrid"} else None
+        result = classify_mode_for_session(db, owner, sid, command, provider)
         return result.model_dump(mode="json", by_alias=True)
 
     @router.get("/sessions/{sid}/mode-transition")
@@ -181,6 +183,9 @@ def build_learning_router(store_provider, provider_getter):
                 suggestion_id=interaction.suggestion_id, action=interaction.action,
                 target_mode=interaction.target_mode, session_id=sid),
                 expected_mode_revision=interaction.expected_mode_revision)
+            if interaction.action in {"accept", "dismiss"}:
+                from .generation_command_receipts import clear_mode_choice_by_suggestion
+                clear_mode_choice_by_suggestion(db, owner, sid, interaction.suggestion_id)
         except ValueError as exc:
             problem("transition_unavailable", str(exc), 409)
         return result
@@ -232,10 +237,21 @@ def build_learning_router(store_provider, provider_getter):
         MaterialService(db).session(owner, command.session_id)
         return enqueue(tasks, db, owner, command.session_id, "create", command.model_dump(mode="json"), key)
 
+    @router.get("/quiz-capabilities")
+    def quiz_capabilities(owner=Depends(material_owner)):
+        from .assessment_profiles import enabled
+        return {"version2": enabled("quiz_v2", False), "answeringTimer": enabled("quiz_timing_v2", True)}
+
     @router.get("/quizzes/{qid}")
     @router.get("/quizzes/{qid}/results")
     def get_quiz(qid: str, owner=Depends(material_owner), db=Depends(store_provider)):
         return QuizService(db, provider_getter()).public(owner, qid)
+
+    @router.post("/quizzes/{qid}/usefulness")
+    def quiz_usefulness(qid: str, command: QuizUsefulnessFeedback, owner=Depends(material_owner), db=Depends(store_provider)):
+        service = QuizService(db, provider_getter())
+        with db.transaction() as conn:
+            return service.record_usefulness(conn, owner, qid, command.useful)
 
     @router.get("/quizzes/{qid}/study-context")
     def quiz_study_context(qid: str, owner=Depends(material_owner), db=Depends(store_provider)):
@@ -245,6 +261,12 @@ def build_learning_router(store_provider, provider_getter):
     def next_question(qid: str, command: RevisionCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
         WorkflowStore(db).read(owner, qid, "quiz")
         return enqueue(tasks, db, owner, qid, "next", command.model_dump(), key)
+
+    @router.post('/quizzes/{qid}/question-difficulty')
+    def revise_question(qid:str,command:QuizQuestionRevision,tasks:BackgroundTasks,owner=Depends(material_owner),db=Depends(store_provider),key:str=Header(alias='Idempotency-Key',min_length=1,max_length=200)):
+        result=QuizService(db,provider_getter()).revise_question(owner,qid,command.question_number,command.difficulty,command.expected_revision,key)
+        if result.get('jobId'):schedule_local(tasks,run_job,db,provider_getter(),result['jobId'])
+        return result
 
     @router.post("/quizzes/{qid}/attempts", status_code=202)
     def answer(qid: str, command: AnswerCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
@@ -284,7 +306,18 @@ def build_learning_router(store_provider, provider_getter):
 
     @router.get("/challenges/{cid}")
     def read_challenge(cid: str, owner=Depends(material_owner), db=Depends(store_provider)):
-        return WorkflowStore(db).read(owner, cid, "challenge")
+        record = WorkflowStore(db).read(owner, cid, "challenge")
+        parent = WorkflowStore(db).read(owner, record["presentationId"], "presentation")
+        if parent.get("quizId"):
+            from .quiz_policy import deferred
+            if deferred(WorkflowStore(db).read(owner, parent["quizId"], "quiz")):
+                return {key: record[key] for key in ("id", "status", "presentationId") if key in record}
+        return record
+
+    @router.post("/quizzes/{qid}/finish", status_code=202)
+    def finish_quiz(qid: str, command: RevisionCommand, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):
+        WorkflowStore(db).read(owner, qid, "quiz")
+        return enqueue(tasks, db, owner, qid, "quiz_finish", command.model_dump(), key)
 
     @router.post("/challenges/{cid}/review", status_code=202)
     def adjudicate(cid: str, tasks: BackgroundTasks, owner=Depends(material_owner), db=Depends(store_provider), key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200)):

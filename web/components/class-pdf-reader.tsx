@@ -6,6 +6,7 @@ const pdfWorkerUrl = '/pdf.worker.min.mjs';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist';
 import type { ClassReferenceGeometry } from '@/lib/in-class';
 import styles from './in-class-workspace.module.css';
+import {PassageSelection} from './passage-selection';
 
 type PdfSource = { url: string; httpHeaders: Record<string, string> };
 type PdfTextContent = Awaited<ReturnType<PDFPageProxy['getTextContent']>>;
@@ -44,7 +45,7 @@ function contentText(content: PdfTextContent) {
 
 export function ClassPdfReader({ source, pageIndex, pageCount, geometry, onPageChange }: ClassPdfReaderProps) {
   const sourceKey = `${source.url}:${JSON.stringify(source.httpHeaders)}`;
-  return <ClassPdfReaderDocument key={sourceKey} source={source} pageIndex={pageIndex} pageCount={pageCount} geometry={geometry} onPageChange={onPageChange} />;
+  return <PassageSelection title={`Document · Page ${pageIndex+1}`}><ClassPdfReaderDocument key={sourceKey} source={source} pageIndex={pageIndex} pageCount={pageCount} geometry={geometry} onPageChange={onPageChange} /></PassageSelection>;
 }
 
 function ClassPdfReaderDocument({ source, pageIndex, pageCount, geometry, onPageChange }: ClassPdfReaderProps) {

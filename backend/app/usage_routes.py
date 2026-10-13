@@ -139,8 +139,11 @@ def build_usage_router(store_provider) -> APIRouter:
         sessionId: str | None = Query(default=None, max_length=160),
         owner: str = Depends(material_owner),
     ) -> dict:
-        rows = fetch_completed_rows(store_provider(), owner, session_id=sessionId)
-        return summarize(rows, range_key=range)
+        # Display-only aggregates; never used for admission or balances.
+        from .cache import get_or_load, json_codec, owner_scope
+        return get_or_load("usage_display", owner_scope(owner), {"summary": [range, sessionId]},
+                           lambda: summarize(fetch_completed_rows(store_provider(), owner, session_id=sessionId), range_key=range),
+                           ttl_seconds=60, **json_codec())
 
     @router.get("/usage/analytics", response_model=UsageAnalytics)
     def analytics_view(
@@ -150,8 +153,13 @@ def build_usage_router(store_provider) -> APIRouter:
         owner: str = Depends(material_owner),
     ) -> dict:
         store = store_provider()
-        rows = fetch_completed_rows(store, owner)
-        titles = fetch_session_titles(store, owner)
-        return analytics(rows, range_key=range, dimension=dimension, session_titles=titles, session_limit=limit)
+
+        def load() -> dict:
+            rows = fetch_completed_rows(store, owner)
+            titles = fetch_session_titles(store, owner)
+            return analytics(rows, range_key=range, dimension=dimension, session_titles=titles, session_limit=limit)
+        from .cache import get_or_load, json_codec, owner_scope
+        return get_or_load("usage_display", owner_scope(owner), {"analytics": [range, dimension, limit]}, load,
+                           ttl_seconds=60, **json_codec())
 
     return router

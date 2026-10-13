@@ -1,5 +1,33 @@
 # Talk to Buddy provider setup and release
 
+## Local voice acceptance
+
+Local voice testing uses a separate LiveKit agent name so local sessions are not dispatched to the hosted `openlearn-voice` worker. Add these values directly to the ignored `backend/.env` file; copy provider credentials and rates from the Open Learn API service's Render Environment page without sharing them in chat or committing them:
+
+```dotenv
+LIVEKIT_URL=...
+LIVEKIT_API_KEY=...
+LIVEKIT_API_SECRET=...
+DEEPGRAM_API_KEY=...
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
+OPENLEARN_DEEPGRAM_USD_PER_MINUTE=...
+OPENLEARN_ELEVENLABS_USD_PER_1000_CHARACTERS=...
+OPENLEARN_LIVEKIT_AGENT_USD_PER_MINUTE=...
+OPENLEARN_VOICE_ENABLED=true
+OPENLEARN_VOICE_ACCEPTANCE_MODE=true
+OPENLEARN_VOICE_LOCAL_TEST_ENABLED=true
+OPENLEARN_VOICE_LIFECYCLE_VERIFIED=false
+OPENLEARN_VOICE_MAX_CONCURRENT=1
+OPENLEARN_VOICE_SESSION_SECONDS=90
+OPENLEARN_VOICE_SLICE_SECONDS=15
+OPENLEARN_VOICE_AGENT_NAME=openlearn-voice-local
+```
+
+The backend's existing usage enforcement and local platform budgets still apply. `OPENLEARN_VOICE_LOCAL_TEST_ENABLED` only admits the local profile while `AI_TUTOR_ENV` is `development`, `local`, or `test`; acceptance mode caps sessions at 90 seconds and concurrent sessions at one. Do not set this flag in hosted environments.
+
+Install the pinned worker dependencies once with `uv venv --python 3.12 voice-agent/.venv` and `uv pip install --python voice-agent/.venv/Scripts/python.exe -r voice-agent/requirements.txt`, restart the local backend so it loads the updated config, then run `powershell -ExecutionPolicy Bypass -File .\voice-agent\dev.ps1` in a second terminal. This starts the `openlearn-voice-local` worker against `http://127.0.0.1:8000` while the production worker keeps its separate name.
+
 Updated 5 October 2026. Provider setup is complete. LiveKit Cloud project `OpenLearn` (`p_2i4h00eoq1h`) has a running production worker named `openlearn-voice` (`CA_j6BxK5go2DKr`) in `us-east`. Deepgram and ElevenLabs credentials are stored in LiveKit agent secrets and Render's `openlearn-api` environment; the dedicated LiveKit backend key is stored in Render. The Render environment values were saved without triggering a deployment. Its current production commit (`b6f9dcd`) does not contain the voice routes or voice migrations, so keep `OPENLEARN_VOICE_ENABLED=false` until the voice backend release and acceptance checks are complete.
 
 ## Services and secret locations

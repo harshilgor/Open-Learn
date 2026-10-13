@@ -18,13 +18,14 @@ function ConceptLink({ href, children, onSelect }: { href: string; children: Rea
   return <span className={styles.conceptWrap}><button type="button" className={styles.conceptLink} aria-expanded={definition ? open : undefined} onClick={() => { if (definition) setOpen(value => !value); onSelect?.(term); }} title={definition || 'Ask about this concept'}>{children}</button>{open && definition ? <span className={styles.conceptDefinition} role="note">{definition}</span> : null}</span>;
 }
 
-function CodeBlock({ children, onExplore }: { children?: ReactNode; onExplore?: (raw: string, equation?: boolean) => void }) {
+function CodeBlock({ children, onExplore, hideHtmlSource = false }: { children?: ReactNode; onExplore?: (raw: string, equation?: boolean) => void; hideHtmlSource?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
   const child = Children.toArray(children)[0];
   const props = isValidElement<{ className?: string; children?: ReactNode }>(child) ? child.props : {};
   const language = props.className?.replace('language-', '') || 'text';
   const raw = String(props.children || '').replace(/\n$/, '');
+  if (hideHtmlSource && /^(?:html?|xhtml)$/i.test(language)) return null;
   if (language === 'details') {
     const [title, ...body] = raw.split('\n');
     return (
@@ -63,7 +64,7 @@ function CodeBlock({ children, onExplore }: { children?: ReactNode; onExplore?: 
  * Canonical renderer for all LLM-generated teaching content.
  * Persisted storage stays Markdown + LaTeX; this component typesets at presentation time.
  */
-export function RichContent({ body, onExplore, onExerciseResolved, onConceptSelect }: { body: string; onExplore?: (raw: string, equation?: boolean) => void; onExerciseResolved?: (id: string) => void; onConceptSelect?: (term: string) => void }) {
+export function RichContent({ body, onExplore, onExerciseResolved, onConceptSelect, hideHtmlSource = false }: { body: string; onExplore?: (raw: string, equation?: boolean) => void; onExerciseResolved?: (id: string) => void; onConceptSelect?: (term: string) => void; hideHtmlSource?: boolean }) {
   const source = normalizeMathMarkdown(body);
   return (
     <div className={styles.rich}>
@@ -74,7 +75,7 @@ export function RichContent({ body, onExplore, onExerciseResolved, onConceptSele
         urlTransform={url => url.startsWith('concept:') ? url : defaultUrlTransform(url)}
         skipHtml
         components={{
-          pre: ({ children }) => <CodeBlock onExplore={onExplore}>{children}</CodeBlock>,
+          pre: ({ children }) => <CodeBlock onExplore={onExplore} hideHtmlSource={hideHtmlSource}>{children}</CodeBlock>,
           a: ({ href, children }) => href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
           img: ({ alt }) => <span className={styles.imagePlaceholder}>{alt || 'Image reference'}</span>,
           table: ({ children }) => (

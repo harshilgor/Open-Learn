@@ -144,3 +144,47 @@ def test_account_erasure_includes_buddy_records(env):
     with db.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM buddy_profiles WHERE owner_id='alice'")).scalar_one()==0
         assert conn.execute(text("SELECT count(*) FROM buddy_profiles WHERE owner_id='bob'")).scalar_one()>0
+
+def test_buddy_learns_explicit_preferences_across_chats(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Nova'))
+    first=session(env,buddy=buddy['id'])
+    svc.instructions('alice',first.id,'Please explain in detail from now on.')
+    second=session(env,buddy=buddy['id'])
+    assert 'Allow developed explanations' in svc.instructions('alice',second.id)
+    svc.instructions('alice',second.id,'Keep answers short')
+    assert 'Prefer concise explanations' in svc.instructions('alice',first.id)
+
+def test_buddy_learning_ignores_sources_and_other_owners(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Nova'))
+    chat=session(env,buddy=buddy['id'])
+    svc.instructions('alice',chat.id,'The textbook says: explain in detail')
+    svc.instructions('bob',chat.id,'Explain in detail')
+    assert 'Prefer concise explanations' in svc.instructions('alice',chat.id)
+    other=svc.create('alice',BuddyInput(name='Other'))
+    svc.instructions('alice',chat.id,'Skip examples')
+    assert 'Avoid examples unless requested' in svc.instructions('alice',chat.id)
+    assert 'Use relevant examples' in svc.instructions('alice',session(env,buddy=other['id']).id)
+
+def test_personal_appearance_and_focus_round_trip(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Custom',appearance={'shape':7,'accessories':['Cap','Scarf'],'face':'round','celebration':'roll','palette':'ocean','keepsake':'star','sleepy':False},focus='Physics intuition'))
+    saved=next(p for p in svc.snapshot('alice')['profiles'] if p['id']==buddy['id'])
+    assert saved['appearance']==buddy['appearance']
+    assert saved['focus']=='Physics intuition'
+    assert 'Physics intuition' in svc.instructions('alice',session(env,buddy=buddy['id']).id)
+
+
+def test_hints_and_example_theme_learning_can_be_disabled(env):
+    _,svc,_=env
+    buddy=svc.create('alice',BuddyInput(name='Custom'))
+    chat=session(env,buddy=buddy['id'])
+    svc.instructions('alice',chat.id,'Give me hints first')
+    result=svc.instructions('alice',chat.id,'Use music examples')
+    assert 'Offer a hint before revealing solutions' in result
+    assert 'prefer this theme: music' in result
+    profile=next(p for p in svc.snapshot('alice')['profiles'] if p['id']==buddy['id'])
+    svc.update('alice',buddy['id'],BuddyUpdate(**{**profile,'rememberPreferences':False,'expectedRevision':profile['revision']}))
+    result=svc.instructions('alice',chat.id,'Use sports examples')
+    assert 'prefer this theme: music' in result

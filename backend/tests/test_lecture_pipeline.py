@@ -15,7 +15,7 @@ from alembic import command
 from alembic.config import Config
 
 from backend.app.lecture_models import LectureCreate, LectureFinalize
-from backend.app.lecture_pipeline import LectureWorker
+from backend.app.lecture_pipeline import LectureWorker, configured_class_transcription_provider
 from backend.app.lecture_provider import OpenAITranscriptionProvider, OpenRouterTranscriptionProvider, TranscribedSpan, TranscriptionFailure, TranscriptionResult, normalize_text
 from backend.app.lecture_service import LectureError, LectureService
 from backend.app.class_recording_service import ClassRecordingService
@@ -44,6 +44,28 @@ class FakeTextProvider:
         if prompt.startswith("Independently check"):
             return {"results": [{"index": item["index"], "status": "supported", "reason": "Stated in the transcript"} for item in data]}
         raise AssertionError(prompt[:70])
+
+
+def test_class_transcription_uses_configured_openrouter_provider(monkeypatch):
+    monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
+    monkeypatch.delenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    provider = configured_class_transcription_provider()
+
+    assert isinstance(provider, OpenRouterTranscriptionProvider)
+    assert provider.model == "openai/whisper-large-v3"
+
+
+def test_class_transcription_honors_explicit_provider_override(monkeypatch):
+    monkeypatch.setenv("AI_TUTOR_PROVIDER", "openrouter")
+    monkeypatch.setenv("AI_TUTOR_TRANSCRIPTION_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+
+    provider = configured_class_transcription_provider()
+
+    assert isinstance(provider, OpenAITranscriptionProvider)
 
 
 @pytest.fixture

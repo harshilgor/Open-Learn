@@ -15,6 +15,10 @@ class Focus(Contract):
     lesson_id: str | None = Field(default=None, max_length=160)
     visualization_id: str | None = Field(default=None, max_length=160)
     expected_revision: int | None = Field(default=None, ge=1)
+    selection_start: int | None = Field(default=None, ge=0)
+    selection_end: int | None = Field(default=None, ge=1)
+    selected_text: str | None = Field(default=None, max_length=6000)
+    source_span_id: str | None = Field(default=None, max_length=160)
 
 
 class SessionCreate(Contract):

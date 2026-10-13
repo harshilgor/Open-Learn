@@ -1,6 +1,6 @@
 # OpenLearn browser assistant: architecture and implementation brief
 
-Prepared: 3 October 2026. Status: proposed architecture, ready for implementation planning; the browser assistant described here is not implemented. This document is the handoff for an implementation agent. It extends the existing OpenLearn application and its ownership, academic evidence, and durable execution contracts.
+Prepared: 3 October 2026. Status: target architecture, partially implemented. Generic task, local-browser, public-fetch, and Browserbase session foundations exist; authenticated cloud profiles and general interactive writes remain gated. See [`GENERAL_PURPOSE_BROWSER_COMPUTER_IMPLEMENTATION_PLAN.md`](GENERAL_PURPOSE_BROWSER_COMPUTER_IMPLEMENTATION_PLAN.md) for the current, agent-ready build sequence and acceptance criteria. This document extends the existing OpenLearn application and its ownership, academic evidence, and durable execution contracts.
 
 ## 1. Architecture decision
 

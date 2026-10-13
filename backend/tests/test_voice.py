@@ -13,6 +13,22 @@ from backend.app.voice.coordinator import Coordinator
 from backend.app.voice.routes import build_voice_router
 from backend.app.voice.tools import Tools
 
+def test_workspace_voice_actions_use_owned_selected_note(env,monkeypatch,tmp_path):
+    store,_,_=env
+    monkeypatch.setenv('AI_TUTOR_NOTE_VAULT_DIR',str(tmp_path/'notes'))
+    from backend.app.workspace_note_service import WorkspaceNoteService
+    from backend.app.workspace_note_models import WorkspaceNoteCreate
+    monkeypatch.setattr('backend.app.voice.tools.MaterialService.session',lambda *args: {})
+    note=WorkspaceNoteService(store).create('alice',WorkspaceNoteCreate(title='Biology',body='Photosynthesis stores energy.'))
+    tools=Tools(store,None)
+    session={'chat_id':'chat-test','context':{'focus':{'note_id':note.id,'expected_revision':1,'selection_start':0,'selection_end':14}}}
+    assert tools.execute('alice',session,'workspace_focus',{'focused':True},'focus')['uiIntent']['action']=='focus_workspace'
+    result=tools.execute('alice',session,'side_chat_open',{},'side')
+    assert result['result']['excerpt']=='Photosynthesis'
+    session['context']['focus']['expected_revision']=2
+    with pytest.raises(HTTPException) as error:tools.execute('alice',session,'side_chat_open',{},'stale')
+    assert error.value.status_code==409
+
 
 @pytest.fixture
 def env(monkeypatch):
@@ -228,6 +244,34 @@ def test_acceptance_rollout_only_admits_configured_authenticated_email(env, monk
     monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '1')
     monkeypatch.setenv('OPENLEARN_VOICE_SESSION_SECONDS', 'invalid')
     assert not _voice_usage_ready()
+
+
+def test_local_voice_acceptance_is_explicitly_development_only(env, monkeypatch):
+    _enable_metered_voice(monkeypatch)
+    monkeypatch.setenv('OPENLEARN_VOICE_LIFECYCLE_VERIFIED', 'false')
+    monkeypatch.setenv('OPENLEARN_VOICE_ACCEPTANCE_MODE', 'true')
+    monkeypatch.setenv('OPENLEARN_VOICE_SESSION_SECONDS', '90')
+    monkeypatch.setenv('OPENLEARN_VOICE_MAX_CONCURRENT', '1')
+    monkeypatch.setenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED', 'false')
+    monkeypatch.setenv('AI_TUTOR_ENV', 'development')
+    monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY', 'true')
+    from backend.app.voice.routes import _voice_account_allowed, _voice_usage_ready
+    token = principal_context.set(Principal('local', 'local'))
+    try:
+        assert not _voice_account_allowed()
+        monkeypatch.setenv('OPENLEARN_VOICE_LOCAL_TEST_ENABLED', 'true')
+        assert _voice_usage_ready()
+        assert _voice_account_allowed()
+        monkeypatch.setenv('AI_TUTOR_ENV', 'production')
+        assert not _voice_account_allowed()
+    finally:
+        principal_context.reset(token)
+
+
+def test_voice_dispatch_uses_configured_agent_name(monkeypatch):
+    from backend.app.voice import media
+    monkeypatch.setenv('OPENLEARN_VOICE_AGENT_NAME', 'openlearn-voice-local')
+    assert media.configured_agent_name() == 'openlearn-voice-local'
 
 
 @pytest.mark.parametrize('kind', ['voice_turn', 'voice_action', 'voice_teach'])

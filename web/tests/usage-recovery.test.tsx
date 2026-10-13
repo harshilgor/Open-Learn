@@ -6,6 +6,32 @@ vi.mock('@/lib/api',()=>({request:mocks.request}));
 vi.mock('@/lib/account-session',()=>({ACCOUNT_CHANGED:'account-changed',sessionToken:async()=>null}));
 import {refreshAllowance,useAllowance} from '@/lib/usage-allowance';
 
+it('automatically recovers an initial failed allowance check while idle',async()=>{
+ vi.useFakeTimers();
+ (globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+ const snapshot={windowId:'w',windowState:'active',serverTime:1,resetsAt:null,grantedMicrocredits:100,usedMicrocredits:10,heldMicrocredits:0,availableMicrocredits:90,revision:1,availability:'available',reasonCode:null};
+ let available=false;
+ mocks.request.mockImplementation(async(path:string)=>{
+  if(path.includes('/events'))return{events:[],nextRevision:1,latestRevision:1,hasMore:false,resnapshotRequired:false};
+  if(!available)throw new Error('temporary outage');
+  return snapshot;
+ });
+ let current:ReturnType<typeof useAllowance>|undefined;
+ function Probe(){current=useAllowance(false);return null;}
+ const container=document.createElement('div');document.body.appendChild(container);
+ const root=createRoot(container);
+ try{
+  await act(async()=>{root.render(<Probe/>);});
+  await act(async()=>{window.dispatchEvent(new Event('account-changed'));});
+  expect(current?.snapshot).toBeNull();
+  expect(current?.error).toBeTruthy();
+  available=true;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000);});
+  expect(current?.snapshot).toEqual(snapshot);
+  expect(current?.error).toBe('');
+ }finally{await act(async()=>root.unmount());container.remove();vi.useRealTimers();}
+});
+
 it('clears a transient error after a successful unchanged allowance check',async()=>{
  const snapshot={windowId:'w',windowState:'active',serverTime:1,resetsAt:null,grantedMicrocredits:100,usedMicrocredits:10,heldMicrocredits:0,availableMicrocredits:90,revision:1,availability:'available',reasonCode:null};
  let fail=false;

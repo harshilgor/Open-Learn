@@ -67,6 +67,8 @@ def build_memory_router(store_provider):
         with store_provider().transaction() as conn:
             assert_owner_active(conn,owner)
             conn.execute(text('UPDATE memory_derived SET valid=false WHERE owner_id=:owner AND id=:id'),{'owner':owner,'id':derived_id})
+            from .learner_memory import store as facts
+            facts.forget_derived(conn,owner,derived_id)
         return {'status':'dismissed'}
     @router.get('/derived')
     def derived():

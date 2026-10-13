@@ -1,6 +1,9 @@
 # Deploy only the web client; exclude backend secrets and local device data.
 /*
 !/web
+!/deploy
+/deploy/*
+!/deploy/release-contract.json
 /web/node_modules
 /web/.next
 /web/.vinext
