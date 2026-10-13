@@ -9,7 +9,18 @@ interface InstallEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 const seenKey = 'openlearn-install-invitation-v1';
+const visitsKey = 'openlearn-visits-v1';
+/** Invite only returning learners, never on a first visit. */
+const INVITE_AFTER_VISITS = 3;
 function remember() { try { localStorage.setItem(seenKey, 'seen'); } catch { /* Storage may be unavailable. */ } }
+/** Count this page load as a visit (once per browser session) and return the total. */
+function countVisit() {
+  try {
+    const total = Number(localStorage.getItem(visitsKey) || 0) + (sessionStorage.getItem(visitsKey) ? 0 : 1);
+    localStorage.setItem(visitsKey, String(total)); sessionStorage.setItem(visitsKey, '1');
+    return total;
+  } catch { return 0; }
+}
 
 export function AppInstall() {
   const [open, setOpen] = useState(false);
@@ -23,8 +34,10 @@ export function AppInstall() {
     const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     let seen = false;
     try { seen = !!localStorage.getItem(seenKey); } catch { /* Show once for this visit. */ }
-    const timer = window.setTimeout(() => { setIos(isIos); if (!seen) setOpen(true); }, 1500);
-    const capture = (event: Event) => { event.preventDefault(); setAvailable(event as InstallEvent); };
+    const invite = !seen && countVisit() >= INVITE_AFTER_VISITS;
+    // Safari has no install event, so iOS learners get instructions; other browsers are invited only once they offer installation.
+    const timer = window.setTimeout(() => { setIos(isIos); if (invite && isIos) setOpen(true); }, 1500);
+    const capture = (event: Event) => { event.preventDefault(); setAvailable(event as InstallEvent); if (invite) window.setTimeout(() => setOpen(true), 1500); };
     const finish = () => { remember(); setOpen(false); setAvailable(null); };
     const reopen = () => { setIos(isIos); setOpen(true); };
     window.addEventListener('beforeinstallprompt', capture);

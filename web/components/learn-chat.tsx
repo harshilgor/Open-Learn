@@ -10,7 +10,15 @@ import { useChatOutbox } from '@/hooks/use-chat-outbox';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
-import { FileText, Check, X, ArrowDown, GraduationCap } from 'lucide-react';
+import { FileText, Check, X, ArrowDown, GraduationCap, Lightbulb, ListChecks, CalendarRange, NotebookText } from 'lucide-react';
+
+/** Openers for an empty conversation. Each fills the composer for the learner to finish. */
+const CHAT_STARTERS = [
+  { label: 'Explain a concept', prompt: 'Explain ', icon: Lightbulb },
+  { label: 'Quiz me on a topic', prompt: 'Quiz me on ', icon: ListChecks },
+  { label: 'Plan my study week', prompt: 'Help me plan my study week for ', icon: CalendarRange },
+  { label: 'Summarize my notes', prompt: 'Summarize my notes on ', icon: NotebookText },
+];
 import { Button } from '@/components/ui/button';
 import { LearningApiError, learningApi, recordChatOutboxMetrics, request, type Gear, type LessonArtifact, type ModeTransitionSuggestion, type WorkspaceNoteSummary, type NoteDraft } from '@/lib/api';
 import styles from './learn-chat.module.css';
@@ -155,6 +163,14 @@ export function LearnChat({
   const pendingDraftKey=`openlearn-pending-chat-draft:${initialSessionId||'new'}`;
   const draftKey=buddies.active?`openlearn-chat-draft:${buddies.active.id}:${initialSessionId||'new'}`:null;
   const [prompt, setPrompt] = useState(()=>{try{return (draftKey?localStorage.getItem(draftKey):null)||sessionStorage.getItem(pendingDraftKey)||'';}catch{return '';}});
+  /** Fill the composer with the start of a request and leave the caret at the end for the learner to finish. */
+  const startWith = (starter: string) => {
+    setPrompt(starter);
+    window.requestAnimationFrame(() => {
+      const field = document.getElementById('chat-message') as HTMLTextAreaElement | null;
+      field?.focus(); field?.setSelectionRange(starter.length, starter.length);
+    });
+  };
   useEffect(()=>{try{if(draftKey){if(prompt)localStorage.setItem(draftKey,prompt);else localStorage.removeItem(draftKey);sessionStorage.removeItem(pendingDraftKey);}else{if(prompt)sessionStorage.setItem(pendingDraftKey,prompt);else sessionStorage.removeItem(pendingDraftKey);}}catch{/* Optional drafts */}},[prompt,draftKey,pendingDraftKey]);
   const [dismissedConceptId, setDismissedConceptId] = useState<string|null>(null);
   const [selectedConcept, setSelectedConcept] = useState<{ id: string; title: string } | null>(null);
@@ -1420,7 +1436,7 @@ export function LearnChat({
         <OriginBadge summary={originBadge} onDismiss={() => setOriginBadge(null)} />
       ) : null}
     </AnimatePresence>
-    {!turns.length && !outbox.messages.length && !busy && !browserAssistant.tasks.length ? <div className="buddy-home">{buddies.active?<><BuddyAvatar buddy={buddies.active}/><h2>What are we figuring out today?</h2><p>{buddies.active.name} · Your study partner{courseName?` for ${courseName}`:''}</p></>:<RotatingGreeting/>}</div> : null}
+    {!turns.length && !outbox.messages.length && !busy && !browserAssistant.tasks.length ? <div className="buddy-home chat-empty">{buddies.active?<><BuddyAvatar buddy={buddies.active}/><h2>What are we figuring out today?</h2><p>{buddies.active.name} · Your study partner{courseName?` for ${courseName}`:''}</p></>:<RotatingGreeting/>}<div className="chat-starters" role="group" aria-label="Ways to start">{CHAT_STARTERS.map(({ label, prompt: starter, icon: Icon }) => <button type="button" key={label} onClick={() => startWith(starter)}><Icon size={16} aria-hidden="true"/>{label}</button>)}</div></div> : null}
     {chatMode !== 'quiz' ? <ExecutionPanel sessionId={sessionId} courseId={courseId} showTools={false} onSession={id => { setSessionId(id); rememberSessionHint(id); navigateToSession(id, !sessionId); }} /> : null}
     {classActionReply ? <div className="buddy-preview" role="status"><p>{classActionReply}</p></div> : null}
     {scheduledMessages.map(message=><article key={message.id} className="buddy-preview"><strong>{message.title}</strong><p>{message.body}</p><a href={message.url}>Open activity</a></article>)}
@@ -1442,7 +1458,7 @@ export function LearnChat({
       return <motion.div key={turn.generationId || turn.messageId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`} className={`${styles.turn} ${groupedWithPrevious ? styles.groupedWithPrevious : ''} ${groupedWithNext ? styles.groupedWithNext : ''}`} initial={reduceMotion ? false : { opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, ease: 'easeOut' }}>
       {!repeatsExistingMessage && !SYNTHETIC_QUESTIONS.has(turn.question) ? <div className={styles.userPrompt}><span>You</span><div><p>{turn.question}</p>{turn.selectedPassage ? <details className={styles.originalResponse}><summary>Selected passage</summary><p>{turn.selectedPassage}</p>{turn.selectedSource?.spanIds?.[0] ? <button onClick={()=>openWorkspaceSource({spanId:turn.selectedSource!.spanIds![0]})}>Open source</button>:null}</details>:null}{turn.files?.map(name => <div className={styles.sentFile} key={name}><FileText size={15} />{name}</div>)}</div></div> : null}
       {!turn.control && (turn.status !== 'interrupted' || turn.lesson || turn.answer || hasVisibleStreamText || turn.partialOutput) ? <article id={`message-${turn.generationId || turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}`} aria-label="Assistant response" className={styles.lessonArticle}>
-        {showLiveStatus && turn.generationId ? <button type="button" className={styles.branchStatus} onClick={() => stopResponse(turn.generationId!)} aria-label="Stop generating this reply">Stop generating</button> : null}
+        {showLiveStatus && turn.generationId ? <div className={styles.branchStatus}>{!hasVisibleStreamText && !turn.answer && !turn.lesson && !turn.activity ? <span className="ol-thinking" role="status"><span aria-hidden="true"><i/><i/><i/></span>Thinking…</span> : null}<button type="button" onClick={() => stopResponse(turn.generationId!)} aria-label="Stop generating this reply">Stop generating</button></div> : null}
         {turn.connectionLost ? <div className={styles.turnStatus} role="status"><span>Connection lost. Your message is saved; Buddy may still be answering.</span><button type="button" onClick={() => window.location.reload()}>Reconnect</button></div> : null}
         {!turn.lesson && !turn.stream && !turn.answer && turn.status === 'pending' && showLiveStatus
           ? turn.activity ? <WebResearchActivity activity={turn.activity} /> : null
