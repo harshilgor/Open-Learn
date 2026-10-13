@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AccountAccess, AccountWorkspace } from '@/components/account-access';
 import { AppInstall } from "@/components/app-install";
+import { SourcePassageDialog } from "@/components/source-passage-dialog";
 
 export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
@@ -34,6 +35,7 @@ export default function RootLayout({
           <AccountWorkspace>{children}</AccountWorkspace>
           <AccountAccess />
           <AppInstall />
+          <SourcePassageDialog />
           <Toaster />
         </ThemeProvider>
       </body>

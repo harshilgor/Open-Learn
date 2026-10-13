@@ -111,3 +111,21 @@
 .collapsePreview { position:absolute; z-index:40; top:80px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--popover); color:var(--popover-foreground); font-size:12px; pointer-events:none; }
 .collapsePreview[data-side="chat"] { left:12px; }
 .collapsePreview[data-side="workspace"] { right:12px; }
+
+/* Resize grip: visible at rest, stronger on hover or keyboard focus. */
+.handle::after { content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 36px; margin-top: -18px; border-radius: 4px; background: var(--border); transition: background .15s, height .15s, margin-top .15s; }
+.handle:hover::after, .handle:focus-visible::after { height: 56px; margin-top: -28px; background: var(--brand); }
+.handle:hover:before, .handle:focus-visible:before { background: color-mix(in srgb, var(--brand) 35%, transparent); width: 1px; left: 5px; }
+
+/* Keep the study panel wide enough for its tools; focus mode still takes the full width. */
+.group > .panel:not(.collapsed) { min-width: min(380px, 50%); box-shadow: inset 1px 0 0 var(--border); }
+.group > .panel:not(.collapsed), .compact > .panel:not(.collapsed) { animation: study-panel-in .2s cubic-bezier(.16, 1, .3, 1); }
+@keyframes study-panel-in { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: none; } }
+
+/* Narrow screens: the panel overlays the chat, so dim the chat and let a tap close the panel. */
+.backdrop { display: none; }
+@media (max-width: 1220px) {
+  .backdrop { display: block; position: fixed; inset: 0; z-index: 49; border: 0; background: rgb(20 24 21 / 0.28); cursor: default; animation: study-backdrop-in .2s ease-out; }
+  .compact > .panel { box-shadow: -16px 0 40px rgb(20 24 21 / 0.18); }
+}
+@keyframes study-backdrop-in { from { opacity: 0; } to { opacity: 1; } }

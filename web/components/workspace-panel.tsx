@@ -1,7 +1,7 @@
 "use client";
 import { reportVoiceFocus } from "@/lib/voice/client";
 
-import { memo, useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { Bold, BookOpen, CheckSquare2, Download, FileText, FolderClosed, FolderPlus, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, Mic, MoreHorizontal, PanelLeft, PanelLeftClose, PanelRightClose, Plus, Quote, Search, Send, Sparkles, X } from 'lucide-react';
@@ -11,7 +11,8 @@ import { normalizeMathMarkdown } from '@/lib/normalize-math-markdown';
 import 'katex/dist/katex.min.css';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { ChevronDown, Maximize2, Minimize2, Pin } from 'lucide-react';
+import { AudioLines, ChevronLeft, Layers, ListChecks, Maximize2, Minimize2, Pin, Shapes } from 'lucide-react';
+import { PracticeOverview } from './practice-overview';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,7 +37,7 @@ import styles from './workspace-panel.module.css';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import { parseVisualArtifact as parseVisualization } from '@/lib/generated-visual';
 import { WORKSPACE_NOTE_IMPROVE_EVENT, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
-import { mentionWorkspaceNoteExcerpt, WORKSPACE_SOURCE_OPEN_EVENT, type WorkspaceNoteSeed } from '@/lib/workspace-events';
+import { mentionWorkspaceNoteExcerpt, openWorkspaceFlashcards, type WorkspaceNoteSeed } from '@/lib/workspace-events';
 import { StudyNoteBar } from './study-note-bar';
 import { NoteProposalList } from './study-note-panel';
 import { NoteVisualReferences } from './visualization-reference';
@@ -63,16 +64,24 @@ const LessonPractice = dynamic(() => import('./quiz-workspace').then(module => m
 const FlashcardWorkspace = dynamic(() => import('./flashcard-workspace').then(module => module.FlashcardWorkspace), { loading: WorkspaceFeatureLoading });
 const MakeFlashcards = dynamic(() => import('./flashcard-create').then(module => module.MakeFlashcards), { loading: WorkspaceFeatureLoading });
 const InClassWorkspace = dynamic(() => import('./in-class-workspace').then(module => module.InClassWorkspace), { loading: WorkspaceFeatureLoading });
-const ReminderSidebar = dynamic(() => import('./reminder-sidebar').then(module => module.ReminderSidebar), { loading: WorkspaceFeatureLoading });
 const Visualization = dynamic(() => import('./visualization').then(module => module.Visualization), { loading: WorkspaceFeatureLoading });
 const LectureNotesView = dynamic(() => import('./lecture-notes-view').then(module => module.LectureNotesView), { loading: WorkspaceFeatureLoading });
 const CompactTutorChat = dynamic(() => import('./compact-tutor-chat').then(module => module.CompactTutorChat), { loading: WorkspaceFeatureLoading });
 
-export type WorkspaceTab = 'practice' | 'canvas' | 'notes' | 'quiz' | 'sources' | 'class' | 'flashcards' | 'reminders';
-export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTab[]; activeTab: WorkspaceTab; focused?: boolean; pinned?: boolean; noteId?:string|null; noteTabs?: {key:string;noteId:string|null;title:string}[]; activeNoteKey?:string };
+export type WorkspaceTool = 'notes' | 'canvas' | 'practice' | 'class';
+/** Kept as an alias: layouts and events still call these "tabs". */
+export type WorkspaceTab = WorkspaceTool;
+export type PracticeView = 'home' | 'quiz' | 'flashcards';
+export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTool[]; activeTab: WorkspaceTool; practiceView?: PracticeView; focused?: boolean; pinned?: boolean; noteId?:string|null; noteTabs?: {key:string;noteId:string|null;title:string}[]; activeNoteKey?:string };
+
+/** Map a tab saved by an earlier version (quiz, flashcards, sources, reminders) to today's tools. */
+export function workspaceToolFor(value: unknown): WorkspaceTool | null {
+  if (value === 'notes' || value === 'canvas' || value === 'practice' || value === 'class') return value;
+  if (value === 'quiz' || value === 'flashcards') return 'practice';
+  return null;
+}
 type NoteDraft = (Pick<WorkspaceNote, 'id' | 'title' | 'body' | 'revision' | 'frontmatter'>) | { id: null; title: string; body: string; revision: null; frontmatter: Record<string, unknown> };
 
-const tabNames: Record<WorkspaceTab, string> = { practice: 'Practice', canvas: 'Canvas', notes: 'Notes', quiz: 'Quiz', sources: 'Sources',class:'In-Class',flashcards:'Flashcards',reminders:'Reminders' };
 const noteTools = [
   { format: 'heading', label: 'Heading', icon: Heading2 },
   { format: 'bold', label: 'Bold (Ctrl+B)', icon: Bold },
@@ -151,32 +160,27 @@ function RecordingPlayer({ recordingId, noteId, duration, markersMs = [], onRead
   return <section className={styles.recordingPlayer}><div><Mic size={17} /><strong>Class recording</strong><small>{duration ? `${Math.ceil(duration / 60000)} min` : ''}</small></div>{url ? <audio controls preload="metadata" src={url} aria-label="Class recording" /> : <p>Recording unavailable on this device.</p>}<p>{statusLabel}</p>{processingError ? <p role="alert">{processingError}</p> : null}{status === 'failed' || status === 'awaiting_upload' ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>{retrying ? 'Retrying…' : status === 'awaiting_upload' ? 'Upload recording' : 'Retry processing'}</Button> : null}</section>;
 }
 
-type SourceBlock = { id: string; versionId: string; pageIndex: number; kind: string; text: string };
-type SourceMaterial = { id: string; title: string; versionId: string; status: string; role: string };
-
-function SourcesPanel({ sourceToOpen }: { sourceToOpen?: { spanId: string; versionId?: string } | null }) {
-  const [selectedSource, setSelectedSource] = useState('');
-  const [materials, setMaterials] = useState<SourceMaterial[]>([]), [blocks, setBlocks] = useState<SourceBlock[]>([]), [active, setActive] = useState<SourceBlock | null>(null), [loading, setLoading] = useState(true), [error, setError] = useState('');
-  const load = useCallback(async () => { setLoading(true); setError(''); try { setMaterials((await request<{ materials: SourceMaterial[] }>('/v1/materials')).materials); } catch (cause) { const friendly = friendlyServiceError(cause, 'Sources'); setError(`${friendly.message} ${friendly.detail}`); } finally { setLoading(false); } }, []);
-  const openVersion = useCallback(async (versionId: string, spanId?: string) => { setSelectedSource(''); try {
-    if (versionId.startsWith('quiz-context:')) {
-      const source = await request<{ spanId: string; versionId: string; pageIndex: number; text: string }>(`/v1/quizzes/${encodeURIComponent(versionId.slice('quiz-context:'.length))}/study-context`);
-      const block = { id: source.spanId, versionId: source.versionId, pageIndex: 0, kind: 'study_context', text: source.text };
-      setBlocks([block]); setActive(block); setError(''); return;
-    }
-    const result = await request<{ blocks: SourceBlock[] }>(`/v1/material-versions/${encodeURIComponent(versionId)}/blocks`); setBlocks(result.blocks); setActive(spanId ? result.blocks.find(block => block.id === spanId) || result.blocks[0] || null : result.blocks[0] || null); setError(''); } catch (cause) { setError(cause instanceof Error ? cause.message : 'This material passage could not be opened.'); } }, []);
-  useEffect(() => { const timer = window.setTimeout(() => void load(), 0); return () => window.clearTimeout(timer); }, [load]);
-  useEffect(() => { const receive = (event: Event) => { const detail = (event as CustomEvent<{ spanId: string; versionId?: string }>).detail; if (!detail?.spanId) return; if (detail.versionId || detail.spanId.startsWith('quiz-context:')) { void openVersion(detail.versionId || detail.spanId, detail.spanId); return; } void request<SourceBlock>(`/v1/source-spans/${encodeURIComponent(detail.spanId)}`).then(block => openVersion(block.versionId, block.id)).catch(cause => setError(cause instanceof Error ? cause.message : 'This cited passage is no longer available.')); }; window.addEventListener(WORKSPACE_SOURCE_OPEN_EVENT, receive); return () => window.removeEventListener(WORKSPACE_SOURCE_OPEN_EVENT, receive); }, [openVersion]);
-  useEffect(() => { if (!sourceToOpen?.spanId) return; const timer = window.setTimeout(() => { if (sourceToOpen.versionId || sourceToOpen.spanId.startsWith('quiz-context:')) void openVersion(sourceToOpen.versionId || sourceToOpen.spanId, sourceToOpen.spanId); else void request<SourceBlock>(`/v1/source-spans/${encodeURIComponent(sourceToOpen.spanId)}`).then(block => openVersion(block.versionId, block.id)).catch(cause => setError(cause instanceof Error ? cause.message : 'This cited passage is no longer available.')); }, 0); return () => window.clearTimeout(timer); }, [openVersion, sourceToOpen]);
-  return <section className={styles.sourcesPanel} aria-label="Sources workspace"><header><div><span>YOUR MATERIALS</span><h2>Sources</h2></div><Button size="sm" variant="ghost" onClick={() => void load()}>Refresh</Button></header><p className={styles.sourceNotice}>Attached passages and clearly labeled study context can support a quiz. Coverage can be limited.</p><div className={styles.sourceLayout}><div className={styles.sourceList}>{loading ? <p>Loading sources…</p> : materials.length ? materials.map(material => <button type="button" key={material.versionId} onClick={() => void openVersion(material.versionId)}><strong>{material.title}</strong><small>{material.status.replaceAll('_', ' ')} · {material.role.replaceAll('_', ' ')}</small></button>) : <p>No uploaded sources yet. Attach a text-based file in chat to inspect its passages here.</p>}</div><div className={styles.sourceDetail}>{active ? <><p className={styles.sourceMeta}>{active.kind === 'study_context' ? 'Study context · Not independently verified' : `Passage · Page ${active.pageIndex + 1}`}</p><pre tabIndex={0} onKeyUp={event => { const selection = window.getSelection(); setSelectedSource(selection && event.currentTarget.contains(selection.anchorNode) ? selection.toString().trim().slice(0, 6000) : ''); }} onMouseUp={event => { const selection = window.getSelection(); setSelectedSource(selection && event.currentTarget.contains(selection.anchorNode) ? selection.toString().trim().slice(0, 6000) : ''); }}>{active.text}</pre><div role="toolbar" aria-label="Source passage actions">{['Add to chat','Explain','Ask in side chat'].map(action=><Button key={action} size="sm" variant="ghost" onClick={()=>{const excerpt=selectedSource||active.text;const title=`Source · Page ${active.pageIndex+1}`;if(action==='Ask in side chat')openSideChat({id:active.id,title,excerpt});else window.dispatchEvent(new CustomEvent(WORKSPACE_PASSAGE_MENTION_EVENT,{detail:{title,excerpt,spanId:active.id,submit:action==='Explain'}}));}}>{action}</Button>)}</div><details><summary>Other passages</summary>{blocks.map(block => <button className={styles.passageButton} type="button" key={block.id} onClick={() => { setActive(block); setSelectedSource(''); }}>Page {block.pageIndex + 1} · {block.text.slice(0, 100)}</button>)}</details><p className={styles.sourceNotice}>This text is not independently verified.</p></> : blocks.length ? <div>{blocks.map(block => <button className={styles.passageButton} type="button" key={block.id} onClick={() => setActive(block)}>Page {block.pageIndex + 1} · {block.text.slice(0, 100)}…</button>)}</div> : <Empty className="h-full justify-center p-8"><EmptyHeader><EmptyMedia><BookOpen className="size-8 text-muted-foreground" /></EmptyMedia><EmptyTitle>Inspect support</EmptyTitle><EmptyDescription>Select a source or citation to see the exact passage behind it.</EmptyDescription></EmptyHeader></Empty>}</div></div>{error ? <p className={styles.error} role="alert">{error}</p> : null}</section>;
+/** Shared heading for every study tool: icon, title, one line of context, optional action. */
+function ToolHeader({ icon: Icon, title, description, action }: { icon: typeof FileText; title: string; description?: string; action?: ReactNode }) {
+  return <header className={styles.toolHeader}>
+    <span className={styles.toolIcon} aria-hidden="true"><Icon size={18}/></span>
+    <div><h2>{title}</h2>{description ? <p>{description}</p> : null}</div>
+    {action ? <div className={styles.toolHeaderAction}>{action}</div> : null}
+  </header>;
 }
 
-function PracticePanel({ sessionId, conceptId }: { sessionId?: string | null; conceptId?: string }) {
+/**
+ * Practice brings quizzes and flashcards together. Its overview lists unfinished
+ * and due work, then a single "new practice" form; an open quiz or flashcard deck
+ * replaces the overview until the learner goes back.
+ */
+function PracticeTool({ sessionId, conceptId, view, onView, quizToOpen, flashcardLaunch }: { sessionId?: string | null; conceptId?: string; view: PracticeView; onView: (view: PracticeView) => void; quizToOpen?: WorkspaceQuizOpen | null; flashcardLaunch?: FlashcardView | null }) {
   const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
   const [note, setNote] = useState<WorkspaceNote | null>(null);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState('');
   const [topic, setTopic] = useState('');
+  const [kind, setKind] = useState<'quiz' | 'flashcards'>('quiz');
   const [starting, setStarting] = useState(false);
   useEffect(() => { let live = true; void learningApi.listWorkspaceNotesPage().then(value => { if (live) setNotes(value.notes); }).catch(cause => { if (live) setError(cause instanceof Error ? cause.message : 'Notes unavailable.'); }); return () => { live = false; }; }, []);
   useEffect(() => { let live = true; const timer=window.setTimeout(()=>setNote(null),0); if (selected) void learningApi.getWorkspaceNote(selected).then(value => { if (live) { setNote(value); setError(''); } }).catch(cause => { if (live) setError(cause instanceof Error ? cause.message : 'Note unavailable.'); }); return () => { live = false;window.clearTimeout(timer); }; }, [selected]);
@@ -188,18 +192,33 @@ function PracticePanel({ sessionId, conceptId }: { sessionId?: string | null; co
     requestWorkspaceQuiz({ requestedTopic: topic.trim(), sessionId: sourceSession || undefined, origin: note?.frontmatter.study_note ? 'learn' : undefined });
     window.setTimeout(() => setStarting(false), 1200);
   };
-  return <div className="study-practice">
-    <header className="study-practice-heading"><span>STUDY TOOLS</span><h2>Practice</h2><p>Choose your material, then focus the questions.</p></header>
-    <section className="study-practice-setup" aria-label="Choose practice material">
-      <label>Study from<select aria-label="Study from" value={selected} onChange={event => { setSelected(event.target.value); setTopic(''); }}><option value="">This conversation</option>{studyNotes.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
-      <label>Focus (optional)<input aria-label="Quiz topic" value={topic} onChange={event => setTopic(event.target.value)} placeholder="e.g. cellular respiration" /></label>
-      <p className="study-practice-source">{note?.frontmatter.study_note ? `Questions will use ${note.title}.` : 'Questions will use the material in this conversation.'}</p>
-      <div className="study-practice-actions"><Button size="sm" onClick={beginQuiz} disabled={starting}>{starting ? 'Opening quiz…' : 'Start quiz'}</Button><MakeFlashcards key={selected} sessionId={linkedSession || sessionId} sourceRefs={note ? [{kind: note.frontmatter.study_note ? 'lesson' : 'note', id: note.id, revision: note.revision}] : undefined} label="Make flashcards"/></div>
-    </section>
-    {note && linkedSession && note.frontmatter.study_note ? <LessonPractice key={note.id} noteId={note.id} sessionId={linkedSession} noteTitle={note.title}/> : null}
-    {note && !note.frontmatter.study_note ? <Button size="sm" variant="outline" onClick={() => { const excerpt = note.body.slice(0, 6000); mentionWorkspaceNoteExcerpt({noteId: note.id, title: note.title, revision: note.revision, startOffset: 0, endOffset: excerpt.length, excerpt, prompt: 'Check my understanding of this note. Ask one question at a time and help me work through mistakes.'}); setWorkspacePanelCollapsed(true); }}>Check my understanding</Button> : null}
-    <details className="study-practice-history"><summary>Recent quizzes</summary><QuizWorkspace sessionId={sourceSession || sessionId} conceptId={conceptId} compact/></details>
-    {error ? <p role="alert">{error}</p> : null}
+  const showQuiz = view === 'quiz' || !!quizToOpen;
+  const showCards = view === 'flashcards' || !!flashcardLaunch;
+  return <div className={styles.practice}>
+    {view !== 'home' ? <div className={styles.practiceBack}><Button type="button" variant="ghost" size="sm" onClick={() => onView('home')}><ChevronLeft size={16}/>Practice</Button><span>{view === 'quiz' ? 'Quiz' : 'Flashcards'}</span></div> : null}
+    <div hidden={view !== 'home'} className={styles.toolPage}>
+      <ToolHeader icon={ListChecks} title="Practice" description="Quizzes and flashcards from your chats, notes and classes." />
+      <PracticeOverview />
+      <section className={styles.practiceSection} aria-labelledby="practice-new">
+        <h3 id="practice-new">New practice</h3>
+        <div className={`ol-card ${styles.practiceCreate}`}>
+          <div className={styles.kindSwitch} role="radiogroup" aria-label="Practice type">
+            <button type="button" role="radio" aria-checked={kind === 'quiz'} onClick={() => setKind('quiz')}><ListChecks size={15}/>Quiz</button>
+            <button type="button" role="radio" aria-checked={kind === 'flashcards'} onClick={() => setKind('flashcards')}><Layers size={15}/>Flashcards</button>
+          </div>
+          <label>Study from<select aria-label="Study from" value={selected} onChange={event => { setSelected(event.target.value); setTopic(''); }}><option value="">This conversation</option>{studyNotes.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
+          {kind === 'quiz' ? <label><span>Focus <small>Optional</small></span><input aria-label="Quiz topic" value={topic} onChange={event => setTopic(event.target.value)} placeholder="e.g. cellular respiration" /></label> : null}
+          <p className={styles.practiceHint}>{note?.frontmatter.study_note ? `Uses ${note.title}.` : 'Uses the material in this conversation.'}</p>
+          <div className={styles.practiceActions}>{kind === 'quiz' ? <Button size="sm" onClick={beginQuiz} disabled={starting}>{starting ? 'Opening quiz…' : 'Start quiz'}</Button> : <MakeFlashcards key={selected} sessionId={linkedSession || sessionId} sourceRefs={note ? [{kind: note.frontmatter.study_note ? 'lesson' : 'note', id: note.id, revision: note.revision}] : undefined} label="Make flashcards"/>}
+            <Button size="sm" variant="ghost" onClick={() => openWorkspaceFlashcards({ view: 'library' })}><Layers size={15}/>Flashcard library</Button></div>
+        </div>
+        {note && linkedSession && note.frontmatter.study_note ? <LessonPractice key={note.id} noteId={note.id} sessionId={linkedSession} noteTitle={note.title}/> : null}
+        {note && !note.frontmatter.study_note ? <Button size="sm" variant="outline" onClick={() => { const excerpt = note.body.slice(0, 6000); mentionWorkspaceNoteExcerpt({noteId: note.id, title: note.title, revision: note.revision, startOffset: 0, endOffset: excerpt.length, excerpt, prompt: 'Check my understanding of this note. Ask one question at a time and help me work through mistakes.'}); setWorkspacePanelCollapsed(true); }}>Check my understanding</Button> : null}
+      </section>
+      {error ? <p role="alert" className={styles.practiceHint}>{error}</p> : null}
+    </div>
+    {showQuiz ? <div hidden={view !== 'quiz'} className={styles.practiceView}><QuizWorkspace sessionId={quizToOpen?.sessionId || sessionId} conceptId={quizToOpen?.conceptId || conceptId} compact launch={quizToOpen?.origin === 'ask' ? quizToOpen : null} quizId={quizToOpen?.quizId} /></div> : null}
+    {showCards ? <div hidden={view !== 'flashcards'} className={styles.practiceView}><FlashcardWorkspace launch={flashcardLaunch}/></div> : null}
   </div>;
 }
 
@@ -833,7 +852,15 @@ function WorkspaceNoteDocument({item,active,closeRequest,onClosed,onCloseHandled
   return <div hidden={!active} className={styles.preservedTab}><NoteEditor recoveryKey={item.key} startEmpty={!item.noteId} closeRequest={closeRequest} onClose={onClosed} onCloseRequestHandled={onCloseHandled} onDirtyChange={dirty} seed={null} onSeedConsumed={()=>{}} noteToOpen={handled?null:item.noteId} onNoteOpenConsumed={consumed} onNoteSelected={selected} onTitleChange={title} onOpenNote={onOpen}/></div>;
 }
 
-export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, sourceToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
+/** The four study tools. Earlier layouts also had quiz, flashcards, sources and reminders tabs. */
+const TOOLS: { id: WorkspaceTool; label: string; icon: typeof FileText }[] = [
+  { id: 'notes', label: 'Notes', icon: FileText },
+  { id: 'canvas', label: 'Canvas', icon: Shapes },
+  { id: 'practice', label: 'Practice', icon: ListChecks },
+  { id: 'class', label: 'Class', icon: AudioLines },
+];
+
+export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSessionId, quizConceptId, quizToOpen, layout, onLayoutChange, onCollapse, onExpand, noteSeed, noteToOpen, onNoteSeedConsumed, onNoteOpenConsumed }: {
   flashcardLaunch?:FlashcardView|null;
   classId?:string|null;
   canvasValue?: unknown;
@@ -846,105 +873,77 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
   onExpand: () => void;
   noteSeed: WorkspaceNoteSeed | null;
   noteToOpen: string | null;
-  sourceToOpen?: { spanId: string; versionId?: string } | null;
   onNoteSeedConsumed: (id: string) => void;
   onNoteOpenConsumed: (noteId: string) => void;
 }) {
-  const [launcherOpen, setLauncherOpen] = useState(false);
-  const [notesDirty, setNotesDirty] = useState(false);
   const [noteTitle,setNoteTitle]=useState('Notes');
   const [pickerQuery,setPickerQuery]=useState('');
   const [pickerNotes,setPickerNotes]=useState<WorkspaceNoteSummary[]>([]);
+  const [notesDirty, setNotesDirty] = useState(false);
   const rememberNote=useCallback((id:string|null)=>onLayoutChange(current=>({...current,noteId:id})),[onLayoutChange]);
-  const [noteCloseRequest, setNoteCloseRequest] = useState(false);
   const [closingNote,setClosingNote]=useState<string|null>(null);
   const [dirtyDocuments,setDirtyDocuments]=useState<Record<string,boolean>>({});
   const updateDocument=useCallback((key:string,id:string|null|undefined,title?:string)=>onLayoutChange(current=>({...current,noteTabs:current.noteTabs?.map(item=>item.key===key?{...item,...(id!==undefined?{noteId:id}:{}),...(title?{title}:{})}:item)})),[onLayoutChange]);
   const documentDirty=useCallback((key:string,value:boolean)=>setDirtyDocuments(current=>current[key]===value?current:{...current,[key]:value}),[]);
   const openDocument=useCallback((id:string)=>{
-    onLayoutChange(current=>{const existing=current.noteTabs?.find(item=>item.noteId===id);const key=existing?.key||id;return {...current,collapsed:false,activeTab:'notes',activeNoteKey:key,noteTabs:existing?current.noteTabs:[...(current.noteTabs||[]),{key,noteId:id,title:'Loading note…'}]};});
+    onLayoutChange(current=>{const existing=current.noteTabs?.find(item=>item.noteId===id);const key=existing?.key||id;return {...current,collapsed:false,tabs:current.tabs.includes('notes')?current.tabs:[...current.tabs,'notes'],activeTab:'notes',activeNoteKey:key,noteTabs:existing?current.noteTabs:[...(current.noteTabs||[]),{key,noteId:id,title:'Loading note…'}]};});
   },[onLayoutChange]);
+  const newNoteTab=useCallback(()=>{const key=crypto.randomUUID();onLayoutChange(current=>({...current,collapsed:false,tabs:current.tabs.includes('notes')?current.tabs:[...current.tabs,'notes'],activeTab:'notes',activeNoteKey:key,noteTabs:[...(current.noteTabs||[]),{key,noteId:null,title:'Untitled note'}]}));},[onLayoutChange]);
   useEffect(()=>{if(!noteToOpen)return;openDocument(noteToOpen);onNoteOpenConsumed(noteToOpen);},[noteToOpen,openDocument,onNoteOpenConsumed]);
   const closeDocument=(key:string)=>{onLayoutChange(current=>({...current,noteTabs:current.noteTabs?.filter(item=>item.key!==key),activeNoteKey:current.activeNoteKey===key?undefined:current.activeNoteKey}));setClosingNote(null);setDirtyDocuments(current=>{const next={...current};delete next[key];return next;});};
   const requestCloseDocument=(key:string)=>{if(dirtyDocuments[key]){onLayoutChange(current=>({...current,activeTab:'notes',activeNoteKey:key}));setClosingNote(key);}else closeDocument(key);};
   useEffect(()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:notesDirty||Object.values(dirtyDocuments).some(Boolean)}));return()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:false}));};},[notesDirty,dirtyDocuments]);
+  useEffect(()=>{window.addEventListener('openlearn:new-note-tab',newNoteTab);return()=>window.removeEventListener('openlearn:new-note-tab',newNoteTab);},[newNoteTab]);
 
-  function openTab(tab: WorkspaceTab) {
-    onLayoutChange(current => ({ ...current, collapsed: false, tabs: current.tabs.includes(tab) ? current.tabs : [...current.tabs, tab], activeTab: tab, activeNoteKey:undefined }));
+  // Tools stay mounted once opened so drafts and in-progress work survive switching.
+  function openTab(tool: WorkspaceTool) {
+    onLayoutChange(current => ({ ...current, collapsed: false, tabs: current.tabs.includes(tool) ? current.tabs : [...current.tabs, tool], activeTab: tool }));
     onExpand();
-    setLauncherOpen(false);
   }
-
-  function removeActiveTab() {
-    onLayoutChange(current => {
-      const tabs = current.tabs.filter(tab => tab !== current.activeTab);
-      return { ...current, tabs, activeTab: tabs[0] || 'notes', collapsed: tabs.length === 0 };
-    });
-    if (layout.tabs.length === 1) onCollapse();
-  }
-
-  function closeActiveTab() {
-    if (layout.activeTab === 'notes' && notesDirty) { setNoteCloseRequest(true); return; }
-    removeActiveTab();
-  }
-
-  useEffect(()=>{const create=()=>{const key=crypto.randomUUID();onLayoutChange(current=>({...current,collapsed:false,activeTab:'notes',activeNoteKey:key,noteTabs:[...(current.noteTabs||[]),{key,noteId:null,title:'Untitled note'}]}));};window.addEventListener('openlearn:new-note-tab',create);return()=>window.removeEventListener('openlearn:new-note-tab',create);},[onLayoutChange]);
+  const setPracticeView = useCallback((view: PracticeView) => onLayoutChange(current => ({ ...current, practiceView: view })), [onLayoutChange]);
   const active = layout.activeTab;
-  // Tabs are added to layout.tabs by openTab and kept there until closed.
-  // This lets dynamic chunks load on first use and remain mounted afterward,
-  // without mirroring activeTab into React state from an effect.
-  const shouldRenderTab = (tab: WorkspaceTab) => layout.tabs.includes(tab);
-  return <aside className={`${styles.panel} ${layout.collapsed ? styles.collapsed : ''}`} aria-label="Workspace panel">
-    <div className={styles.returnBar}><Button type="button" variant="ghost" size="sm" onClick={onCollapse}><PanelLeft size={15}/>Return to conversation</Button><span>Study workspace</span></div>
+  const moveTab = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+    const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next]?.focus(); tabs[next]?.click();
+  };
+  const visual = parseVisualization(canvasValue);
+  return <aside className={`${styles.panel} ${layout.collapsed ? styles.collapsed : ''} ${layout.focused ? styles.focused : ''}`} aria-label="Study panel">
     <header className={styles.header}>
-      <div className={styles.tabsHeader}>
-        <div className={styles.tabStrip} role="tablist" aria-label="Open study items" onKeyDown={event=>{if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;const tabs=Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));const index=tabs.indexOf(document.activeElement as HTMLButtonElement);if(index<0)return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next]?.focus();tabs[next]?.click();}}>{layout.tabs.map(tab=><div key={tab} className={styles.tabItem} data-active={active===tab&&(tab!=='notes'||!layout.activeNoteKey)}><button type="button" role="tab" aria-selected={active===tab&&(tab!=='notes'||!layout.activeNoteKey)} onClick={()=>openTab(tab)}>{tab==='notes'?noteTitle:tabNames[tab]}</button><button type="button" aria-label={`Close ${tabNames[tab]} tab`} onClick={()=>{if(tab==='notes'&&notesDirty){setNoteCloseRequest(true);return;}onLayoutChange(current=>{const tabs=current.tabs.filter(value=>value!==tab);return {...current,tabs,activeTab:current.activeTab===tab?(tabs[0]||'notes'):current.activeTab,collapsed:tabs.length===0&&!current.noteTabs?.length};});}}><X size={12}/></button></div>)}{layout.noteTabs?.map(item=><div key={item.key} className={styles.tabItem} data-active={active==='notes'&&layout.activeNoteKey===item.key}><button type="button" role="tab" aria-selected={active==='notes'&&layout.activeNoteKey===item.key} onClick={()=>onLayoutChange(current=>({...current,activeTab:'notes',activeNoteKey:item.key}))}>{item.title}</button><button type="button" aria-label={`Close ${item.title} tab`} onClick={()=>requestCloseDocument(item.key)}><X size={12}/></button></div>)}</div>
-        <DropdownMenu onOpenChange={open=>{if(open)void learningApi.listWorkspaceNotesPage().then(page=>setPickerNotes(page.notes)).catch(()=>{});}}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-xs" aria-label="Switch workspace item"><ChevronDown size={14}/></Button></DropdownMenuTrigger><DropdownMenuContent align="start">
-          <input aria-label="Search workspace items" placeholder="Find a note…" value={pickerQuery} onChange={event=>setPickerQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} className="m-1 rounded border bg-background px-2 py-2 text-sm"/>{pickerNotes.filter(note=>note.title.toLowerCase().includes(pickerQuery.toLowerCase())).slice(0,8).map(note=><DropdownMenuItem key={note.id} onSelect={()=>{openDocument(note.id);}}>{note.title}</DropdownMenuItem>)}{(['notes','sources','practice','reminders','canvas','flashcards','class'] as WorkspaceTab[]).map(tab => <DropdownMenuItem key={tab} onSelect={() => openTab(tab)}>{tabNames[tab]}{active === tab ? ' · Open' : ''}</DropdownMenuItem>)}
-        </DropdownMenuContent></DropdownMenu>
-        <div className={styles.launcher}>
-          <Button type="button" size="icon-xs" variant="ghost" onClick={() => setLauncherOpen(open => !open)} aria-expanded={launcherOpen} aria-label="Open a workspace tab" title="Add workspace tab">
-            <Plus size={15} />
-          </Button>
-          {launcherOpen ? (
-            <div className={styles.launcherMenu}><button type="button" onClick={()=>{const key=crypto.randomUUID();onLayoutChange(current=>({...current,activeTab:'notes',activeNoteKey:key,noteTabs:[...(current.noteTabs||[]),{key,noteId:null,title:'Untitled note'}]}));setLauncherOpen(false);}}>New note</button>
-              {(['notes', 'class', 'sources', 'practice', 'canvas', 'flashcards', 'reminders'] as WorkspaceTab[]).map(tab => (
-                <button type="button" key={tab} onClick={() => openTab(tab)}>{tabNames[tab]}</button>
-              ))}
-            </div>
-          ) : null}
-        </div>
+      <div className={styles.toolSwitch} role="tablist" aria-label="Study tools" onKeyDown={moveTab}>
+        {TOOLS.map(({ id, label, icon: Icon }) => <button key={id} type="button" role="tab" aria-selected={active === id} tabIndex={active === id ? 0 : -1} title={label} onClick={() => openTab(id)}><Icon size={15} aria-hidden="true"/><span>{label}</span></button>)}
       </div>
       <div className={styles.headerActions}>
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={layout.pinned ? 'Unpin workspace' : 'Pin workspace'} aria-pressed={!!layout.pinned} onClick={() => onLayoutChange(current => ({...current,pinned:!current.pinned}))}><Pin size={15}/></Button>
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={layout.focused ? 'Restore split view' : 'Focus on workspace'} onClick={() => onLayoutChange(current => ({...current,focused:!current.focused}))}>{layout.focused ? <Minimize2 size={15}/> : <Maximize2 size={15}/>}</Button>
-        {layout.tabs.length > 1 && !['notes', 'sources', 'practice', 'reminders'].includes(active) ? (
-          <Button type="button" size="icon-xs" variant="ghost" onClick={closeActiveTab} aria-label={`Close ${tabNames[active]} tab`} title={`Close ${tabNames[active]} tab`}>
-            <X size={15} />
-          </Button>
-        ) : null}
-        <Button
-          type="button"
-          size="icon-xs"
-          variant="ghost"
-          onClick={() => { onLayoutChange(current => ({ ...current, collapsed: true })); onCollapse(); }}
-          aria-label="Close study canvas"
-          title="Close study canvas · your work stays open"
-        >
-          <PanelRightClose size={15} />
-        </Button>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={layout.pinned ? 'Unpin panel' : 'Pin panel'} title={layout.pinned ? 'Pinned: new items from Buddy wait instead of replacing what is open' : 'Pin to keep what is open while Buddy works'} aria-pressed={!!layout.pinned} onClick={() => onLayoutChange(current => ({...current,pinned:!current.pinned}))}><Pin size={16}/></Button>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={layout.focused ? 'Restore split view' : 'Expand panel'} title={layout.focused ? 'Back to split view' : 'Expand to full width'} onClick={() => onLayoutChange(current => ({...current,focused:!current.focused}))}>{layout.focused ? <Minimize2 size={16}/> : <Maximize2 size={16}/>}</Button>
+        <Button type="button" size="icon-sm" variant="ghost" onClick={() => { onLayoutChange(current => ({ ...current, collapsed: true })); onCollapse(); }} aria-label="Close study panel" title="Close panel · your work stays open"><PanelRightClose size={16} /></Button>
       </div>
     </header>
+    {active === 'notes' && layout.noteTabs?.length ? <div className={styles.docTabs}>
+      <div className={styles.docTabStrip} role="tablist" aria-label="Open notes" onKeyDown={moveTab}>
+        <div className={styles.tabItem} data-active={!layout.activeNoteKey}><button type="button" role="tab" aria-selected={!layout.activeNoteKey} onClick={() => onLayoutChange(current => ({ ...current, activeNoteKey: undefined }))}>{noteTitle}</button></div>
+        {layout.noteTabs?.map(item => <div key={item.key} className={styles.tabItem} data-active={layout.activeNoteKey === item.key}><button type="button" role="tab" aria-selected={layout.activeNoteKey === item.key} onClick={() => onLayoutChange(current => ({ ...current, activeNoteKey: item.key }))}>{item.title}</button><button type="button" aria-label={`Close ${item.title}`} title="Close tab" onClick={() => requestCloseDocument(item.key)}><X size={12}/></button></div>)}
+      </div>
+      <DropdownMenu onOpenChange={open=>{if(open)void learningApi.listWorkspaceNotesPage().then(page=>setPickerNotes(page.notes)).catch(()=>{});}}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Open a note in a new tab" title="Open a note in a new tab"><Plus size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuItem onSelect={newNoteTab}><Plus size={15}/>New note</DropdownMenuItem>
+        <input aria-label="Find a note to open" placeholder="Find a note…" value={pickerQuery} onChange={event=>setPickerQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} className="mx-1 my-1.5 w-[calc(100%-0.5rem)] rounded-[8px] border border-input bg-card px-2 py-1.5 text-sm"/>
+        {pickerNotes.filter(note=>note.title.toLowerCase().includes(pickerQuery.toLowerCase())).slice(0,8).map(note=><DropdownMenuItem key={note.id} onSelect={()=>openDocument(note.id)}><FileText size={15}/><span className="truncate">{note.title}</span></DropdownMenuItem>)}
+      </DropdownMenuContent></DropdownMenu>
+    </div> : null}
     <div className={styles.content}>
-      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'||!!layout.activeNoteKey} className={styles.preservedTab}><NoteEditor onOpenNote={openDocument} onNoteSelected={rememberNote} onTitleChange={setNoteTitle} closeRequest={noteCloseRequest} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => setNoteCloseRequest(false)} onClose={() => { setNoteCloseRequest(false);onLayoutChange(current=>{const tabs=current.tabs.filter(tab=>tab!=='notes');return {...current,tabs,activeTab:current.activeTab==='notes'?(tabs[0]||'notes'):current.activeTab};}); }} /></div> : null}
+      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'||!!layout.activeNoteKey} className={styles.preservedTab}><NoteEditor listWhenIdle onOpenNote={openDocument} onNoteSelected={rememberNote} onTitleChange={setNoteTitle} closeRequest={false} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => undefined} onClose={() => undefined} /></div> : null}
       {layout.noteTabs?.map(item=><WorkspaceNoteDocument key={item.key} item={item} active={active==='notes'&&layout.activeNoteKey===item.key} closeRequest={closingNote===item.key} onClosed={()=>closeDocument(item.key)} onCloseHandled={()=>setClosingNote(null)} onChanged={updateDocument} onDirty={documentDirty} onOpen={openDocument}/>)}
-      {layout.tabs.includes('quiz') && shouldRenderTab('quiz') ? <div hidden={active !== 'quiz'} className={styles.preservedTab}><QuizWorkspace sessionId={quizToOpen?.sessionId || quizSessionId} conceptId={quizToOpen?.conceptId || quizConceptId} compact launch={quizToOpen?.origin === 'ask' ? quizToOpen : null} quizId={quizToOpen?.quizId} /></div> : null}
-      {layout.tabs.includes('practice') ? <div hidden={active !== 'practice'} className={styles.preservedTab}><PracticePanel sessionId={quizSessionId} conceptId={quizConceptId}/></div> : null}
-      {layout.tabs.includes('canvas') && shouldRenderTab('canvas') ? <div hidden={active!=='canvas'} className={styles.preservedTab}><h2>Canvas</h2>{parseVisualization(canvasValue) ? <PassageSelection title="Diagram" itemContext={JSON.stringify(canvasValue)}><Visualization value={canvasValue} lessonId={parseVisualization(canvasValue)?.sourceLessonId}/></PassageSelection> : <p>Open a diagram or interactive visual from an explanation to keep it beside your conversation.</p>}</div> : null}
-      {layout.tabs.includes('sources') ? <div hidden={active !== 'sources'} className={styles.preservedTab}><SourcesPanel sourceToOpen={sourceToOpen} /></div> : null}
-      {layout.tabs.includes('reminders') && shouldRenderTab('reminders') ? <div hidden={active !== 'reminders'} className={styles.preservedTab}><ReminderSidebar /></div> : null}
-      {layout.tabs.includes('flashcards') && shouldRenderTab('flashcards') ? <div hidden={active!=='flashcards'} className={styles.preservedTab}><FlashcardWorkspace launch={flashcardLaunch}/></div> : null}
-      {layout.tabs.includes('class') && shouldRenderTab('class') ? <div hidden={active!=='class'} className={styles.preservedTab}><InClassWorkspace classId={classId||null}/></div> : null}
+      {layout.tabs.includes('practice') ? <div hidden={active !== 'practice'} className={styles.preservedTab}><PracticeTool sessionId={quizSessionId} conceptId={quizConceptId} view={layout.practiceView || 'home'} onView={setPracticeView} quizToOpen={quizToOpen} flashcardLaunch={flashcardLaunch}/></div> : null}
+      {layout.tabs.includes('canvas') ? <div hidden={active!=='canvas'} className={styles.preservedTab}><div className={styles.toolPage}>
+        <ToolHeader icon={Shapes} title="Canvas" description="Diagrams and interactive visuals from your conversation." />
+        {visual ? <PassageSelection title="Diagram" itemContext={JSON.stringify(canvasValue)}><Visualization value={canvasValue} lessonId={visual.sourceLessonId}/></PassageSelection>
+          : <div className="ol-card ol-empty"><Shapes aria-hidden="true"/><h3>Nothing on the canvas yet</h3><p>Ask Buddy to draw, graph or simulate something, for example “show me how a pendulum swings”. Open any visual from the chat to keep it here.</p></div>}
+      </div></div> : null}
+      {layout.tabs.includes('class') ? <div hidden={active!=='class'} className={`${styles.preservedTab} ${styles.classTool}`}><InClassWorkspace classId={classId||null}/></div> : null}
     </div>
   </aside>;
 }

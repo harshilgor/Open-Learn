@@ -29,7 +29,7 @@ import { learningApi, type LessonArtifact, type CourseSummary } from '@/lib/api'
 import { getJourney, navigateToSession, rememberSessionHint, resolveSessionHint, sessionIdFromPath, workflow } from '@/lib/learning-workflows';
 import { WorkspaceSplit, useWorkspacePanel } from '@/components/workspace-split';
 import { WorkspacePanel, type WorkspacePanelLayout, NotesWorkspace } from '@/components/workspace-panel';
-import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_SOURCE_OPEN_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
+import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_CANVAS_EVENT, WORKSPACE_FLASHCARDS_OPEN_EVENT, WORKSPACE_QUIZ_OPEN_EVENT, CHAT_SESSION_OPEN_EVENT, REVIEW_ASK_TUTOR_EVENT, REVIEW_OPEN_EVENT, REVIEW_RETURN_EVENT, openWorkspaceFlashcards, openWorkspaceQuiz, requestWorkspaceQuiz, type ReviewAskTutorDetail, type ReviewOpenDetail } from '@/lib/workspace-events';
 import type { SettingsCategory } from '@/components/settings-page';
 import type { Task } from '@/components/course-study-planner';
 import { ClassRecorder } from '@/components/class-recorder';
@@ -113,11 +113,12 @@ function LearningWorkspaceContent({
    const note = (event:Event) => { const id=(event as CustomEvent<string>).detail; if(id){setRecordedNoteId(id);setSidebarTab('notes');setView('notes');} };
    const open = (event:Event) => {
      const detail=(event as CustomEvent).detail;
-     const tab=event.type===WORKSPACE_SOURCE_OPEN_EVENT?'sources':event.type===WORKSPACE_CANVAS_EVENT?'canvas':event.type===WORKSPACE_FLASHCARDS_OPEN_EVENT?'flashcards':event.type===WORKSPACE_QUIZ_OPEN_EVENT?'quiz':'notes';
-     setMobileTool({sourceToOpen:tab==='sources'?detail:null,canvasValue:tab==='canvas'?detail:null,flashcardLaunch:tab==='flashcards'?detail:undefined,quizToOpen:tab==='quiz'?detail:null,noteSeed:tab==='notes'?detail:null});
-     setMobileToolLayout({width:100,collapsed:false,tabs:[tab],activeTab:tab});setView('mobile-tool');
+     const practiceView=event.type===WORKSPACE_FLASHCARDS_OPEN_EVENT?'flashcards':event.type===WORKSPACE_QUIZ_OPEN_EVENT?'quiz':undefined;
+     const tab=event.type===WORKSPACE_CANVAS_EVENT?'canvas':practiceView?'practice':'notes';
+     setMobileTool({canvasValue:tab==='canvas'?detail:null,flashcardLaunch:practiceView==='flashcards'?detail:undefined,quizToOpen:practiceView==='quiz'?detail:null,noteSeed:tab==='notes'?detail:null});
+     setMobileToolLayout({width:100,collapsed:false,tabs:[tab],activeTab:tab,practiceView});setView('mobile-tool');
    };
-   const events=[WORKSPACE_NOTE_SEED_EVENT,WORKSPACE_SOURCE_OPEN_EVENT,WORKSPACE_CANVAS_EVENT,WORKSPACE_FLASHCARDS_OPEN_EVENT,WORKSPACE_QUIZ_OPEN_EVENT];
+   const events=[WORKSPACE_NOTE_SEED_EVENT,WORKSPACE_CANVAS_EVENT,WORKSPACE_FLASHCARDS_OPEN_EVENT,WORKSPACE_QUIZ_OPEN_EVENT];
    window.addEventListener(WORKSPACE_NOTE_OPEN_EVENT,note);events.forEach(name=>window.addEventListener(name,open));
    return()=>{window.removeEventListener(WORKSPACE_NOTE_OPEN_EVENT,note);events.forEach(name=>window.removeEventListener(name,open));};
  }, [mobile]);
@@ -347,7 +348,7 @@ function LearningWorkspaceContent({
   <WorkspaceRail current={view} activeSessionId={activeSessionId} refreshKey={historyVersion} courses={courses} onSwitch={switchBuddy} onOpen={openSession} onNavigate={destination=>{if(destination==='notes')switchSidebarTab('notes');else {setView(destination as typeof view);setBranchId(null);}}}/>
   {view==='settings'?<div className="settings-full"><SettingsPage category={settingsCategory} onCategoryChange={setSettingsCategory} onBack={()=>setView('home')} /></div>:<>
     <WorkspaceSplit quizSessionId={quizContext?.sessionId} quizConceptId={quizContext?.conceptId} hidePanel={mobile||view==='dashboard'||view==='notes'||view==='review'||view==='course'||view==='reminders'||view==='courses'||view==='calendar'}><main className={'workspace '+(branch?'with-branch':'')+(view==='home'?' chat-focus':'')}><header className="topbar workspace-topbar">
-      <MobileHeader buddyPicker={<BuddyHeader onSwitch={switchBuddy}/>} history={<MobileChatHistory activeSessionId={activeSessionId} refreshKey={historyVersion} courses={courses} onOpen={openSession}/>} title={view==='mobile-tool'?({notes:'Notes',sources:'Sources',canvas:'Canvas',quiz:'Practice',flashcards:'Flashcards',practice:'Practice',class:'Class',reminders:'Reminders'}[mobileToolLayout.activeTab]):view==='home'?(activeSessionId?chatTitle:'New chat'):view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='calendar'?'Calendar':view==='courses'||view==='course'?'Courses':view==='review'?'Review':view==='reminders'?'Reminders':'Open Learn'} onNewChat={()=>openSession(null)} onNavigate={destination=>{if(destination==='home'||destination==='notes')switchSidebarTab(destination);else if(destination==='courses')setView('courses');else if(destination==='dashboard')setView('dashboard');else if(destination==='calendar')setView('calendar');else if(destination==='review')setView('review');else if(destination==='reminders')setView('reminders');else if(destination==='settings'){setSettingsCategory('general');setView('settings');}}}/>
+      <MobileHeader buddyPicker={<BuddyHeader onSwitch={switchBuddy}/>} history={<MobileChatHistory activeSessionId={activeSessionId} refreshKey={historyVersion} courses={courses} onOpen={openSession}/>} title={view==='mobile-tool'?({notes:'Notes',canvas:'Canvas',practice:'Practice',class:'Class'}[mobileToolLayout.activeTab]):view==='home'?(activeSessionId?chatTitle:'New chat'):view==='notes'?'Notes':view==='dashboard'?'Dashboard':view==='calendar'?'Calendar':view==='courses'||view==='course'?'Courses':view==='review'?'Review':view==='reminders'?'Reminders':'Open Learn'} onNewChat={()=>openSession(null)} onNavigate={destination=>{if(destination==='home'||destination==='notes')switchSidebarTab(destination);else if(destination==='courses')setView('courses');else if(destination==='dashboard')setView('dashboard');else if(destination==='calendar')setView('calendar');else if(destination==='review')setView('review');else if(destination==='reminders')setView('reminders');else if(destination==='settings'){setSettingsCategory('general');setView('settings');}}}/>
 
       <div className="topbar-primary">
 
