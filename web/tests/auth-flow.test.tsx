@@ -46,7 +46,7 @@ it('shows guest onboarding instead of authenticated workspace contents',async()=
  auth.getSession.mockResolvedValue({data:{session:null}});auth.onAuthStateChange.mockReturnValue({data:{subscription:{unsubscribe:vi.fn()}}});
  const {AccountWorkspace}=await import('@/components/account-access');
  await render(<AccountWorkspace><p>Private saved history</p></AccountWorkspace>);
- expect(container.textContent).toContain('Start learning for free');expect(container.textContent).not.toContain('Private saved history');
+ expect(container.textContent).toContain('Sign up for free');expect(container.textContent).not.toContain('Private saved history');
  vi.unstubAllEnvs();
 });
 
