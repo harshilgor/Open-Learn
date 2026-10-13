@@ -208,10 +208,10 @@ type NoteEditorProps = {
   seed: WorkspaceNoteSeed | null; onSeedConsumed: (id: string) => void; noteToOpen: string | null; onNoteOpenConsumed: (noteId: string) => void;
   quizToOpen?: WorkspaceQuizOpen | null; fullPage?: boolean; onRecordClass?: (folder: string | null) => void; onUseInChat?: () => void;
   listHost?: HTMLElement | null; courses?: CourseSummary[]; courseFilter?: string | null; onCourseFilter?: (id: string | null) => void;
-  command?: NotesCommand | null; onNoteSelected?: (id: string | null) => void; onDiscuss?: (context: TutorChatContext) => void; onTitleChange?:(title:string)=>void; startEmpty?:boolean; recoveryKey?:string; onOpenNote?:(id:string)=>void;
+  listWhenIdle?: boolean; command?: NotesCommand | null; onNoteSelected?: (id: string | null) => void; onDiscuss?: (context: TutorChatContext) => void; onTitleChange?:(title:string)=>void; startEmpty?:boolean; recoveryKey?:string; onOpenNote?:(id:string)=>void;
 };
 
-function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss,onTitleChange, startEmpty=false, recoveryKey='', onOpenNote }: NoteEditorProps) {
+function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss,onTitleChange, startEmpty=false, recoveryKey='', onOpenNote }: NoteEditorProps) {
   const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
   const [courseNames, setCourseNames] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<NoteDraft | null>(startEmpty ? blankDraft : null);
@@ -680,10 +680,13 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not delete the note.'); }
   }
 
+  // On small screens the notes destination is list-first: the list fills the view until a note is open.
+  const idleList = listWhenIdle && !fullPage && !draft;
+  const listHidden = listCollapsed && !idleList;
   const noteList = (
     <div className={styles.noteList}>
       <div className={styles.noteListTop}>
-        {!fullPage ? <button type="button" className={styles.listToggle} title="Hide note list" aria-label="Hide note list" aria-expanded="true" onClick={() => setListCollapsedPersisted(true)}><PanelLeftClose size={15} /></button> : null}
+        {!fullPage && !idleList ? <button type="button" className={styles.listToggle} title="Hide note list" aria-label="Hide note list" aria-expanded="true" onClick={() => setListCollapsedPersisted(true)}><PanelLeftClose size={15} /></button> : null}
         <div className={styles.search}><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search notes" aria-label="Search notes" /></div>
         {!fullPage ? <Button type="button" size="icon-sm" variant="outline" onClick={startBlank} aria-label="Create blank note"><Plus size={16} /></Button> : null}
       </div>
@@ -722,11 +725,11 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
     </div>
   );
 
-  return <section className={`${styles.notes} ${fullPage ? styles.notesHome + " " + styles.unifiedNotes : ""} ${!fullPage && listCollapsed ? styles.listCollapsed : ""}`} aria-label="Notes workspace">
+  return <section className={`${styles.notes} ${fullPage ? styles.notesHome + " " + styles.unifiedNotes : ""} ${!fullPage && listHidden ? styles.listCollapsed : ""} ${idleList ? styles.idleList : ""}`} aria-label="Notes workspace">
     {fullPage ? (listHost ? createPortal(noteList, listHost) : null) : noteList}
     <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`}>
-      {draft || listCollapsed ? <div className={styles.editorTop}>
-        {listCollapsed ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
+      {draft || listHidden ? <div className={styles.editorTop}>
+        {listHidden ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
         {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" onClick={()=>{if(onOpenNote)window.dispatchEvent(new CustomEvent('openlearn:new-note-tab'));else startBlank();}}><Plus size={16}/></Button> : null}
         {draft ? <input ref={titleInput} value={draft.title} onChange={event => setDraft(current => current ? { ...current, title: event.target.value } : current)} aria-label="Note title" placeholder="Note title" /> : null}
         {draft?<><Button type="button" size="icon-xs" variant="ghost" aria-label="Find in note" onClick={()=>{setReading(false);setFindOpen(value=>!value);}}><Search size={16}/></Button><Button type="button" size="icon-xs" variant="ghost" aria-label={reading?'Edit note':'Reading mode'} aria-pressed={reading} onClick={()=>setReading(value=>!value)}><BookOpen size={16}/></Button></>:null}{draft?.id && !fullPage ? <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-xs" variant="ghost" aria-label="Note history and actions"><MoreHorizontal size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent><DropdownMenuItem onSelect={()=>void learningApi.getWorkspaceNoteVersions(draft.id!).then(result=>setVersions(result.versions)).catch(cause=>setError(String(cause)))}>Version history</DropdownMenuItem><DropdownMenuItem disabled={dirty||saving} onSelect={()=>void undoLastSave()}>Undo last save</DropdownMenuItem><DropdownMenuItem onSelect={discussNote}>Discuss in side chat</DropdownMenuItem><DropdownMenuItem onSelect={exportNote}>Export Markdown</DropdownMenuItem></DropdownMenuContent></DropdownMenu> : null}
@@ -750,7 +753,7 @@ function NoteEditor({ closeRequest, onClose, onCloseRequestHandled, onDirtyChang
       {findOpen?<form className={styles.noteFind} onSubmit={event=>{event.preventDefault();findInNote();}}><Search size={14}/><input autoFocus aria-label="Find text in note" placeholder="Find in this note…" value={findText} onChange={event=>setFindText(event.target.value)}/><button type="submit">Find</button><button type="button" aria-label="Close find" onClick={()=>setFindOpen(false)}><X size={14}/></button></form>:null}{unresolvedRecoveredDraft ? <div className={styles.recovery} role="status"><span>Local draft available</span><Button size="sm" variant="ghost" onClick={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}>Restore draft</Button><Button size="sm" variant="ghost" onClick={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}>Discard local copy</Button></div> : null}
       {versions ? <section aria-label="Note version history" className={styles.recovery}><strong>Version history</strong><Button size="sm" variant="ghost" onClick={()=>setVersions(null)}>Close history</Button>{versions.length ? versions.map(version=><button key={version.id} onClick={()=>confirmBefore(()=>{setDraft(current=>current?{...current,title:version.title,body:version.body}:current);setEditorEpoch(value=>value+1);setVersions(null);setError('Earlier version loaded as a draft. Save to restore it.');})}>Restore revision {version.noteRevision} · {new Date(version.savedAt).toLocaleString()}</button>):<p>No previous saved versions yet.</p>}</section> : null}
       {!draft ? (
-        <div className={styles.quietEmpty}><h2>Your notes</h2><p>Start writing, or save something from your conversation.</p><Button size="sm" variant="outline" onClick={() => { setDraft(blankDraft()); setSavedDraft(null); setEditorEpoch(value=>value+1); }}>New note</Button></div>
+        <div className={`ol-empty ${styles.quietEmpty}`}><FileText aria-hidden="true" />{notes.length ? <><h2>Pick up where you left off</h2><p>Choose a note from the list, or start a new one.</p></> : <><h2>Your notes</h2><p>Start writing, or save something from your conversation.</p></>}<div className="ol-page-actions"><Button size="sm" onClick={() => { setDraft(blankDraft()); setSavedDraft(null); setEditorEpoch(value=>value+1); }}><Plus size={15} />New note</Button></div></div>
       ) : <>
         <StudyNoteBar draft={draft} onChanged={(revision, frontmatter) => { const apply = (current: NoteDraft | null): NoteDraft | null => current && current.id ? { ...current, revision, frontmatter } : current; setDraft(apply); setSavedDraft(apply); }} />
         {(() => { const sessionIds = Array.isArray(draft.frontmatter?.session_ids) ? draft.frontmatter.session_ids as string[] : []; const sid = sessionIds[0]; const noteId = draft.id; return noteId && draft.frontmatter?.study_note === true && typeof sid === 'string' ? <NoteProposalList sessionId={sid} refreshKey={0} onChanged={() => void loadNote(noteId)} /> : null; })()}
@@ -816,7 +819,7 @@ export function NotesWorkspace({ compact = false, onRecordClass, noteToOpen = nu
   const [, setDirty] = useState(false);
   const [discussion, setDiscussion] = useState<TutorChatContext | null>(null);
   return <div className={styles.notesDestination}>
-    <NoteEditor {...sidebar} closeRequest={false} onClose={() => undefined} onCloseRequestHandled={() => undefined} onDirtyChange={setDirty} seed={null} onSeedConsumed={() => undefined} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} fullPage={!compact} onRecordClass={onRecordClass} onDiscuss={setDiscussion} />
+    <NoteEditor {...sidebar} closeRequest={false} onClose={() => undefined} onCloseRequestHandled={() => undefined} onDirtyChange={setDirty} seed={null} onSeedConsumed={() => undefined} noteToOpen={noteToOpen} onNoteOpenConsumed={onNoteOpenConsumed} fullPage={!compact} listWhenIdle={compact} onRecordClass={onRecordClass} onDiscuss={setDiscussion} />
     {discussion ? <CompactTutorChat key={discussion.id} context={discussion} onClose={() => { setDiscussion(null); document.querySelector<HTMLButtonElement>('[aria-label="Discuss this note"]')?.focus(); }} /> : null}
   </div>;
 }

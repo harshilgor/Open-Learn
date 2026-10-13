@@ -760,3 +760,10 @@
 .studyMenu>button:disabled { opacity:.5; }
 .studyMenu>div { margin-top:6px; }
 @media(max-width:620px) { .header { padding-inline:8px; } .tabItem { max-width:130px; } .editorTop { padding-inline:14px; } .notePreview { padding-inline:16px; } .formatBar { margin-inline:12px; } }
+
+/* Small-screen notes destination: when no note is open the list is the page. */
+.notes.idleList { grid-template-columns: minmax(0, 1fr); }
+.notes:not(.notesHome).idleList > .noteList { position: static; width: 100%; max-height: none; box-shadow: none; border-right: 0; }
+.notes.idleList > .editor { display: none; }
+.quietEmpty.ol-empty { margin: auto; padding: 48px 24px; }
+.notesHome .noteList { border-right: 0; }

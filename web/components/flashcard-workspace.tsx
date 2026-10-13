@@ -49,5 +49,6 @@ export function FlashcardWorkspace({launch,courseId}:{launch?:FlashcardView|null
 export function FlashcardLibraryEntry({courseId}:{courseId?:string}){
  const [summary,setSummary]=useState<FlashcardSummary|null>(null);
  useEffect(()=>{let active=true;void flashcardsApi.summary().then(value=>{if(active)setSummary(value);}).catch(()=>undefined);return()=>{active=false;};},[courseId]);
- return <section className={styles.card} aria-label="Flashcard decks"><h3>Flashcard decks</h3><p>{courseId?summary?.courses[courseId]||0:summary?.dueCount||0} cards due</p><Button variant="outline" onClick={()=>openWorkspaceFlashcards({view:'library'})}>Open flashcard library</Button><MakeFlashcards courseId={courseId}/></section>;
+ const due=courseId?summary?.courses[courseId]||0:summary?.dueCount||0;
+ return <section className="ol-card ol-row" aria-label="Flashcard decks"><div className="ol-row-main"><strong>Flashcard decks</strong><span className="ol-row-meta">{summary?(due?`${due} card${due===1?'':'s'} due today`:'No cards due'):'Checking your decks…'}</span></div><div className="ol-row-actions"><Button size="sm" variant="outline" onClick={()=>openWorkspaceFlashcards({view:'library'})}>Open flashcard library</Button><MakeFlashcards courseId={courseId}/></div></section>;
 }

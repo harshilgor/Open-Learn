@@ -292,7 +292,7 @@ export function ReviewWorkspace({
   if (session?.status === 'completed' && session.summary) {
     const summary = session.summary;
     return <section className={styles.page} aria-label="Review complete">
-      <header><span className={styles.meta}>REVIEW COMPLETE</span><h1>Review complete</h1>
+      <header><h1>Review complete</h1>
         <p>You reviewed {summary.reviewed} concepts.</p></header>
       <div className={styles.card}>
         {summary.strengthened?.length ? <div><strong>Strengthened</strong><ul>{summary.strengthened.map(item => <li key={item}>{item}</li>)}</ul></div> : null}
@@ -307,19 +307,19 @@ export function ReviewWorkspace({
     </section>;
   }
 
-  return <section className={styles.page} aria-label="Review"><FlashcardLibraryEntry/>
+  return <section className={styles.page} aria-label="Review">
     <header>
-      <span className={styles.meta}>KEEP WHAT YOU LEARN</span>
       <h1>Review</h1>
       <p>Short retrieval practice, scheduled from what you have already learned.</p>
     </header>
 
     {dash?.preparing ? <p className={styles.hint} role="status">Your recent lesson is still being prepared for review.</p> : null}
 
-    {dash?.empty ? <div className={styles.card}>
+    {dash?.empty ? <div className="ol-card ol-empty">
+      <RotateCcw aria-hidden="true" />
       <h2>Nothing to review yet</h2>
       <p>Learn something first and we will automatically build your review memory from it.</p>
-      <Button onClick={onStartLearning}>Start learning <ArrowRight size={15} /></Button>
+      <div className="ol-page-actions"><Button onClick={onStartLearning}>Start learning <ArrowRight size={15} /></Button></div>
     </div> : null}
 
     {dash && !dash.empty ? <>
@@ -380,6 +380,8 @@ export function ReviewWorkspace({
         ))}</ul>
       </section> : null}
     </> : null}
+
+    <section className={styles.section} aria-label="Flashcards"><h2>Flashcards</h2><FlashcardLibraryEntry/></section>
 
     {error ? <p className={styles.error} role="alert">{error}</p> : null}
   </section>;

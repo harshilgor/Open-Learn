@@ -7,6 +7,9 @@ import type { CourseSummary } from '@/lib/api';
 const mocks = vi.hoisted(() => ({ review: vi.fn() }));
 vi.mock('@/lib/api', () => ({ learningApi: { getReviewDashboard: mocks.review } }));
 vi.mock('@/components/buddy-today', () => ({ BuddyToday: () => <p>Upcoming schedule</p> }));
+// Schedule and routine widgets load their own data; this suite covers the dashboard's actions.
+vi.mock('@/components/calendar/calendar-agenda', () => ({ CalendarAgenda: () => <p>Upcoming schedule</p> }));
+vi.mock('@/components/routine-controls', () => ({ RoutineControls: () => null }));
 let container: HTMLDivElement, root: Root;
 const actions = { onReview: vi.fn(), onCourse: vi.fn(), onAddCourse: vi.fn(), onReminders: vi.fn(), onStudy: vi.fn(), onClass: vi.fn(), onPrep: vi.fn() };
 beforeEach(() => {

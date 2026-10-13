@@ -234,3 +234,135 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; }
 }
+
+/* ---------- Shared page patterns ----------
+ * .ol-page          centred page column with consistent gutters
+ * .ol-page-header   title + description on the left, actions on the right
+ * .ol-section       titled group of content
+ * .ol-card          bordered surface
+ * .ol-row           one item in a list: content left, actions right
+ * .ol-empty         empty state: icon, one sentence, one action
+ * .ol-badge         small status label
+ */
+.ol-page {
+  width: 100%;
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 32px var(--page-gutter) 56px;
+  color: var(--foreground);
+  animation: ol-fade-up 0.25s ease-out both;
+}
+.ol-page-narrow { max-width: 820px; }
+
+.ol-page-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 24px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.ol-page-header > div:first-child { min-width: 0; max-width: 640px; }
+.ol-page-header h1 {
+  margin: 0;
+  font-size: var(--type-title);
+  line-height: 1.15;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.ol-page-header p {
+  margin: 6px 0 0;
+  font-size: var(--type-ui);
+  line-height: 1.55;
+  color: var(--muted-foreground);
+}
+.ol-page-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.ol-section { margin-top: 28px; }
+.ol-section > h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ol-section > h2 small { font-size: var(--type-meta); font-weight: 500; color: var(--muted-foreground); }
+
+.ol-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+}
+.ol-card-padded { padding: 20px; }
+
+.ol-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.ol-list > .ol-row + .ol-row { border-top: 1px solid var(--border); }
+.ol-row {
+  display: flex;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 14px 18px;
+  flex-wrap: wrap;
+}
+.ol-row-main { flex: 1 1 260px; min-width: 0; display: grid; gap: 3px; }
+.ol-row-main strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.ol-row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--type-meta); color: var(--muted-foreground); }
+.ol-row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.ol-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 44px 24px;
+  text-align: center;
+}
+.ol-empty > svg, .ol-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  padding: 11px;
+}
+.ol-empty h2, .ol-empty h3 { margin: 0; font-size: 16px; font-weight: 600; }
+.ol-empty p { margin: 0; max-width: 420px; font-size: var(--type-ui); line-height: 1.55; color: var(--muted-foreground); }
+.ol-empty .ol-page-actions { margin-top: 10px; justify-content: center; }
+
+.ol-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.ol-badge[data-tone="brand"] { background: var(--brand-soft); color: var(--brand); }
+.ol-badge[data-tone="warning"] { background: var(--event-assignment-soft); color: var(--event-assignment); }
+.ol-badge[data-tone="danger"] { background: var(--event-exam-soft); color: var(--event-exam); }
+
+.ol-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--type-caption);
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+
+@media (max-width: 760px) {
+  .ol-page { padding: 20px 16px 40px; }
+  .ol-page-header { align-items: flex-start; margin-bottom: 18px; }
+  .ol-page-header h1 { font-size: 24px; }
+  .ol-row { padding: 14px; }
+}

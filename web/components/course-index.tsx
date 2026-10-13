@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowUpRight, BookOpen, FolderOpen, Plus, Search } from 'lucide-react';
+import { BookOpen, ChevronRight, FolderOpen, Plus, Search } from 'lucide-react';
 import type { CourseSummary } from '@/lib/api';
 import styles from './course-index.module.css';
 
@@ -21,7 +21,6 @@ export function CourseIndex({ courses, buddyForCourse, onAddCourse, onCourse }: 
     <section className={styles.page} aria-labelledby="courses-title">
       <header className={styles.header}>
         <div>
-          <span className={styles.eyebrow}>YOUR LEARNING LIBRARY</span>
           <h1 id="courses-title">Courses</h1>
           <p>Keep your chats, notes, materials, and class sessions together by subject.</p>
         </div>
@@ -44,7 +43,7 @@ export function CourseIndex({ courses, buddyForCourse, onAddCourse, onCourse }: 
             return <button type="button" className={styles.course} key={course.id} onClick={() => onCourse(course.id)}>
               <span className={styles.courseIcon}><BookOpen size={19}/></span>
               <span className={styles.courseBody}>
-                <span className={styles.courseTitle}>{course.name}<ArrowUpRight size={15}/></span>
+                <span className={styles.courseTitle}>{course.name}<ChevronRight size={16}/></span>
                 <span className={styles.goal}>{course.goal || 'Your learning space for this subject.'}</span>
                 <span className={styles.meta}>
                   <span>{course.sessionCount} {course.sessionCount === 1 ? 'chat' : 'chats'}</span>
