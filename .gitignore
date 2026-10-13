@@ -36,6 +36,7 @@ tmp-live-branch-*.png
 web/work-calendar-dev*.log
 backend/data/
 web/public/visual-assets/
+web/.visual-verification/
 integrations/openintelligentui/node_modules/
 
 # Local configuration and nested repository backup

@@ -4,8 +4,9 @@ import os
 from decimal import Decimal,InvalidOperation
 
 
-def approved_visual_tariff(model):
-    if model != os.getenv('OPENLEARN_VISUAL_MODEL','').strip():
+def approved_visual_tariff(model, role='producer'):
+    configured={'producer':'OPENLEARN_VISUAL_MODEL','judge':'OPENLEARN_VISUAL_JUDGE_MODEL'}.get(role)
+    if not configured or model != os.getenv(configured,'').strip():
         raise ValueError('Visual model does not match the configured role')
     if not os.getenv('OPENLEARN_VISUAL_RATE_VERSION','').strip():
         raise ValueError('Visual tariff review version is required')

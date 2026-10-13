@@ -1,7 +1,9 @@
 """Pinned CopilotKit 1.55.2-next.1 frontend tool contract for the headless host.
 
 Upstream's React provider normally advertises this tool. Open Learn owns the
-composer, so it supplies that same AG-UI definition server-side instead.
+composer, so it supplies that same AG-UI definition server-side instead. The
+optional ``editOf`` argument is an Open Learn addition read from the tool-call
+arguments by the orchestrator; it is not part of the rendered activity.
 """
 
 def renderer_tools():
@@ -16,6 +18,8 @@ def renderer_tools():
                 'css': {'type': 'string'}, 'html': {'type': 'string', 'minLength':1},
                 'jsFunctions': {'type': 'string'},
                 'jsExpressions': {'type': 'array', 'items': {'type': 'string'}},
+                'editOf': {'type': 'string', 'description': 'Set to editTarget.id when this artifact is a revised version of that '
+                           'existing visual. Omit it for a new, unrelated visual.'},
             },
             'additionalProperties': False,
             'required':['html'],

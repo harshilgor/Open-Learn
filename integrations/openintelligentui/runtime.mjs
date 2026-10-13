@@ -63,7 +63,8 @@ createServer(async (req, res) => {
     const chunks = []; let bytes = 0;
     for await (const chunk of req) {
       bytes += chunk.length;
-      if (bytes > 128000) throw new Error('input_limit');
+      // Repair and edit runs replay the prior artifact source (bounded by the API).
+      if (bytes > 600000) throw new Error('input_limit');
       chunks.push(chunk);
     }
     const body = JSON.parse(Buffer.concat(chunks).toString());

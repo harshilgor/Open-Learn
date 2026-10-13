@@ -15,21 +15,11 @@ import {
 } from "./frame-content";
 import { extractCompleteStyles, processPartialHtml } from "./process-partial-html";
 import { loadWebsandbox, type SandboxInstance } from "./websandbox-loader";
+import { clampReportedHeight } from "./renderer-sizing";
+
+export { clampReportedHeight };
 
 export const THROTTLE_MS = 1000;
-const MIN_HEIGHT = 50;
-const MAX_HEIGHT = 4000;
-
-/**
- * Clamp a sandbox-reported height to the allowed range. Returns null for
- * anything that is not a finite number (NaN/Infinity pass a bare typeof
- * check and would otherwise poison the container height).
- */
-export function clampReportedHeight(height: unknown): number | null {
-  if (typeof height !== "number" || !Number.isFinite(height)) return null;
-  return Math.max(MIN_HEIGHT, Math.min(Math.ceil(height), MAX_HEIGHT));
-}
-
 export const LOADING_PHRASES = ["Preparing interactive visual"];
 
 function useLoadingPhrase(active: boolean) {
