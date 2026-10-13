@@ -16,6 +16,7 @@ from .models import (
     SearchIntent,
     SourceClassification,
 )
+from ..usage.operations import begin_external, finish_external, rate_liability
 
 _INTENT_INCLUDE_HINTS: dict[SearchIntent, list[str]] = {
     SearchIntent.academic_reference: ["arxiv.org", "scholar.google.com", "edu"],
@@ -114,19 +115,41 @@ class ExaWebEvidenceProvider:
     ) -> dict[str, Any]:
         url = f"{self.config.exa_base_url}{path}"
         self._assert_egress(url)
+        # Each HTTP attempt is independently billable, including retries. Exa
+        # does not return a monetary receipt, so keep the configured per-call
+        # bound held until the attempt ends and settle it as an estimate.
+        if path == "/search":
+            component = "search"
+            rate_name = "OPENLEARN_EXA_USD_PER_SEARCH"
+            quantity = {"search_requests": 1}
+        elif path == "/contents":
+            component = "search"
+            rate_name = "OPENLEARN_EXA_USD_PER_CONTENT_PAGE"
+            quantity = {"content_page_requests": 1}
+        else:
+            raise ProviderError("provider_unavailable", "This external retrieval operation is not metered.", retryable=False)
+        liability = rate_liability(rate_name, 1, 1)
         attempts = 1 + max(0, self.config.max_retries)
         last_error: Exception | None = None
         for attempt in range(attempts):
             if cancel_check and cancel_check():
                 raise ProviderError("cancelled", "Retrieval was cancelled.", retryable=False)
+            ticket = begin_external(component, quantity, liability, provider='exa',
+                                    model='search' if path == '/search' else 'contents',
+                                    provider_rates={'liability_nano_per_request':liability})
             try:
-                response = self._http().request(
-                    method,
-                    url,
-                    json=body,
-                    headers=self._headers(),
-                    timeout=httpx.Timeout(self.config.timeout_seconds, connect=self.config.connect_timeout_seconds),
-                )
+                try:
+                    response = self._http().request(
+                        method,
+                        url,
+                        json=body,
+                        headers=self._headers(),
+                        timeout=httpx.Timeout(self.config.timeout_seconds, connect=self.config.connect_timeout_seconds),
+                    )
+                finally:
+                    # A timeout or dropped connection can still have reached
+                    # Exa. Without a provider receipt, retain the full bound.
+                    finish_external(ticket, source="estimated")
             except httpx.TimeoutException as exc:
                 if cancel_check and cancel_check():
                     raise ProviderError("cancelled", "Retrieval was cancelled.", retryable=False) from exc

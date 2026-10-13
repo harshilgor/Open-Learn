@@ -7,11 +7,15 @@ import {finishedTask,SITE_CHANGED,type BrowserTask,type SiteConnection} from '@/
 import {SiteConnections} from './site-connections';
 import {BrowserControlPanel} from './browser-control-panel';
 import styles from './browser-assistant.module.css';
+import {AgentWorkingIndicator} from './agent-working-indicator';
+import {browserTaskCopy} from '@/lib/generation-activity';
 
 export function BrowserTaskCard({task,onCommand}:{task:BrowserTask;onCommand:(task:BrowserTask,action:'pause'|'cancel'|'resume'|'resolve',connectionId?:string,answer?:string,courseId?:string)=>Promise<void>}) {
   const [sites,setSites]=useState<SiteConnection[]>([]),[selected,setSelected]=useState(''),[answer,setAnswer]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
   const [courses,setCourses]=useState<{id:string;name:string}[]>([]),[selectedCourse,setSelectedCourse]=useState('');
   const waiting=task.status.startsWith('waiting') || task.status==='paused';
+  const active=['queued','running'].includes(task.status) && task.browserControl?.owner!=='human';
+  const latestActivity=task.activity?.at(-1);
   useEffect(()=>{
     if(!waiting)return;
     let live=true;
@@ -24,7 +28,8 @@ export function BrowserTaskCard({task,onCommand}:{task:BrowserTask;onCommand:(ta
   return <section className={styles.panel} aria-label="Website assistant task">
     <div className={styles.header}><h3>Website assistant</h3><span className={styles.status}>{task.status.replaceAll('_',' ')}</span></div>
     <p className={styles.question}>{task.message}</p>
-    {!finishedTask(task.status) && !waiting ? <p role="status" className={styles.muted}>Reading the relevant pages… {task.actionsUsed ? `${task.actionsUsed} steps checked.` : 'Preparing the connection.'}</p> : null}
+    {!finishedTask(task.status) && !waiting ? active?<AgentWorkingIndicator label={browserTaskCopy(task,latestActivity)}/>:<p role="status" className={styles.muted}>{browserTaskCopy(task,latestActivity)}</p> : null}
+    {task.activity?.length?<ol className={styles.taskProgress} aria-label="Website task progress">{task.activity.slice(-4).map(event=><li key={event.sequence}>{event.message || event.type.replaceAll('.',' ')}</li>)}</ol>:null}
     {task.question ? <p role="status">{task.question}</p> : null}
     {task.summary ? <RichContent body={task.summary}/> : null}
     {task.facts.length ? <ul className={styles.list}>{task.facts.map((fact,index)=><li className={styles.fact} key={`${fact.entityId || fact.title}-${index}`}><strong>{fact.title}</strong><p>{fact.date?.value || 'Date not confirmed'}{fact.date?.kind==='date_only'?' · time not specified':''}{fact.conflict?' · conflicting sources':''}{fact.saved===false?' · not saved':''}</p>{fact.source?.locator?.startsWith('https://')?<a href={fact.source.locator} target="_blank" rel="noopener noreferrer">View source</a>:null}{fact.source?.quote?<details><summary>Supporting passage</summary><p className={styles.quote}>{fact.source.quote}</p></details>:null}</li>)}</ul>:null}
@@ -34,7 +39,7 @@ export function BrowserTaskCard({task,onCommand}:{task:BrowserTask;onCommand:(ta
     {waiting && (!task.browserControl || task.browserControl.owner==='agent')?<div className={styles.form}>
       <label>Website<select value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Choose a website</option>{sites.map(site=><option key={site.id} value={site.id}>{site.label}</option>)}</select></label>
       {['course_required','ambiguous_course'].includes(task.error || '')?<label>Save to course<select value={selectedCourse} onChange={e=>setSelectedCourse(e.target.value)}><option value="">Choose a course</option>{courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}</select></label>:null}
-      {['clarification_required','ambiguous_event'].includes(task.error || '')?<label>Your answer<input value={answer} onChange={e=>setAnswer(e.target.value)}/></label>:null}
+      {task.pendingRequests?.some(request=>request.state==='open'&&request.inputKind==='text')?<label>Your answer<input value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="Answer in chat or here"/></label>:null}
       <div className={styles.actions}><Button disabled={busy} onClick={()=>void command('resume')}>Continue</Button><Button variant="ghost" disabled={busy} onClick={()=>void command('cancel')}>Stop</Button></div>
       {['connection_required','device_offline','capability_unavailable','account_changed','origin_not_approved','login_required'].includes(task.error || '')?<SiteConnections compact/>:null}
     </div>:!finishedTask(task.status)?<div className={styles.actions}>{!task.browserControl || task.browserControl.owner==='agent'?<Button variant="outline" disabled={busy} onClick={()=>void command('pause')}>Pause</Button>:null}<Button variant="ghost" disabled={busy} onClick={()=>void command('cancel')}>Stop</Button></div>:null}

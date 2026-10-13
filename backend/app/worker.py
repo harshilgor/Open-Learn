@@ -12,7 +12,120 @@ from .execution import Outbox
 from .workflow_store import WorkflowStore
 
 log = logging.getLogger(__name__)
-LEARNING_KINDS = {"journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag"}
+LEARNING_KINDS = {"visual_generate", "journey", "note_synthesis", "note_draft", "next", "answer", "create", "hint", "retry", "resume", "pause", "challenge", "flag", "voice_teach", "quiz_finish", "quiz_prefetch"}
+USAGE_RECONCILE_INTERVAL_SECONDS = 15
+_last_usage_reconcile = 0.0
+_last_usage_monitor = 0.0
+_last_voice_cleanup = 0.0
+_last_object_cleanup = 0.0
+
+
+def cleanup_identity_objects_if_due(store):
+    from .identity_data import cleanup_objects
+    now = time.monotonic()
+    # Track the cadence on the Store, keeping separate stores independent.
+    if now - getattr(store, '_identity_cleanup_checked_at', float('-inf')) < 30:
+        return
+    store._identity_cleanup_checked_at = now
+    cleanup_objects(store)
+
+
+def cleanup_voice_if_due(store):
+    global _last_voice_cleanup
+    now = time.monotonic()
+    if now - _last_voice_cleanup < 30:
+        return 0
+    _last_voice_cleanup = now
+    from .voice.maintenance import tick as cleanup_voice
+    try:
+        return cleanup_voice(store, prune_events=False)
+    except Exception as exc:
+        log.warning('Voice cleanup iteration failed (%s)', type(exc).__name__)
+        return 0
+
+
+def cleanup_upload_objects_if_due(store):
+    global _last_object_cleanup
+    now = time.monotonic()
+    if now - _last_object_cleanup < 30:
+        return 0
+    _last_object_cleanup = now
+    from .material_service import MaterialService
+    try:
+        return MaterialService(store).process_object_cleanup()
+    except Exception as exc:
+        log.warning("Upload object cleanup iteration failed (%s)", type(exc).__name__)
+        return 0
+
+
+_last_memory_shadow_cleanup = 0.0
+
+
+def cleanup_memory_shadow_if_due(store, now=None):
+    """Hourly: shadow facts are evaluation data, kept SHADOW_RETENTION_DAYS."""
+    global _last_memory_shadow_cleanup
+    now = time.monotonic() if now is None else now
+    if now - _last_memory_shadow_cleanup < 3600:
+        return 0
+    _last_memory_shadow_cleanup = now
+    from .learner_memory import policy, store as memory_store
+    try:
+        with store.transaction() as conn:
+            return memory_store.purge_expired_shadow(conn, time.time() - policy.SHADOW_RETENTION_DAYS * 86400)
+    except Exception as exc:
+        log.warning("Memory shadow cleanup failed (%s)", type(exc).__name__)
+        return 0
+
+
+_last_memory_consolidation_check = 0.0
+
+
+def schedule_memory_consolidation_if_due(store, now=None):
+    """Each minute: queue today's consolidation for recently active owners (§7.1)."""
+    global _last_memory_consolidation_check
+    from .learner_memory import policy
+    now = time.monotonic() if now is None else now
+    if not policy.consolidation_enabled() or now - _last_memory_consolidation_check < policy.CONSOLIDATION_TICK_SECONDS:
+        return 0
+    _last_memory_consolidation_check = now
+    from .learner_memory.jobs import enqueue_consolidations
+    try:
+        return enqueue_consolidations(store)
+    except Exception as exc:
+        log.warning("Memory consolidation scheduling failed (%s)", type(exc).__name__)
+        return 0
+
+
+def monitor_usage_if_due(store, now=None):
+    """Poll usage health at the same bounded cadence as reservation cleanup."""
+    global _last_usage_monitor
+    now = time.monotonic() if now is None else now
+    if now - _last_usage_monitor < USAGE_RECONCILE_INTERVAL_SECONDS:
+        return None
+    _last_usage_monitor = now
+    from .usage.ledger import Ledger
+    try:
+        result = Ledger(store).monitor()
+        from .usage.admin_ops import UsageAdmin
+        UsageAdmin(store).emit_operations_alerts()
+        return result
+    except Exception as exc:
+        log.warning("Usage health monitor iteration failed (%s)", type(exc).__name__)
+        return None
+
+
+def reconcile_usage_if_due(store, now=None):
+    """Reconcile expired reservations from the hosted learning worker loop."""
+    global _last_usage_reconcile
+    now = time.monotonic() if now is None else now
+    if now - _last_usage_reconcile < USAGE_RECONCILE_INTERVAL_SECONDS:
+        return 0
+    # Throttle even on DB failure so one outage does not flood worker logs.
+    _last_usage_reconcile = now
+    from .usage.ledger import Ledger
+    from .usage.policy import Policy
+    monitor_usage_if_due(store, now=now)
+    return Ledger(store, Policy.load()).reconcile()
 
 
 def dispatch_learning_completion(conn, event, payload):
@@ -85,14 +198,27 @@ def tick(store, provider_getter):
     from .learning_routes import run_job
     from .lecture_pipeline import LectureWorker
     from .material_service import MaterialService
-    from .identity_data import cleanup_objects
-    cleanup_objects(store)
+    cleanup_voice_if_due(store)
+    cleanup_upload_objects_if_due(store)
+    cleanup_memory_shadow_if_due(store)
+    schedule_memory_consolidation_if_due(store)
+    try:
+        reconciled_usage = reconcile_usage_if_due(store)
+    except Exception as exc:
+        log.warning("Usage reconciliation iteration failed (%s)", type(exc).__name__)
+        reconciled_usage = 0
+    cleanup_identity_objects_if_due(store)
     reconcile_recordings(store)
-    did_work = Outbox(store).deliver_one({"learning.command.completed": dispatch_learning_completion, "execution.job.requested": dispatch_job(store)})
+    did_work = bool(reconciled_usage) or Outbox(store).deliver_one({"learning.command.completed": dispatch_learning_completion, "execution.job.requested": dispatch_job(store)})
     with store.engine.connect() as conn:
         pending = conn.execute(text("""SELECT id,kind FROM learning_jobs WHERE cancellation_requested=false
             AND next_retry_at<=:now AND (status='queued' OR (status='running' AND expires<:now)) ORDER BY priority DESC,created_at,id LIMIT 100"""), {"now": time.time()}).all()
     for job_id, kind in pending:
+        if kind in {'voice_turn', 'voice_action'}:
+            from .voice.worker import run_voice_job
+            run_voice_job(store, provider_getter(), job_id)
+            did_work = True
+            break
         if kind in LEARNING_KINDS:
             run_job(store, provider_getter(), job_id)
             did_work = True
@@ -103,6 +229,16 @@ def tick(store, provider_getter):
             break
         if kind == "hypothesis_analyze":
             run_hypothesis(store, provider_getter(), job_id)
+            did_work = True
+            break
+        if kind == "memory_extract":
+            from .learner_memory.jobs import run_memory_extract
+            run_memory_extract(store, None, job_id)
+            did_work = True
+            break
+        if kind in {"memory_consolidate", "memory_episode"}:
+            from .learner_memory.jobs import run_memory_consolidate, run_memory_episode
+            (run_memory_consolidate if kind == "memory_consolidate" else run_memory_episode)(store, None, job_id)
             did_work = True
             break
     if LectureWorker(store, provider_getter).drain(limit=4):

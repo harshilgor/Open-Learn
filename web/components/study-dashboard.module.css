@@ -1,0 +1,44 @@
+.scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
+.dashboard{max-width:1080px;margin:auto;padding:38px 32px 48px;color:var(--foreground)}
+.header{display:flex;justify-content:space-between;align-items:center;gap:24px;margin-bottom:28px}
+.eyebrow{font-size:10px;letter-spacing:.12em;color:var(--muted-foreground);font-weight:600}
+.header h1{font-size:32px;letter-spacing:-1px;font-weight:600;margin:8px 0}
+.header p,.review p,.reminders p,.course p,.empty p{font-size:13px;line-height:1.6;color:var(--muted-foreground)}
+.dashboard button{cursor:pointer;text-align:left;transition:background .15s,border-color .15s}
+.dashboard button:focus-visible{outline:2px solid var(--ring);outline-offset:4px}
+.study{display:flex;align-items:center;gap:8px;flex-shrink:0;padding:11px 14px;border:1px solid var(--border);border-radius:12px;font-size:12px;background:var(--card)}
+.study:hover{background:var(--accent)}
+.overview{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin-bottom:32px}
+.review,.reminders{padding:24px;border:1px solid var(--border);border-radius:20px;background:var(--card)}
+.review{display:grid;grid-template-columns:40px 1fr;gap:14px;background:linear-gradient(135deg,color-mix(in srgb,var(--primary) 9%,var(--card)),var(--card))}
+.icon{display:grid;place-items:center;width:40px;height:40px;background:var(--accent);border-radius:13px}
+.review h2,.reminders h2{font-size:17px;font-weight:600;margin:0 0 6px;letter-spacing:-.3px}
+.review button{grid-column:2;justify-self:start;display:flex;gap:8px;align-items:center;padding:9px 13px;border-radius:10px;background:var(--foreground);color:var(--background);font-size:12px}
+.review .retry{background:transparent;color:var(--muted-foreground);padding:0;font-size:11px;text-decoration:underline}
+.reminders>svg{margin-bottom:14px;color:var(--muted-foreground)}
+.reminders span{display:flex;gap:7px;align-items:center;margin-top:18px;font-size:12px}
+.reminders:hover,.course:hover{background:var(--accent)}
+.sectionHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.sectionHeader h2,.schedule>h2{font-size:16px;font-weight:600;letter-spacing:-.2px}
+.sectionHeader h2 span{margin-left:6px;font-size:12px;color:var(--muted-foreground);font-weight:400}
+.sectionHeader button{display:flex;align-items:center;gap:6px;font-size:12px;padding:6px 9px;border-radius:8px}
+.courseGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.course{display:grid;grid-template-columns:20px minmax(0,1fr) 16px;gap:12px;padding:18px;border:1px solid var(--border);border-radius:16px;background:var(--card)}
+.course h3{font-size:14px;font-weight:600;overflow-wrap:anywhere}
+.course p{margin-top:4px;font-size:12px}
+.course>svg{color:var(--muted-foreground)}
+.progress{grid-column:2/-1;display:flex;gap:10px;align-items:center;font-size:10px;color:var(--muted-foreground)}
+.progress progress{width:100%;height:4px;appearance:none;border:0;border-radius:4px;background:var(--muted)}
+.progress progress::-webkit-progress-bar{background:var(--muted);border-radius:4px}
+.progress progress::-webkit-progress-value{background:var(--primary);border-radius:4px}
+.progress progress::-moz-progress-bar{background:var(--primary);border-radius:4px}
+.empty{display:grid;justify-items:center;text-align:center;padding:30px 20px;border:1px dashed var(--border);border-radius:18px}
+.empty>svg{color:var(--muted-foreground);margin-bottom:12px}
+.empty h3{font-size:15px;font-weight:500;margin-bottom:5px}
+.empty button{display:flex;gap:8px;align-items:center;margin-top:16px;font-size:12px;padding:9px 12px;border-radius:9px;background:var(--accent)}
+.schedule{margin-top:30px}
+.schedule :global(.buddy-home){max-width:none;margin:0;padding:0}
+.schedule :global(.buddy-home)>h2{display:none}
+.schedule :global(.buddy-home)>p{margin-top:12px;font-size:12px;color:var(--muted-foreground)}
+@media(max-width:700px){.dashboard{padding:24px 18px 34px}.header{align-items:flex-start;flex-direction:column;gap:14px}.header h1{font-size:28px}.overview,.courseGrid{grid-template-columns:1fr}.review,.reminders{padding:20px}.overview{gap:12px}}
+@media(prefers-reduced-motion:reduce){.dashboard button{transition:none}}

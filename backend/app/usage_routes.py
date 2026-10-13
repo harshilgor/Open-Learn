@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 
 from .material_routes import material_owner
 from .usage_service import analytics, fetch_completed_rows, fetch_session_titles, summarize
+from .usage_estimates import build_usage_estimate_router
 
 
 class UsageTotals(BaseModel):
@@ -92,8 +93,45 @@ class UsageAnalytics(BaseModel):
     topSessions: list[AnalyticsSession] = Field(default_factory=list)
 
 
+class SingleOperationEstimate(BaseModel):
+    component: Literal['model','stt','tts','voice','browser']
+    inputTokens: int = Field(default=0,ge=0,le=48000)
+    outputTokens: int = Field(default=2000,ge=0,le=2000)
+    milliseconds: int = Field(default=0,ge=0,le=1800000)
+    characters: int = Field(default=0,ge=0,le=2400)
+
+
 def build_usage_router(store_provider) -> APIRouter:
     router = APIRouter(prefix="/v1")
+
+    # Task-level estimates are additive. Keep /usage/estimate below unchanged
+    # for clients that still send a single bounded model request.
+    router.include_router(build_usage_estimate_router(store_provider))
+
+    @router.get('/usage/allowance')
+    def allowance(response: Response, owner: str = Depends(material_owner)):
+        from .usage.ledger import Ledger
+        response.headers['Cache-Control']='private, no-store'
+        return Ledger(store_provider()).allowance(owner)
+
+    @router.get('/usage/activity')
+    def activity(response: Response, cursor: str | None = Query(default=None,max_length=512), limit: int = Query(default=30,ge=1,le=100), includeComponents: bool = True, owner: str = Depends(material_owner)):
+        from .usage.ledger import Ledger
+        response.headers['Cache-Control']='private, no-store'
+        return Ledger(store_provider()).activity(owner,cursor,limit,includeComponents)
+
+    @router.post('/usage/estimate')
+    def estimate(body: SingleOperationEstimate, response: Response, owner: str = Depends(material_owner)):
+        from .usage.ledger import Ledger
+        from .usage.pricing import price
+        response.headers['Cache-Control']='private, no-store'
+        ledger=Ledger(store_provider())
+        snapshot=ledger.allowance(owner)
+        if body.component!='model':
+            return {'supported':False,'reasonCode':'provider_rate_and_bounded_route_required',
+                    'rateVersion':snapshot['rateVersion'],'availability':snapshot['availability']}
+        amount=price(body.component,{'input_tokens':body.inputTokens,'output_tokens':body.outputTokens,'milliseconds':body.milliseconds,'characters':body.characters})
+        return {'maximumCreditsMicro':amount,'percentage':amount*100/snapshot['grantedMicrocredits'],'rateVersion':snapshot['rateVersion'],'expiresAt':snapshot['serverTime']+60,'supported':True,'availability':snapshot['availability']}
 
     @router.get("/usage/summary", response_model=UsageSummary)
     def summary(
@@ -101,8 +139,11 @@ def build_usage_router(store_provider) -> APIRouter:
         sessionId: str | None = Query(default=None, max_length=160),
         owner: str = Depends(material_owner),
     ) -> dict:
-        rows = fetch_completed_rows(store_provider(), owner, session_id=sessionId)
-        return summarize(rows, range_key=range)
+        # Display-only aggregates; never used for admission or balances.
+        from .cache import get_or_load, json_codec, owner_scope
+        return get_or_load("usage_display", owner_scope(owner), {"summary": [range, sessionId]},
+                           lambda: summarize(fetch_completed_rows(store_provider(), owner, session_id=sessionId), range_key=range),
+                           ttl_seconds=60, **json_codec())
 
     @router.get("/usage/analytics", response_model=UsageAnalytics)
     def analytics_view(
@@ -112,8 +153,13 @@ def build_usage_router(store_provider) -> APIRouter:
         owner: str = Depends(material_owner),
     ) -> dict:
         store = store_provider()
-        rows = fetch_completed_rows(store, owner)
-        titles = fetch_session_titles(store, owner)
-        return analytics(rows, range_key=range, dimension=dimension, session_titles=titles, session_limit=limit)
+
+        def load() -> dict:
+            rows = fetch_completed_rows(store, owner)
+            titles = fetch_session_titles(store, owner)
+            return analytics(rows, range_key=range, dimension=dimension, session_titles=titles, session_limit=limit)
+        from .cache import get_or_load, json_codec, owner_scope
+        return get_or_load("usage_display", owner_scope(owner), {"analytics": [range, dimension, limit]}, load,
+                           ttl_seconds=60, **json_codec())
 
     return router

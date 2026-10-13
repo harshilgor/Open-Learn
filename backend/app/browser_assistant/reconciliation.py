@@ -28,6 +28,8 @@ def map_course(conn, owner, connection, external_id, name, term):
         VALUES(:id,:owner,:name,'Imported course',:teaching,:reminders,:now,:now) ON CONFLICT(id) DO NOTHING'''),
         {'id': identifier, 'owner': owner, 'name': name[:300], 'teaching': CourseTeachingPreferences().model_dump_json(),
          'reminders': CourseReminderPreferences().model_dump_json(), 'now': now})
+    from ..cache import invalidate, owner_scope
+    invalidate("course", owner_scope(owner))
     conn.execute(text('''INSERT INTO external_course_links(id,owner_id,connection_id,external_id,term,course_id,payload)
         VALUES(:id,:owner,:connection,:external,:term,:course,:payload) ON CONFLICT(owner_id,connection_id,external_id,term) DO NOTHING'''),
         {'id': uid('enrollment'), 'owner': owner, 'connection': connection['id'], 'external': str(external_id), 'term': str(term),

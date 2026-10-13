@@ -176,6 +176,15 @@ def evaluate_readiness(store, *, config: WebEvidenceConfig | None = None) -> Web
     if cfg.enabled and not egress_ok:
         effective = False
         hard_errors.append("web_evidence_egress_not_approved")
+    if cfg.enabled and cfg.provider_name == "exa":
+        try:
+            from ..usage.policy import Policy
+            usage_policy=Policy.load()
+            if not usage_policy.paid or not usage_policy.provider_rate_version:
+                raise RuntimeError("usage rates disabled")
+        except Exception:
+            effective = False
+            hard_errors.append("web_evidence_usage_metering_unavailable")
     if cfg.enabled and retention.get("stale"):
         advisory.append("web_evidence_retention_stale")
 
@@ -198,6 +207,14 @@ def enforce_enablement_gate(store, config: WebEvidenceConfig) -> WebEvidenceConf
     """Return a config that is forced off when deployed enablement prerequisites fail."""
     if not config.enabled:
         return config
+    if config.provider_name == "exa":
+        try:
+            from ..usage.policy import Policy
+            policy=Policy.load()
+            if not policy.paid or not policy.provider_rate_version:
+                raise RuntimeError("usage routes are disabled")
+        except Exception:
+            return type(config)(**{**config.__dict__, "enabled": False})
     if not postgres_required_for_enablement():
         return config
     report = evaluate_readiness(store, config=config)

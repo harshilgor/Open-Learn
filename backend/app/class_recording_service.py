@@ -117,6 +117,13 @@ class ClassRecordingService:
         return self.get(owner, row[0]), should_run
 
     def process(self, rid: str, owner: str):
+        # Embedded threads and durable workers must enter the same account/task
+        # scope before either audio transcription or study-guide inference.
+        from .usage.context import usage_scope
+        with usage_scope(self.store, owner, rid):
+            return self._process_scoped(rid, owner)
+
+    def _process_scoped(self, rid: str, owner: str):
         with self.store.transaction() as conn:
             claimed = conn.execute(text("UPDATE class_recordings SET status='processing',error=NULL,updated_at=:now WHERE id=:id AND learner_id=:owner AND status='queued'"), {"now": time.time(), "id": rid, "owner": owner})
             if claimed.rowcount != 1:

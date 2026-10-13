@@ -1,0 +1,26 @@
+{
+  "scope": "isolated local PostgreSQL",
+  "facts": 2000,
+  "episodes": 300,
+  "runs": 240,
+  "p50Ms": 13.573,
+  "p95Ms": 20.832,
+  "p99Ms": 26.358,
+  "maxMs": 30.146,
+  "coldP50Ms": 47.792,
+  "coldP95Ms": 59.869,
+  "meanMemoryTokens": 1129.6,
+  "targetP95Ms": 25,
+  "coreProfile": true,
+  "consolidationMs": 3006.7,
+  "consolidation": {
+    "status": "consolidated",
+    "archived": 837,
+    "episodesArchived": 0,
+    "episodesQueued": 0,
+    "needsReview": 0,
+    "profileRebuilt": 1,
+    "shadowDeleted": 0
+  },
+  "note": "p50/p95/p99 are warm (cached static rows, watermark revalidated); cold reloads the owner's facts"
+}

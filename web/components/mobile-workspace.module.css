@@ -1,0 +1,163 @@
+/* One mobile layout boundary. Composer internals (including dictation) stay owned
+   by their feature; these rules arrange the existing controls without replacing them. */
+@media (max-width: 1023px) {
+  .shell:global(.forma-app-shell) {
+    box-sizing: border-box;
+    height: var(--mobile-viewport-height, 100dvh) !important;
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-top: env(safe-area-inset-top);
+    overflow: hidden;
+  }
+  .shell:global(.forma-app-shell):has(:global(.conversation-open)),
+  .shell[data-keyboard-open="true"] { padding-bottom: 0; }
+  .shell[data-keyboard-open="true"] :global(.mobile-workspace-nav) { display: none; }
+
+  .shell :global(.workspace .workspace-topbar) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 0 8px;
+    min-height: 0;
+    height: auto;
+    padding: 4px 10px;
+    overflow: hidden;
+  }
+  .shell :global(.workspace .workspace-topbar > .topbar-primary) {
+    display: flex;
+    flex-wrap: nowrap;
+    min-width: 0;
+    gap: 4px;
+    overflow: hidden;
+  }
+  .shell :global(.workspace .workspace-topbar .buddy-header) {
+    flex-wrap: nowrap;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    min-width: 0;
+    gap: 2px;
+  }
+  .shell :global(.workspace .workspace-topbar .buddy-mobile-switch) {
+    min-width: 0;
+    min-height: 44px;
+    flex-shrink: 1;
+  }
+  .shell :global(.workspace .workspace-topbar .buddy-mobile-switch strong) {
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .shell :global(.workspace .workspace-topbar .buddy-header > button) { display: none; }
+  .shell :global(.workspace .workspace-topbar > .topbar-actions) { grid-column: 2; grid-row: 1; gap: 0; }
+  .shell :global(.workspace .workspace-topbar > .topbar-context) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    border: 0;
+    padding: 0 4px 4px;
+    font-size: 12px;
+    min-height: 20px;
+  }
+  .shell :global(.workspace .workspace-topbar .topbar-navigation),
+  .shell :global(.workspace .workspace-topbar .review-due-button) { display: none; }
+  .shell :global(.workspace .workspace-topbar .topbar-primary > button),
+  .shell :global(.workspace .workspace-topbar .topbar-actions > button) { width: 44px; height: 44px; flex-shrink: 0; }
+  .shell :global(.mobile-today) { margin: 6px 12px; border-radius: 12px; }
+  .shell :global(.mobile-today > summary) { padding: 10px 12px; }
+  .shell :global(.mobile-today[open]) { max-height: 30dvh; }
+  .shell :global(.mobile-workspace-nav) { padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); }
+  .shell :global(.buddy-today > *, .buddy-event) { min-width: 0; flex-basis: 100%; overflow-wrap: anywhere; }
+  .shell :global(.workspace.chat-focus > .chat-view) { min-height: 0; }
+
+  .shell .chat > div {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  .shell .chat > div > details { flex: none; max-height: 25%; overflow-y: auto; }
+  .shell .chat > div > div:first-of-type { flex: 1 1 0; min-height: 0; }
+  .shell .chat > div > div:last-of-type {
+    position: relative;
+    flex: 0 0 auto;
+    max-height: 55%;
+    overflow-y: auto;
+    padding: 8px 10px max(8px, env(safe-area-inset-bottom));
+  }
+  .shell .chat form:has(> textarea[id="chat-message"]) {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    grid-template-rows: none;
+    grid-auto-rows: auto;
+    row-gap: 0;
+    column-gap: 4px;
+    padding: 6px;
+    min-width: 0;
+  }
+  .shell .chat form > :global(button[aria-label="Chat options and attachments"]) {
+    grid-column: 1;
+    grid-row: 10;
+    width: 36px;
+    height: 44px;
+  }
+  .shell .chat form > textarea:global(#chat-message) { grid-column: 2; grid-row: 10; min-width: 0; width: 100%; }
+  /* Keep input, microphone, voice and send controls on one row. */
+  .shell .chat form > div:has(> button[aria-label="Send message"], > button[aria-label="Stop generating"]) {
+    grid-column: 3;
+    grid-row: 10;
+    justify-self: end;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 0;
+  }
+  .shell .chat form > div:has(> button[aria-label="Send message"], > button[aria-label="Stop generating"]) > button {
+    width: 36px;
+    height: 44px;
+    min-height: 44px;
+  }
+  /* Current composer wraps controls inside its display:contents bottom row. */
+  .shell .chat form > div > div:has(> button[aria-label="Send message"], > button[aria-label="Stop generating"]) {
+    grid-column: 3;
+    grid-row: 10;
+    justify-self: end;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 0;
+  }
+  .shell .chat form > div > div:has(> button[aria-label="Send message"], > button[aria-label="Stop generating"]) > button {
+    width: 36px;
+    height: 44px;
+    min-height: 44px;
+  }
+  .shell .chat [aria-label="Chat preferences"] { flex-wrap: wrap; gap: 4px 8px; }
+  .shell .chat [aria-label="Chat preferences"] > * { min-height: 44px; }
+}
+@media (max-height: 600px) and (max-width: 1023px) {
+  .shell :global(.mobile-today) { display: none; }
+  .shell .chat > div > div:last-of-type { max-height: 65%; }
+}
+
+.shell :global(.mobile-chat-header) { display: none; }
+@media (max-width: 1023px) {
+  .shell :global(.workspace .workspace-topbar) { display: block; padding: 0 10px; height: 62px; min-height: 62px; }
+  .shell :global(.workspace .workspace-topbar > .topbar-primary),
+  .shell :global(.workspace .workspace-topbar > .topbar-context),
+  .shell :global(.workspace .workspace-topbar > .topbar-actions) { display: none; }
+  .shell :global(.mobile-chat-header) { display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 100%; }
+  .shell :global(.mobile-chat-header > button) { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; color: var(--foreground); }
+  .shell :global(.mobile-chat-header > button:hover) { background: var(--accent); }
+  .shell :global(.mobile-header-title) { display: flex; flex-direction: column; align-items: center; min-width: 0; gap: 2px; }
+  .shell :global(.mobile-header-title > span) { font-size: 10px; color: var(--muted-foreground); letter-spacing: .05em; }
+  .shell :global(.mobile-header-title > strong) { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+  .shell :global(.mobile-workspace-nav) { display: none; }
+
+}
+
+@media(max-width:1023px){
+ .shell :global(.mobile-tool-page){flex:1;min-height:0;overflow:hidden}
+ .shell :global(.mobile-tool-page > aside){border-left:0}
+ .shell :global(.mobile-tool-page > aside > div:first-child){display:none}
+}

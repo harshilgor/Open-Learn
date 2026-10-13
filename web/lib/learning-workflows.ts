@@ -6,23 +6,25 @@ export type Journey = {
   id: string; sessionId: string; revision: number; modeRevision?: number; mode: ChatMode; gear: Gear; goal: string;
   status: string; position: number; canonicalConceptIds?: string[]; taughtCanonicalConceptIds?: string[]; taskId?: string;
   steps: { conceptId: string; title: string; objective: string }[];
-  turns: { question: string; lesson?: LessonArtifact; sessionId: string; generationId?: string; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; submittedAt?: number; sources?: Source[]; noteContext?: { label: string; totalCharacters: number; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[] }; transitionSuggestion?: ModeTransitionSuggestion | null }[];
+  turns: { question: string; mode?: ChatMode; selectedPassage?:string|null; selectedSource?:{lessonId?:string|null;blockId?:string|null;spanIds?:string[]}; lesson?: LessonArtifact; sessionId: string; generationId?: string; messageId?: string; clientMessageId?: string; conversationSeq?: number; contextRevision?: number; branchId?: string; relation?: string; status?: 'pending' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: string; submittedAt?: number; sources?: Source[]; noteContext?: { label: string; totalCharacters: number; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[] }; transitionSuggestion?: ModeTransitionSuggestion | null }[];
 };
 export type Presentation = {
   id: string; quizId: string; concept_id: string; kind: 'single' | 'multiple' | 'short'; stem: string;
   options: { id: string; label: string }[]; hints: string[]; attemptId: string | null; difficulty: string;
-  hintCount?: number; sources?: Source[]; retryOf?: string;
-  questionPlan?: { objective: string; reason_codes: string[]; capability: string };
+  hintCount?: number; sources?: Source[]; retryOf?: string; rationaleRequested?: boolean; feedbackDeferred?: boolean; uiVersion?: number;
+  questionPlan?: { objective: string; reason_codes: string[]; capability: string; public_objective?: string; parent_attempt_id?: string };
 };
 export type Attempt = {
   id: string; presentationId: string; conceptId: string; response: string; selectedIds: string[];
   score: number | null; feedback: string; solution: string; correctIds: string[]; status: string;
-  outcome: string; assisted: boolean; conceptState: string | null;
+  outcome: string; assisted: boolean; conceptState: string | null; question?: string; uiVersion?: number;
+  feedbackDetails?: { demonstrated: { criterionId: string; description: string; spans: { start: number; end: number; quote: string }[] }[]; gaps: { criterionId: string; description: string }[]; explanation: string; uncertainty?: string; nextAction: string };
 };
 export type Quiz = {
   id: string; sessionId: string; title: string; revision: number; status: string; count: number;
   lessonNoteId?: string | null; requestedTopic?: string | null; origin?: string;
-  contextSource?: boolean; sourceSuperseded?:boolean;
+  contextSource?: boolean; sourceSuperseded?:boolean; checkingAnswer?: boolean; usefulness?: boolean | null;
+  sessionPlan?: { schemaVersion?: number; challengePreference?: 'build_confidence' | 'balanced' | 'challenge_me'; feedbackPolicy?: 'practice_immediate' | 'exam_deferred'; timingPolicy?: string };
   mode: 'topic_drill' | 'timed_short_quiz'; modeConfig: { duration_seconds?: number }; deadlineAt: string | null; remainingSeconds: number | null;
   current: Presentation | null; attempts: Attempt[];
   challenges?: { id: string; presentationId: string; status: string; explanation?: string; outcome?: string }[];

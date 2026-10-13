@@ -48,6 +48,10 @@ class ChallengeService:
         if challenge["status"] != "excluded_pending_review":
             problem("challenge_resolved", "This question already has a review result.", 409)
         presentation = self.records.read(owner, challenge["presentationId"], "presentation")
+        if presentation.get("quizId"):
+            from .quiz_policy import deferred
+            if deferred(self.records.read(owner, presentation["quizId"], "quiz")):
+                problem("exam_feedback_deferred", "Finish the exam before reviewing a challenged question.", 409)
         with self.store.engine.connect() as conn:
             private = conn.execute(text("SELECT payload FROM item_solutions WHERE item_id=:id"), {"id": presentation["itemId"]}).scalar_one()
         item = Candidate.model_validate_json(private)

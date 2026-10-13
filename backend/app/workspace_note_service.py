@@ -9,6 +9,8 @@ mastery by accident.
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import json
 import os
 import re
@@ -18,7 +20,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import DateTime, bindparam, text
 
 from .storage import Store
 from .workspace_note_models import (
@@ -27,6 +29,7 @@ from .workspace_note_models import (
     WorkspaceNoteExport,
     WorkspaceNoteLinkCreate,
     WorkspaceNoteLinkRecord,
+    WorkspaceNotePage,
     WorkspaceNoteRecord,
     WorkspaceNoteReindexResponse,
     WorkspaceNoteSummary,
@@ -131,6 +134,12 @@ def write_frontmatter(frontmatter: dict[str, Any], body: str) -> str:
 
 
 class WorkspaceNoteService:
+    @staticmethod
+    def _invalidate_courses(learner_id: str) -> None:
+        """Course summaries count notes; flushed after the transaction commits."""
+        from .cache import invalidate, owner_scope
+        invalidate("course", owner_scope(learner_id))
+
     def __init__(self, store: Store):
         self.store = store
         # The packaged Electron runtime already supplies FORMA_DB_PATH inside
@@ -231,6 +240,17 @@ class WorkspaceNoteService:
             raise WorkspaceNoteError("invalid_note_file", "Note identifier does not match its file name.", 422)
         return record
 
+    def _record_from_index(self, learner_id: str, row) -> WorkspaceNoteRecord:
+        """Decode one authoritative hosted row without another checkout or cache write."""
+        prefix = row['title'] + '\n'
+        if not row['search_text'].startswith(prefix):
+            raise WorkspaceNoteError('invalid_note_file', 'Stored note content is unavailable.', 409)
+        record = self._to_record(learner_id, row['id'] + '.md',
+            write_frontmatter(json.loads(row['frontmatter_json']), row['search_text'][len(prefix):]))
+        if record.id != row['id']:
+            raise WorkspaceNoteError('invalid_note_file', 'Note identifier does not match its stored row.', 422)
+        return record
+
     def _indexed_hash(self, learner_id: str, note_id: str) -> str | None:
         with self.store.engine.connect() as connection:
             return connection.execute(text("""
@@ -286,7 +306,12 @@ class WorkspaceNoteService:
                     if existing['revision']==record.revision and existing['content_hash']==index_values['content_hash']:return
                     if existing['revision']!=record.revision-1:
                         raise WorkspaceNoteError('revision_conflict','The note changed; reload before saving.',409)
-            prior=connection.execute(text('SELECT content_hash FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'),index_values).scalar_one_or_none()
+            prior_row=connection.execute(text('SELECT content_hash,course_id FROM workspace_notes WHERE id=:id AND learner_id=:learner_id'),index_values).first()
+            prior=prior_row[0] if prior_row else None
+            if prior_row is None or prior_row[1]!=index_values['course_id']:
+                # New note or moved between courses: course note counts changed.
+                # Ordinary autosaves leave the course cache alone.
+                self._invalidate_courses(record.learner_id)
             result = connection.execute(text("""
                 UPDATE workspace_notes SET relative_path=:relative_path, title=:title, revision=:revision,
                 frontmatter_json=:frontmatter_json, search_text=:search_text, content_hash=:content_hash,
@@ -511,13 +536,26 @@ class WorkspaceNoteService:
             updated_at=record.updated_at,
         )
 
-    def create(self, learner_id: str, request: WorkspaceNoteCreate) -> WorkspaceNoteRecord:
+    def create(self, learner_id: str, request: WorkspaceNoteCreate, *, command_id: str | None = None) -> WorkspaceNoteRecord:
         self._validate_learner(learner_id)
         if not request.title.strip():
             raise WorkspaceNoteError("invalid_title", "Note title cannot be blank.", 422)
         now = _utc_now()
-        note_id = f"note_{uuid4().hex}"
+        note_id = f"note_{uuid4().hex}" if command_id is None else 'note_' + hashlib.sha256(f'{learner_id}:{command_id}'.encode()).hexdigest()[:32]
+        if command_id is not None:
+            request_hash = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+            try:
+                existing = self._read_file(learner_id, note_id)
+            except WorkspaceNoteError as exc:
+                if exc.code != 'note_not_found':
+                    raise
+            else:
+                if existing.frontmatter.get('command_hash') != request_hash:
+                    raise WorkspaceNoteError('idempotency_conflict', 'This note command has different content.', 409)
+                return existing
         frontmatter = dict(request.frontmatter)
+        if command_id is not None:
+            frontmatter['command_hash'] = request_hash
         from .content_titles import generate_content_title, looks_like_prompt
         if frontmatter.get("title_source") != "user" and looks_like_prompt(request.title):
             headings = [{"heading": line.lstrip("# ")} for line in request.body.splitlines() if line.startswith("#")]
@@ -586,9 +624,12 @@ class WorkspaceNoteService:
         self._validate_learner(learner_id)
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
-                SELECT id FROM workspace_notes WHERE learner_id=:learner_id ORDER BY updated_at DESC, title ASC
+                SELECT id,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id ORDER BY updated_at DESC, title ASC
             """), {"learner_id": learner_id}).mappings().all()
         results: list[WorkspaceNoteSummary] = []
+        from .identity import hosted
+        if hosted():
+            return [self._summary(self._record_from_index(learner_id, row)) for row in rows]
         stale: list[str] = []
         for row in rows:
             try:
@@ -601,25 +642,94 @@ class WorkspaceNoteService:
         if stale:
             with self.store.transaction() as connection:
                 for note_id in stale:
+                    self._invalidate_courses(learner_id)
                     connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id})
         return results
+
+    @staticmethod
+    def _decode_note_cursor(cursor: str) -> tuple[datetime, str]:
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+            updated_at = datetime.fromisoformat(payload["updatedAt"])
+            note_id = payload["id"]
+            if not isinstance(note_id, str) or not NOTE_ID.fullmatch(note_id):
+                raise ValueError("invalid note ID")
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            return updated_at, note_id
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, binascii.Error):
+            raise WorkspaceNoteError("invalid_cursor", "The notes page cursor is invalid. Refresh the list.", 422)
+
+    @staticmethod
+    def _encode_note_cursor(updated_at: Any, note_id: str) -> str:
+        if not isinstance(updated_at, datetime):
+            updated_at = datetime.fromisoformat(str(updated_at))
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        raw = json.dumps({"updatedAt": updated_at.isoformat(), "id": note_id}, separators=(",", ":"))
+        return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+
+    def list_page(self, learner_id: str, limit: int = 50, cursor: str | None = None) -> WorkspaceNotePage:
+        """Read a bounded, owner-scoped note page using the owner/update index."""
+        self._validate_learner(learner_id)
+        limit = max(1, min(int(limit), 100))
+        params: dict[str, Any] = {"learner_id": learner_id, "limit": limit + 1}
+        statement = """
+            SELECT id,updated_at,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id
+        """
+        if cursor:
+            cursor_updated, cursor_id = self._decode_note_cursor(cursor)
+            statement += " AND (updated_at < :cursor_updated OR (updated_at = :cursor_updated AND id < :cursor_id))"
+            params.update({"cursor_updated": cursor_updated, "cursor_id": cursor_id})
+        statement += " ORDER BY updated_at DESC,id DESC LIMIT :limit"
+        query = text(statement)
+        if cursor:
+            query = query.bindparams(bindparam("cursor_updated", type_=DateTime(timezone=True)))
+        with self.store.engine.connect() as connection:
+            rows = connection.execute(query, params).mappings().all()
+        page_rows = rows[:limit]
+        has_more = len(rows) > limit
+        from .identity import hosted
+        if hosted():
+            summaries = [self._summary(self._record_from_index(learner_id, row)) for row in page_rows]
+            next_cursor = self._encode_note_cursor(page_rows[-1]['updated_at'], page_rows[-1]['id']) if has_more and page_rows else None
+            return WorkspaceNotePage(notes=summaries, next_cursor=next_cursor)
+        summaries: list[WorkspaceNoteSummary] = []
+        stale: list[str] = []
+        for row in page_rows:
+            try:
+                summaries.append(self._summary(self._read_file(learner_id, row["id"])))
+            except WorkspaceNoteError as exc:
+                if exc.code == "note_not_found":
+                    stale.append(row["id"])
+                else:
+                    raise
+        if stale:
+            with self.store.transaction() as connection:
+                self._invalidate_courses(learner_id)
+                connection.execute(text("DELETE FROM workspace_notes WHERE learner_id=:learner_id AND id IN :ids").bindparams(
+                    bindparam("ids", expanding=True)),
+                    {"learner_id": learner_id, "ids": stale})
+        next_cursor = self._encode_note_cursor(page_rows[-1]["updated_at"], page_rows[-1]["id"]) if has_more and page_rows else None
+        return WorkspaceNotePage(notes=summaries, next_cursor=next_cursor)
 
     def search(self, learner_id: str, query: str, limit: int = 30) -> list[WorkspaceNoteSummary]:
         self._validate_learner(learner_id)
         term = query.strip()
         if not term:
-            return self.list(learner_id)[:limit]
+            return self.list_page(learner_id, limit).notes
         # Read only index data here; `reindex` is available after user file edits.
         pattern = f"%{term.lower()}%"
         with self.store.engine.connect() as connection:
             rows = connection.execute(text("""
-                SELECT id FROM workspace_notes WHERE learner_id=:learner_id
+                SELECT id,title,frontmatter_json,search_text FROM workspace_notes WHERE learner_id=:learner_id
                 AND LOWER(search_text) LIKE :pattern ORDER BY updated_at DESC, title ASC LIMIT :limit
             """), {"learner_id": learner_id, "pattern": pattern, "limit": limit}).mappings().all()
         notes: list[WorkspaceNoteSummary] = []
+        from .identity import hosted
         for row in rows:
             try:
-                notes.append(self._summary(self._read_file(learner_id, row["id"])))
+                notes.append(self._summary(self._record_from_index(learner_id, row) if hosted() else self._read_file(learner_id, row["id"])))
             except WorkspaceNoteError:
                 continue
         return notes
@@ -629,6 +739,12 @@ class WorkspaceNoteService:
         self._assert_not_externally_changed(learner_id, note_id)
         if current.revision != request.expected_revision:
             raise WorkspaceNoteError("revision_conflict", "The note changed; reload before saving.", 409)
+        from .workflow_store import WorkflowStore
+        from uuid import uuid5, NAMESPACE_URL
+        version_id = 'note_version_' + uuid5(NAMESPACE_URL, f'{learner_id}:{note_id}:{current.revision}').hex
+        with self.store.transaction() as conn:
+            if not conn.execute(text('SELECT id FROM practice_records WHERE id=:id AND owner_id=:owner'), {'id':version_id,'owner':learner_id}).first():
+                WorkflowStore(self.store).put(conn, learner_id, 'note_version', {'id':version_id,'noteId':note_id,'noteRevision':current.revision,'title':current.title,'body':current.body,'savedAt':current.updated_at.isoformat()}, parent=note_id)
         now = _utc_now()
         frontmatter = dict(current.frontmatter) if request.frontmatter is None else {**current.frontmatter, **request.frontmatter}
         title = request.title.strip() if request.title is not None else current.title
@@ -660,6 +776,7 @@ class WorkspaceNoteService:
             raise WorkspaceNoteError("revision_conflict", "The note changed; reload before deleting.", 409)
         self.note_path(learner_id, note_id).unlink()
         with self.store.transaction() as connection:
+            self._invalidate_courses(learner_id)
             changed=connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id AND revision=:revision"), {"id": note_id, "learner_id": learner_id,'revision':expected_revision})
             if changed.rowcount!=1:raise WorkspaceNoteError('revision_conflict','The note changed; reload before deleting.',409)
             from .flashcards.class_adapter import invalidate_source
@@ -696,6 +813,7 @@ class WorkspaceNoteService:
                 if note_id not in observed:
                     from .flashcards.class_adapter import invalidate_source
                     invalidate_source(self.store,connection,learner_id,note_id)
+                    self._invalidate_courses(learner_id)
                     removed += connection.execute(text("DELETE FROM workspace_notes WHERE id=:id AND learner_id=:learner_id"), {"id": note_id, "learner_id": learner_id}).rowcount
         return WorkspaceNoteReindexResponse(indexed=indexed, skipped=skipped, removed=removed)
 

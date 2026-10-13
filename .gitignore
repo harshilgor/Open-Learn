@@ -13,7 +13,14 @@ desktop/.vite/
 **/*.py[cod]
 **/.pytest_cache/
 **/pytest-cache-files-*/
+**/.pytest-tmp-*/
+.pytest-tmp-*/
+.pnpm-store/
+.vercel/
 .venv/
+voice-agent/.venv/
+web/.npm-cache/
+web/.vitest-tmp/
 backend/data/*.db
 backend/build/
 backend/data/materials/
@@ -24,6 +31,13 @@ backend/data/agent-research-*/
 backend/data/test-workspace-*/
 backend/data/inventory-*/
 work/
+outputs/
+tmp-live-branch-*.png
+web/work-calendar-dev*.log
+backend/data/
+web/public/visual-assets/
+web/.visual-verification/
+integrations/openintelligentui/node_modules/
 
 # Local configuration and nested repository backup
 .env

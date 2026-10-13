@@ -60,7 +60,14 @@ class OpenAIRealtimeTranscriptionProvider:
 
 
 def live_transcription_enabled() -> bool:
-    return os.getenv("OPENLEARN_CLASS_LIVE_TRANSCRIPTION_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+    """Keep direct-to-provider realtime sessions disabled until they are metered.
+
+    The current browser flow exposes an ephemeral provider credential and
+    streams audio without a server-visible duration boundary or settlement
+    receipt. A configuration flag cannot make that path financially bounded.
+    Uploaded recording transcription uses the metered worker adapter instead.
+    """
+    return False
 
 
 def configured_live_transcription_provider() -> LiveTranscriptionProvider:

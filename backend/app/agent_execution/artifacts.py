@@ -13,6 +13,21 @@ from .tools import validate_output
 class Artifacts:
     def __init__(self, store): self.store=store;self.objects=evidence_objects(store)
 
+    @staticmethod
+    def validate_connection(conn, owner, lineage, *, lock=False):
+        connection_id=lineage.get('connectionId') if isinstance(lineage,dict) else None
+        if not connection_id:return
+        capability=lineage.get('connectionCapability') or 'calendar_read'
+        suffix=' FOR UPDATE' if lock and conn.dialect.name=='postgresql' else ''
+        row=conn.execute(text('SELECT status,payload FROM agent_app_connections WHERE id=:id AND owner_id=:owner'+suffix),
+                         {'id':connection_id,'owner':owner}).first()
+        if not row or row[0]!='connected':
+            raise ValueError('The connected account was revoked before this result could be used.')
+        try:capabilities=json.loads(row[1]).get('capabilities',[])
+        except (TypeError,ValueError):capabilities=[]
+        if capability not in capabilities:
+            raise ValueError('The connected account no longer grants this result’s required permission.')
+
     def prepare(self, conn, run, operation, outputs):
         manifests=[]
         if not 1<=len(outputs)<=10: raise ValueError('One to ten outputs required.')
@@ -41,6 +56,7 @@ class Artifacts:
     def publish(self, conn, run, operation, manifests):
         result=[]
         for manifest in manifests:
+            self.validate_connection(conn,run['owner_id'],manifest.get('lineage',{}),lock=True)
             from .sandbox_inputs import validate_material
             validate_material(self.store,run['owner_id'],manifest.get('lineage',{}),conn)
             source_ids=manifest.get('lineage',{}).get('sourceIds',[])
@@ -65,6 +81,8 @@ class Artifacts:
 
     def download(self, owner, identifier):
         record=self.read(owner,identifier)
+        with self.store.engine.connect() as conn:
+            self.validate_connection(conn,owner,record.get('lineage',{}))
         from .sandbox_inputs import validate_material
         validate_material(self.store,owner,record.get('lineage',{}))
         if record.get('lineage',{}).get('sourceIds'):

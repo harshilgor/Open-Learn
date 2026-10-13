@@ -33,6 +33,9 @@ class ReminderCreate(BaseModel):
     quietStart: int = Field(default=22,ge=0,le=23)
     quietEnd: int = Field(default=8,ge=0,le=23)
     catchupMinutes: int = Field(default=120,ge=1,le=1440)
+    calendarPresentation: Literal['automation','study_session'] = 'automation'
+    calendarId: str | None = Field(default=None,max_length=160)
+    durationMinutes: int = Field(default=30,ge=5,le=480)
 
     @model_validator(mode='after')
     def timing(self):
@@ -65,7 +68,14 @@ class ReminderService:
     def listing(self,owner,status=None):
         with self.store.engine.connect() as conn:
             assert_owner_active(conn,owner)
-            rows=conn.execute(text('SELECT * FROM reminders WHERE owner_id=:owner AND (:status IS NULL OR status=:status) ORDER BY due_at DESC LIMIT 200'),{'owner':owner,'status':status}).mappings().all()
+            # PostgreSQL cannot infer an optional bind's type from IS NULL.
+            # Use a concrete equality predicate only when a filter is supplied.
+            query='SELECT * FROM reminders WHERE owner_id=:owner'
+            parameters={'owner':owner}
+            if status is not None:
+                query+=' AND status=:status'
+                parameters['status']=status
+            rows=conn.execute(text(query+' ORDER BY due_at DESC LIMIT 200'),parameters).mappings().all()
             policies=conn.execute(text("SELECT * FROM reminder_policies WHERE owner_id=:owner AND kind='routine'"),{'owner':owner}).mappings().all()
         return {'reminders':[self.public(row) for row in rows],'routines':[{'id':r['id'],'revision':r['revision'],'active':r['active'],**json.loads(r['payload'])} for r in policies]}
 
@@ -106,6 +116,8 @@ class ReminderService:
         data=command.model_dump(); digest=hashlib.sha256(encoded(data).encode()).hexdigest()
         identifier='reminder_'+hashlib.sha256(f'{owner}:{key}'.encode()).hexdigest()[:32]
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             # Serialize per-user cap checks without a process-local lock.
             from .buddy_service import BuddyService
@@ -120,6 +132,9 @@ class ReminderService:
             if command.courseId:
                 from .browser_assistant.policy import require_course
                 require_course(conn,owner,command.courseId)
+            if command.calendarId:
+                calendar=conn.execute(text("SELECT id FROM calendar_calendars WHERE id=:id AND owner_id=:owner AND status='active'"),{'id':command.calendarId,'owner':owner}).first()
+                if not calendar:fail('not_found','Calendar unavailable.',404)
             if command.buddyId:buddy_service.profile(conn,owner,command.buddyId)
             for action in command.actions:
                 if action.args.get('sessionId'):
@@ -156,6 +171,8 @@ class ReminderService:
 
     def cancel(self,owner,identifier):
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -168,6 +185,8 @@ class ReminderService:
     def snooze(self,owner,identifier,minutes,key):
         if not 1<=minutes<=10080:fail('invalid_input','Snooze between one minute and one week.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
@@ -182,6 +201,34 @@ class ReminderService:
             conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id AND owner_id=:owner AND kind<>'routine' AND status='pending'"),{'id':row['id'],'owner':owner})
         return {'id':identifier,'status':'pending'}
 
+    def reschedule(self, owner, identifier, when, timezone, key):
+        """Move a pending one-time fire atomically with a deterministic receipt."""
+        try:
+            due = parse_when(when, timezone, time.time())
+            if due <= time.time(): raise ValueError('Choose a future time.')
+        except (ValueError, KeyError, TypeError) as exc:
+            fail('invalid_time', str(exc), 422)
+        replacement = 'move_' + hashlib.sha256(f'{owner}:{identifier}:{key}'.encode()).hexdigest()[:32]
+        request_hash = hashlib.sha256(encoded([identifier, when, timezone]).encode()).hexdigest()
+        with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
+            assert_owner_active(conn, owner)
+            existing = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': replacement, 'owner': owner}).mappings().first()
+            if existing:
+                if json.loads(existing['payload']).get('moveRequestHash') != request_hash:
+                    fail('idempotency_conflict', 'That move request has different content.', 409)
+                return self.public(existing)
+            row = conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'), {'id': identifier, 'owner': owner}).mappings().first()
+            if not row: fail('not_found', 'Reminder unavailable.', 404)
+            if row['kind'] == 'routine' or row['status'] != 'pending':
+                fail('invalid_state', 'Only a pending one-time reminder can be moved.', 409)
+            changed = conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id AND owner_id=:owner AND status='pending'"), {'id': identifier, 'owner': owner}).rowcount
+            if changed != 1: fail('revision_conflict', 'This reminder changed. Reload it first.', 409)
+            payload = {**json.loads(row['payload']), 'when': when, 'timezone': timezone, 'moveRequestHash': request_hash}
+            self.insert_fire(conn, owner, replacement, 'chat', due, payload)
+            return self.public(conn.execute(text('SELECT * FROM reminders WHERE id=:id'), {'id': replacement}).mappings().one())
+
     def control_routine(self,owner,identifier,revision,action,command=None):
         if action=='edit':
             if not command or not command.schedule:fail('invalid_input','Provide an updated recurring reminder.',422)
@@ -191,6 +238,8 @@ class ReminderService:
             second=next_fire(command.schedule,command.timezone,first)
             if second and second-first<300:fail('invalid_time','Recurring reminders must be at least five minutes apart.',422)
         with self.store.transaction() as conn:
+            from .calendar.service import invalidate_calendar
+            invalidate_calendar(owner)
             assert_owner_active(conn,owner)
             row=conn.execute(text("SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner AND kind='routine'"),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Routine unavailable.',404)
@@ -218,6 +267,10 @@ class ReminderService:
             for row in rows:
                 assert_owner_active(conn,row['owner_id'])
                 payload=json.loads(row['payload']);policy=None
+                if payload.get('calendarEventId'):
+                    from .calendar.reminders import calendar_fire_current
+                    if not calendar_fire_current(conn,row):
+                        conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id"),{'id':row['id']});continue
                 if row['policy_id']:
                     policy=conn.execute(text('SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner'),{'id':row['policy_id'],'owner':row['owner_id']}).mappings().first()
                     if not policy or not policy['active'] or policy['revision']!=row['policy_revision']:

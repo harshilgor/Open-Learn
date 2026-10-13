@@ -36,7 +36,7 @@ On desktop use a single settings navigation rail and scrollable content pane. On
 
 The rail plus button previously depended on a successful Buddy snapshot and became disabled during an outage. It now opens the real Buddy editor, allowing customization while disconnected; saving requires reconnection and a Retry action explains that state. Home and rail Settings callbacks passed the navigation regression. Hover and pointer feedback were added. The app-level settings shortcut was removed from the top-right navbar; the profile Settings item remains.
 
-The original design review preceded the free hosting rollout. Open Learn's backend, database, and Google sign-in are now live. This follow-up release ships the Settings consolidation and the remaining navigation and chat fixes.
+These source changes are local and have not been redeployed. The live backend still lacks hosting/sign-in configuration, so saving Buddies and sending messages remain unavailable there.
 
 ## Implemented settings structure
 

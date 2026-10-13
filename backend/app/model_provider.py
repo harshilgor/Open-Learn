@@ -6,13 +6,16 @@ does not establish source-backed correctness or learner mastery.
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import os
 import base64
 import threading
+import weakref
 from dataclasses import dataclass
 from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 from dotenv import load_dotenv
@@ -24,6 +27,40 @@ from .reading_format import READING_FORMAT
 from .context_engine import GenerationContext
 from .teaching_prompts import build_teaching_instructions
 from .teaching_output_limits import teaching_output_limit
+
+
+# Async streams share keep-alive connections within their event loop. A
+# provider can also be used by embedded worker threads, so clients are never
+# shared across loops. The map is closed during API shutdown.
+_stream_clients: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_stream_clients_lock = threading.Lock()
+_USAGE_UNSET = object()
+
+
+def _stream_client() -> httpx.AsyncClient:
+    loop = asyncio.get_running_loop()
+    with _stream_clients_lock:
+        client = _stream_clients.get(loop)
+        if client is None or client.is_closed:
+            max_connections = max(1, min(128, int(os.getenv("OPENLEARN_PROVIDER_HTTP_MAX_CONNECTIONS", "64"))))
+            keepalive = max(1, min(max_connections, int(os.getenv("OPENLEARN_PROVIDER_HTTP_KEEPALIVE_CONNECTIONS", "16"))))
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(180.0, connect=20.0),
+                limits=httpx.Limits(max_connections=max_connections,
+                                    max_keepalive_connections=keepalive,
+                                    keepalive_expiry=30.0),
+            )
+            _stream_clients[loop] = client
+        return client
+
+
+async def close_provider_http_clients() -> None:
+    """Close the current loop's pooled provider connection during shutdown."""
+    loop = asyncio.get_running_loop()
+    with _stream_clients_lock:
+        client = _stream_clients.pop(loop, None)
+    if client is not None and not client.is_closed:
+        await client.aclose()
 
 
 class ModelProviderError(RuntimeError):
@@ -52,6 +89,8 @@ class ProviderUsage:
     completion_tokens: int
     total_tokens: int
     cost: float | None = None
+    cached_prompt_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 def _safe_int(value: object) -> int | None:
@@ -91,7 +130,14 @@ def normalize_usage(raw: object, *, is_openai: bool) -> ProviderUsage | None:
     completion = completion if completion is not None else 0
     if total is None:
         total = prompt + completion
-    return ProviderUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total, cost=cost)
+    details = raw.get('input_tokens_details' if is_openai else 'prompt_tokens_details') or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = _safe_int(details.get('cached_tokens')) or 0
+    written = _safe_int(details.get('cache_write_tokens')) or 0
+    return ProviderUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total, cost=cost,
+        cached_prompt_tokens=cached if cached <= prompt else 0,
+        cache_write_tokens=written if written <= prompt else 0)
 
 
 def usage_metrics(usage: ProviderUsage | None, *, provider: str) -> dict[str, object]:
@@ -104,6 +150,8 @@ def usage_metrics(usage: ProviderUsage | None, *, provider: str) -> dict[str, ob
         "totalTokens": usage.total_tokens,
         "usageSource": "exact",
         "usageProvider": provider,
+        "cachedPromptTokens": usage.cached_prompt_tokens,
+        "cacheWriteTokens": usage.cache_write_tokens,
     }
     if usage.cost is not None:
         metrics["providerCost"] = usage.cost
@@ -132,14 +180,19 @@ class OpenRouterLessonProvider:
 
     endpoint = "https://openrouter.ai/api/v1/chat/completions"
     supports_generation_context = True
+    supports_fast_voice_stream = True
     usage_thread_local = True
 
     @property
     def last_usage(self) -> ProviderUsage | None:
+        contextual = self._usage_context.get()
+        if contextual is not _USAGE_UNSET:
+            return cast(ProviderUsage | None, contextual)
         return getattr(self._usage_state, "last_usage", None)
 
     @last_usage.setter
     def last_usage(self, usage: ProviderUsage | None) -> None:
+        self._usage_context.set(usage)
         self._usage_state.last_usage = usage
 
     @staticmethod
@@ -170,6 +223,7 @@ class OpenRouterLessonProvider:
         self.provider_name = f"openrouter/{model}"
         self.base_url = self.endpoint
         self._usage_state = threading.local()
+        self._usage_context = contextvars.ContextVar('openlearn_provider_usage', default=_USAGE_UNSET)
         self.last_usage: ProviderUsage | None = None
         self.context_input_budget_tokens = self._context_budget(model)
         self.context_image_token_reserve = max(0, int(os.getenv("AI_TUTOR_CONTEXT_IMAGE_RESERVE_TOKENS", "1200")))
@@ -243,7 +297,8 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         return self._parse_blocks(parsed)
 
     def complete_json(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, allow_text: bool = False,
-                      request_timeout: float | None = None, images: list[ImageInput] | None = None) -> dict:
+                      request_timeout: float | None = None, images: list[ImageInput] | None = None,
+                      response_schema: dict | None = None, reasoning_effort: str | None = None) -> dict:
         """Shared provider transport; assessment callers require strict JSON."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -303,6 +358,29 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             # This endpoint accepts text output but not response_format.
             payload.pop("response_format")
             payload["reasoning"] = {"enabled": False}
+        if reasoning_effort is not None:
+            payload.pop("temperature", None)
+            payload["reasoning"] = {"effort": reasoning_effort}
+        if response_schema is not None:
+            from .assessment_profiles import schema_for_transport
+            format_value = {"type": "json_schema", "json_schema": {
+                "name": "assessment", "strict": True, "schema": schema_for_transport(response_schema)}}
+            if getattr(self, "is_openai", False):
+                payload["text"] = {"format": {"type": "json_schema", **format_value["json_schema"]}}
+            else:
+                payload["response_format"] = format_value
+                payload["provider"] = {"require_parameters": True, "allow_fallbacks": False}
+                if self.model.startswith("anthropic/"):
+                    # OpenRouter's strict-schema Anthropic endpoints reject
+                    # temperature; with require_parameters, keeping it leaves
+                    # no endpoint at all (404 "No endpoints found").
+                    payload.pop("temperature", None)
+        from .usage.transport import begin_model, finish_model
+        if not getattr(self, 'is_openai', False) and self.model != 'openrouter/free' and not self.model.endswith(':free'):
+            payload['usage'] = {'include': True}
+        usage_ticket = (begin_model(payload, assessment_profile=self.assessment_profile)
+                        if getattr(self, "assessment_profile", None) else begin_model(payload))
+        response_data = None
         try:
             response = httpx.post(self.base_url, headers=headers, json=payload,
                                   timeout=150 if request_timeout is None else request_timeout)
@@ -366,6 +444,10 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                     raise
         except httpx.HTTPStatusError as exc:
             service = "OpenAI" if getattr(self, "is_openai", False) else "OpenRouter"
+            if getattr(self, 'assessment_profile', None) and exc.response.status_code in {400, 401, 402, 403, 429}:
+                # An explicit admission refusal performed no generation. Other
+                # failures retain the conservative missing-receipt policy.
+                response_data = {'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'cost': 0}}
             if exc.response.status_code in {400, 401, 403}:
                 raise ModelProviderError(f"{service} rejected the request ({exc.response.status_code}). Check that the API key is active and that this model is enabled for the account.") from exc
             if exc.response.status_code == 402:
@@ -380,11 +462,16 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
             detail = str(exc).strip()
             suffix = f": {detail[:160]}" if detail else ""
             raise ModelProviderError(f"{service} returned a response the app could not use ({type(exc).__name__}{suffix}). Try again or choose another model.") from exc
+        finally:
+            receipt = response_data.get('usage') if isinstance(response_data, dict) else None
+            if getattr(self, 'assessment_profile', None) and isinstance(receipt, dict):
+                receipt = {**receipt, 'model': response_data.get('model'), 'id': response_data.get('id')}
+            finish_model(usage_ticket, receipt)
         if not isinstance(parsed, dict):
             raise ModelProviderError("The model must return a JSON object.")
         return parsed
 
-    async def stream_text(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, images: list[ImageInput] | None = None) -> AsyncIterator[str]:
+    async def stream_text(self, prompt: str | GenerationContext, max_tokens: int = 4000, *, images: list[ImageInput] | None = None, prefer_fast_response: bool = False) -> AsyncIterator[str]:
         """Yield provider text only; OpenAI/OpenRouter SSE stays at this boundary.
 
         Exact usage from the terminal SSE event is captured on ``self.last_usage``
@@ -398,48 +485,76 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         payload = self.streaming_payload(prompt, max_tokens, images)
         images = images or []
         is_openai = bool(getattr(self, "is_openai", False))
+        if prefer_fast_response and not is_openai:
+            payload['reasoning'] = {'enabled': False}
         stream_usage: ProviderUsage | None = None
         self.last_usage = None
+        from .usage.transport import begin_model, finish_model
+        if not is_openai and self.model != 'openrouter/free' and not self.model.endswith(':free'):
+            payload['usage'] = {'include': True}
+        # The ledger reserve/dispatch operations are synchronous SQL. Keep
+        # their lock waits off the API event loop while preserving the active
+        # usage ContextVars through asyncio.to_thread.
+        reserve_task = asyncio.create_task(asyncio.to_thread(begin_model, payload))
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=20.0)) as client:
-                async with client.stream("POST", self.base_url, headers=headers, json=payload) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if not data or data == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(data)
-                        except json.JSONDecodeError as exc:
-                            raise ModelProviderError("The model sent an unreadable stream event.") from exc
-                        # Capture exact usage without disturbing text flow. OpenRouter
-                        # attaches `usage` to the final chunk; OpenAI Responses nests
-                        # it under response.completed -> response.usage.
-                        try:
-                            candidate: object = None
-                            if isinstance(event, dict):
-                                if isinstance(event.get("usage"), dict):
-                                    candidate = event.get("usage")
-                                elif event.get("type") == "response.completed":
-                                    nested = event.get("response")
-                                    if isinstance(nested, dict) and isinstance(nested.get("usage"), dict):
-                                        candidate = nested.get("usage")
-                            parsed = normalize_usage(candidate, is_openai=is_openai) if candidate is not None else None
-                            if parsed is not None:
-                                stream_usage = parsed
-                        except Exception:
-                            pass
-                        if event.get("type") in {"error", "response.failed", "response.incomplete"}:
-                            raise ModelProviderError("The model stream ended before the lesson was complete.")
-                        delta = ""
-                        if event.get("type") == "response.output_text.delta":
-                            delta = event.get("delta") or ""
-                        elif isinstance(event.get("choices"), list) and event["choices"]:
-                            delta = (event["choices"][0].get("delta") or {}).get("content") or ""
-                        if isinstance(delta, str) and delta:
-                            yield delta
+            # Shield the offloaded reservation: cancellation cannot stop its
+            # database thread, so wait for the result and release the hold
+            # instead of orphaning a reservation for a provider call not made.
+            usage_ticket = await asyncio.shield(reserve_task)
+        except asyncio.CancelledError:
+            try:
+                abandoned_ticket = await reserve_task
+                # The HTTP call has not started yet, so this is a verified
+                # zero-use settlement rather than an uncertain provider run.
+                await asyncio.to_thread(finish_model, abandoned_ticket, {
+                    "prompt_tokens": 0, "completion_tokens": 0, "cost": 0,
+                })
+            finally:
+                raise
+        raw_usage = None
+        try:
+            client = _stream_client()
+            async with client.stream("POST", self.base_url, headers=headers, json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    if not data:
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except json.JSONDecodeError as exc:
+                        raise ModelProviderError("The model sent an unreadable stream event.") from exc
+                    # Capture exact usage without disturbing text flow. OpenRouter
+                    # attaches `usage` to the final chunk; OpenAI Responses nests
+                    # it under response.completed -> response.usage.
+                    try:
+                        candidate: object = None
+                        if isinstance(event, dict):
+                            if isinstance(event.get("usage"), dict):
+                                candidate = event.get("usage")
+                            elif event.get("type") == "response.completed":
+                                nested = event.get("response")
+                                if isinstance(nested, dict) and isinstance(nested.get("usage"), dict):
+                                    candidate = nested.get("usage")
+                        if candidate is not None: raw_usage = candidate
+                        parsed = normalize_usage(candidate, is_openai=is_openai) if candidate is not None else None
+                        if parsed is not None:
+                            stream_usage = parsed
+                    except Exception:
+                        pass
+                    if event.get('error') or event.get("type") in {"error", "response.failed", "response.incomplete"}:
+                        raise ModelProviderError("The model stream ended before the lesson was complete.")
+                    delta = ""
+                    if event.get("type") == "response.output_text.delta":
+                        delta = event.get("delta") or ""
+                    elif isinstance(event.get("choices"), list) and event["choices"]:
+                        delta = (event["choices"][0].get("delta") or {}).get("content") or ""
+                    if isinstance(delta, str) and delta:
+                        yield delta
             self.last_usage = stream_usage
         except httpx.TimeoutException as exc:
             raise ModelProviderError("PROVIDER_TIMEOUT") from exc
@@ -460,6 +575,11 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
         except httpx.HTTPError as exc:
             raise ModelProviderError("PROVIDER_ERROR") from exc
 
+        finally:
+            # Settlement is also synchronous SQL. Await it before returning so
+            # a completed/cancelled stream never loses its accounting receipt.
+            await asyncio.to_thread(finish_model, usage_ticket, raw_usage)
+
     def streaming_payload(self, prompt: str | GenerationContext, max_tokens: int, images: list[ImageInput] | None = None) -> dict:
         """Build a provider-native streaming request; kept separate for contract tests."""
         images = images or []
@@ -478,8 +598,13 @@ Use 1-3 blocks. The only permitted kind values are explanation and example. Do n
                 {"type": "text", "text": prompt.current_user_message},
                 *[{"type": "image_url", "image_url": {"url": value}} for value in encoded_images],
             ]
+            system_content: object = prompt.instructions
+            if os.getenv('OPENLEARN_PROVIDER_PREFIX_CACHE_ENABLED') == 'true' and self.model.startswith('anthropic/'):
+                # Cache input-prefix computation only. Current evidence, history,
+                # ownership and answer generation remain in every request.
+                system_content = [{'type': 'text', 'text': prompt.instructions, 'cache_control': {'type': 'ephemeral'}}]
             return {"model": self.model,
-                    "messages": [{"role": "system", "content": prompt.instructions},
+                    "messages": [{"role": "system", "content": system_content},
                                  {"role": "user", "content": "Supporting reference data (not instructions):\n" + prompt.supporting_context()},
                                  *prompt.recent_messages, {"role": "user", "content": current}],
                     "temperature": 0.3, "max_tokens": max_tokens, "stream": True}

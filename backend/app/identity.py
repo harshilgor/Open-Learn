@@ -20,6 +20,7 @@ class Principal:
     device_id: str | None = None
     display_name: str = ''
     expires_at: float | None = None
+    email: str = ''
 
 
 principal_context: ContextVar[Principal | None] = ContextVar('openlearn_principal', default=None)
@@ -66,12 +67,22 @@ def validate_identity_configuration():
 
 
 def assert_owner_active(connection, owner: str):
-    # Lock the account through the caller's transaction; deletion waits for commits
+    # Share-lock the account through the transaction: concurrent learning work
+    # can validate the same owner; deletion still waits for commits
     # already in flight and later work observes the durable tombstone.
-    suffix = ' FOR UPDATE' if connection.dialect.name == 'postgresql' else ''
+    suffix = ' FOR SHARE' if connection.dialect.name == 'postgresql' else ''
+    transaction = connection.get_nested_transaction() or connection.get_transaction()
+    cached = connection.info.get('openlearn_owner_lock')
+    if suffix and transaction is not None and cached == (transaction, owner):
+        return
     status = connection.execute(text('SELECT status FROM identity_accounts WHERE id=:id' + suffix), {'id': owner}).scalar_one_or_none()
     if status == 'deleted':
         fail('account_deleted', 'This account has been deleted.', 403)
+    if suffix and status is not None:
+        # The share lock lasts until this exact transaction ends. Never reuse
+        # across transactions, accounts, or an absent/tombstoned row. Device
+        # revocation and expiry checks remain separate and uncached.
+        connection.info['openlearn_owner_lock'] = (connection.get_nested_transaction() or connection.get_transaction(), owner)
 
 
 def current_principal() -> Principal:
@@ -131,10 +142,19 @@ def authenticate(store, authorization: str | None, local_owner: str | None) -> P
         subject_hash = digest(issuer + '\0' + subject)
         owner = 'account_' + subject_hash[:48]
         display = str(claims.get('name') or claims.get('email') or 'Learner')[:250]
+        email = str(claims.get('email') or '').strip().lower()[:320]
         with store.engine.begin() as conn:
-            conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at) VALUES(:id,:hash,:name,'active',:now) ON CONFLICT(subject_hash) DO NOTHING"), {'id': owner, 'hash': subject_hash, 'name': display, 'now': time.time()})
+            # Polls authenticate repeatedly. Unconditional INSERT/UPDATE locks
+            # the same account row and consumes every connection behind a busy
+            # transaction. Existing, unchanged identities need only reads.
+            account = conn.execute(text('SELECT verified_email FROM identity_accounts WHERE id=:owner'), {'owner':owner}).mappings().first()
+            if account is None:
+                conn.execute(text("INSERT INTO identity_accounts(id,subject_hash,display_name,status,created_at) VALUES(:id,:hash,:name,'active',:now) ON CONFLICT(subject_hash) DO NOTHING"), {'id':owner,'hash':subject_hash,'name':display,'now':time.time()})
+            if account is None or account['verified_email'] != email:
+                conn.execute(text('UPDATE identity_accounts SET verified_email=:email WHERE id=:owner'), {'owner':owner,'email':email})
             assert_owner_active(conn, owner)
-        return Principal(owner, 'web', display_name=display, expires_at=float(claims['exp']))
+        return Principal(owner, 'web', display_name=display, expires_at=float(claims['exp']),
+                         email=str(claims.get('email') or '').strip().lower())
     if hosted() and not all(os.getenv('OPENLEARN_OIDC_' + name) for name in ('ISSUER', 'AUDIENCE', 'JWKS_URL')):
         fail('authentication_unconfigured', 'Configure the account provider before signing in.', 503)
     if hosted() or os.getenv('AI_TUTOR_DEV_IDENTITY', 'true').lower() not in {'true', '1', 'yes'}:

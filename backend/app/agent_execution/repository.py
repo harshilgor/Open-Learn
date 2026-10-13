@@ -74,9 +74,55 @@ class Repository:
 
     def checkpoint(self, conn, run):
         version = run.get('checkpointVersion', 0) + 1
-        value = {key:run.get(key) for key in ('constraints','commandCursor','desired_input_revision','inputHash','phase','pendingRequests','operationId')}
+        value = {key:run.get(key) for key in ('constraints','commandCursor','desired_input_revision','inputHash','phase','pendingRequests','operationId','dependencies','requirements','kernelState','answerAttachments','operationalNoteRefs','executionContext')}
         conn.execute(text('INSERT INTO agent_checkpoints(id,owner_id,run_id,version,payload,created_at) VALUES(:id,:owner,:run,:version,:payload,:now)'), {'id':uid('checkpoint'),'owner':run['owner_id'],'run':run['id'],'version':version,'payload':encoded(value),'now':time.time()})
         return self.update(conn, run, checkpointVersion=version)
+
+    def request_input(self, conn, run, decision, *, phase='clarify'):
+        """Persist a validated human question and block this task until answered.
+
+        The request table is the source of truth for open input. The run keeps a
+        compact descriptor projection for snapshots; matching open questions
+        are returned idempotently so a worker retry cannot duplicate prompts.
+        """
+        from .contracts import InputRequest
+        from .kernel import AgentKernel, AskUserDecision, KernelError
+        try:
+            parsed = AgentKernel.parse_decision(decision)
+        except KernelError as exc:
+            from ..identity import fail
+            fail('invalid_input', 'The agent produced an invalid question.', 422)
+        if not isinstance(parsed, AskUserDecision):
+            from ..identity import fail
+            fail('invalid_input', 'Only an ask_user decision can create an input request.', 422)
+        if not parsed.required:
+            from ..identity import fail
+            fail('input_default_required', 'Optional input requires an explicit default policy before it can be used.', 422)
+        if run['status'] in TERMINAL:
+            from ..identity import fail
+            fail('invalid_state', 'This task has finished and cannot ask for more input.', 409)
+        open_rows = conn.execute(text("SELECT id,payload FROM agent_input_requests WHERE owner_id=:owner AND run_id=:run AND status='open' ORDER BY created_at,id"),
+                                 {'owner':run['owner_id'],'run':run['id']}).mappings().all()
+        for row in open_rows:
+            existing = json.loads(row['payload'])
+            if (existing.get('question') == parsed.question and
+                    existing.get('inputKind', 'text') == parsed.input_kind and
+                    existing.get('options', []) == parsed.options):
+                return run, existing
+        if len(open_rows) >= 5:
+            from ..identity import fail
+            fail('input_request_limit', 'This task already has five open questions. Answer them before asking more.', 409)
+        request = InputRequest(requestId=uid('input'), taskId=run['id'], revision=1,
+                               question=parsed.question, required=parsed.required,
+                               options=parsed.options, inputKind=parsed.input_kind, state='open').model_dump(by_alias=True)
+        conn.execute(text("INSERT INTO agent_input_requests(id,owner_id,run_id,session_id,revision,status,payload,created_at) VALUES(:id,:owner,:run,:session,1,'open',:payload,:now)"),
+                     {'id':request['requestId'],'owner':run['owner_id'],'run':run['id'],'session':run['sessionId'],'payload':encoded(request),'now':time.time()})
+        pending = [json.loads(row['payload']) for row in open_rows] + [request]
+        run = self.update(conn, run, status='waiting', phase=phase, waitReason='user_input', pendingRequests=pending)
+        run = self.checkpoint(conn, run)
+        self.event(conn, run, 'input.requested', request=request)
+        self.activity(conn, run, 'question:'+request['requestId'], 'input.requested', request=request, text=request['question'])
+        return run, request
 
     def schedule(self, conn, run):
         self.outbox.append(conn, run['owner_id'], 'agent.step', f"step:{run['id']}:{run['revision']}", {'runId':run['id'],'revision':run['revision'],'inputRevision':run['desired_input_revision']})
@@ -85,5 +131,5 @@ class Repository:
         state = run['status']
         allowed = [] if state in TERMINAL else ['cancel', 'steer'] + (['resume'] if state == 'paused' else ['pause'])
         if state == 'waiting': allowed += ['answer_input']
-        return {'schemaVersion':2, **{k:run.get(k) for k in ('id','revision','sessionId','message','kind','status','phase','waitReason','pendingRequests','artifacts','sources','completion','summary','constraints','checkpointVersion','parentTaskId','error','deckId','resultReferences')},
+        return {'schemaVersion':2, **{k:run.get(k) for k in ('id','revision','sessionId','message','kind','status','phase','waitReason','pendingRequests','dependencies','requirements','artifacts','sources','completion','summary','constraints','checkpointVersion','parentTaskId','error','deckId','resultReferences')},
                 'pendingRequest': next(iter(run.get('pendingRequests', [])), None), 'inputRevision':run['desired_input_revision'], 'allowedCommands':allowed}

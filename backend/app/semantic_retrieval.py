@@ -12,6 +12,25 @@ import os
 
 import httpx
 from sqlalchemy import text, bindparam
+from .usage.ledger import UsageError
+from .usage.operations import begin_external, configured_rate, finish_external
+
+
+_EMBEDDING_RATE_ENV = "OPENLEARN_EMBEDDING_USD_PER_MILLION_TOKENS"
+_TOKENS_PER_RATE_UNIT = 1_000_000
+
+
+def _embedding_token_bound(texts: list[str]) -> int:
+    """Conservatively bound billable input tokens from the UTF-8 request body."""
+    # For ordinary text tokenizers, token count cannot exceed UTF-8 byte count.
+    # Add per-input and request framing allowance for provider-side accounting.
+    return max(1, sum(len(value.encode("utf-8")) + 4 for value in texts) + 32)
+
+
+def _embedding_liability(rate_nano_per_million: int, tokens: int) -> int:
+    # Ceiling-round the proportional USD liability to one nanodollar so even a
+    # tiny request reserves a positive amount before dispatch.
+    return max(1, (rate_nano_per_million * tokens + _TOKENS_PER_RATE_UNIT - 1) // _TOKENS_PER_RATE_UNIT)
 
 
 def configured_model() -> str | None:
@@ -32,13 +51,44 @@ def configured_model() -> str | None:
 
 def _embed(texts: list[str], model: str) -> list[list[float]]:
     openrouter = "/" in model
-    response = httpx.post(
-        "https://openrouter.ai/api/v1/embeddings" if openrouter else "https://api.openai.com/v1/embeddings",
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY' if openrouter else 'OPENAI_API_KEY']}"},
-        json={"model": model, "input": texts}, timeout=30.0,
+    token_bound = _embedding_token_bound(texts)
+    rate = configured_rate(_EMBEDDING_RATE_ENV)
+    liability = _embedding_liability(rate, token_bound)
+    ticket = begin_external(
+        "tool",
+        {"embedding_requests": 1, "input_tokens": token_bound},
+        liability,
+        provider="openrouter" if openrouter else "openai",
+        model=model,
+        provider_rates={"usd_nano_per_million_tokens": rate},
     )
-    response.raise_for_status()
-    data = sorted(response.json()["data"], key=lambda item: item["index"])
+    settled = False
+    try:
+        response = httpx.post(
+            "https://openrouter.ai/api/v1/embeddings" if openrouter else "https://api.openai.com/v1/embeddings",
+            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY' if openrouter else 'OPENAI_API_KEY']}"},
+            json={"model": model, "input": texts}, timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        billed_tokens = None
+        if isinstance(usage, dict):
+            billed_tokens = usage.get("prompt_tokens", usage.get("total_tokens"))
+        if isinstance(billed_tokens, int) and not isinstance(billed_tokens, bool) and 0 <= billed_tokens <= token_bound:
+            finish_external(
+                ticket,
+                quantities={"embedding_requests": 1, "input_tokens": billed_tokens},
+                cost_nano=_embedding_liability(rate, billed_tokens),
+                source="exact",
+            )
+            settled = True
+        data = sorted(payload["data"], key=lambda item: item["index"])
+    finally:
+        if not settled:
+            # The request may have reached the provider even if its response or
+            # usage receipt was lost. Retain the full pre-dispatch bound.
+            finish_external(ticket, source="estimated")
     vectors = [item["embedding"] for item in data]
     if len(vectors) != len(texts) or not all(isinstance(vector, list) and vector for vector in vectors):
         raise ValueError("Invalid embedding response")
@@ -73,7 +123,12 @@ def similarity_scores(store, query: str, blocks: list[dict], model: str, *, max_
             missing.append((block, digest))
     for offset in range(0, len(missing), 32):
         batch = missing[offset:offset + 32]
-        embeddings = _embed([block["text"][:8000] for block, _ in batch], model)
+        try:
+            embeddings = _embed([block["text"][:8000] for block, _ in batch], model)
+        except UsageError:
+            # Embeddings are optional ranking assistance. If the allowance or
+            # configured provider tariff is unavailable, keep lexical search.
+            return {}
         with store.transaction() as connection:
             for (block, digest), vector in zip(batch, embeddings):
                 vectors[block["id"]] = vector
@@ -82,7 +137,10 @@ def similarity_scores(store, query: str, blocks: list[dict], model: str, *, max_
                 connection.execute(text("INSERT INTO material_embeddings(block_id,model,text_hash,vector_json) VALUES(:id,:model,:digest,:vector)"),
                                    {"id": block["id"], "model": model, "digest": digest,
                                     "vector": json.dumps(vector, separators=(",", ":"))})
-    query_vector = _embed([query[:8000]], model)[0]
+    try:
+        query_vector = _embed([query[:8000]], model)[0]
+    except UsageError:
+        return {}
     return {block_id: _cosine(query_vector, vector) for block_id, vector in vectors.items()}
 
 
@@ -108,7 +166,10 @@ def note_similarity_scores(store, query: str, notes: list, model: str, *, max_no
             missing.append((note, digest, content[:8000]))
     for offset in range(0, len(missing), 32):
         batch = missing[offset:offset + 32]
-        embeddings = _embed([content for _, _, content in batch], model)
+        try:
+            embeddings = _embed([content for _, _, content in batch], model)
+        except UsageError:
+            return {}
         with store.transaction() as connection:
             for (note, digest, _), vector in zip(batch, embeddings):
                 vectors[note.id] = vector
@@ -117,5 +178,8 @@ def note_similarity_scores(store, query: str, notes: list, model: str, *, max_no
                 connection.execute(text("INSERT INTO workspace_note_embeddings(note_id,model,content_hash,vector_json) VALUES(:id,:model,:digest,:vector)"),
                                    {"id": note.id, "model": model, "digest": digest,
                                     "vector": json.dumps(vector, separators=(",", ":"))})
-    query_vector = _embed([query[:8000]], model)[0]
+    try:
+        query_vector = _embed([query[:8000]], model)[0]
+    except UsageError:
+        return {}
     return {note_id: _cosine(query_vector, vector) for note_id, vector in vectors.items()}

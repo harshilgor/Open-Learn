@@ -1,0 +1,7 @@
+.usage-allowance{padding:18px;border:1px solid var(--border);border-radius:16px;display:grid;gap:8px;color:var(--foreground)}
+.usage-allowance p,.usage-allowance small{font-size:13px;color:var(--muted-foreground);margin:0}
+.usage-allowance-track{display:flex;height:8px;overflow:hidden;background:var(--muted);border-radius:99px}
+.usage-allowance-track span{background:var(--primary)}
+.usage-allowance-track i{background:var(--muted-foreground);opacity:.4}
+.usage-allowance-compact{border:0;padding:6px 10px;font-size:12px;gap:4px}
+.usage-allowance button{min-height:44px;justify-self:start;text-decoration:underline}

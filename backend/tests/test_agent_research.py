@@ -23,6 +23,9 @@ from backend.app.agent_execution.research_sources import ResearchSources
 from backend.app.agent_execution.research_routes import build_research_router
 from backend.app.agent_execution.routes import build_agent_router
 from backend.app.agent_execution.worker import AgentWorker
+from backend.app.agent_execution.learning import ContinuationRequest, LearningContinuation
+from backend.app.agent_execution.connected_contracts import ChildRequest
+from backend.app.agent_execution.delegation import Delegation
 from backend.app.browser_assistant.routes import build_assistant_router
 from backend.app.identity_middleware import IdentityMiddleware
 from backend.app.material_models import UploadRequest
@@ -94,6 +97,14 @@ def test_research_outputs_use_opened_content_and_survive_response_expiry(researc
     machine = json.loads(result["outputs"][1]["content"])
     assert machine["claims"][0]["sourceIds"] == [result["sources"][0]["id"]]
     assert "providerResultRef" not in json.dumps(machine)
+    from backend.app.identity_data import export_owner
+    exported = export_owner(store, "alice")
+    compatibility = exported["compatibility"]
+    assert compatibility["restoreMode"] == "safe_content_only"
+    assert "assistant_runs" in compatibility["exportOnlyTables"]
+    assert compatibility["executionStateRestored"] is False
+    assert compatibility["externalApprovalsRestored"] is False
+    assert compatibility["providerCredentialsRestored"] is False
     original = [out["content"] for out in result["outputs"]]
     clock.advance(120)
     EvidenceRetention(store, clock).purge_expired()
@@ -146,11 +157,27 @@ def test_unverified_semantic_synthesis_returns_partial_not_green(research_env):
         def complete_json(self, prompt, *args):
             payload = json.loads(prompt.split("\n", 1)[1])
             assert payload["question"] == run["researchSpec"]["query"]
-            return {"claims": [{"text": "Retrieval appears helpful in this experiment.",
+            return {"claims": [{"text": "Retrieval appears helpful by 42% in this experiment.",
                                  "sourceIds": [payload["sources"][0]["id"]]}], "limitations": []}
     result = ResearchService(store, evidence_service=evidence, model_provider=Model()).prepare("alice", run, run["researchSpec"])
     assert result["completion"]["status"] == "partial"
     assert any(check["status"] == "unknown" for check in result["completion"]["checks"])
+    checks = result["completion"]["checks"]
+    assert next(check for check in checks if check["criterion"] == "numeric_literals")["status"] == "unknown"
+    manifest = json.loads(result["outputs"][1]["content"])
+    assert {item["criterion"]: item["status"] for item in manifest["claims"][0]["checks"]}["numeric_literals"] == "unknown"
+    assert any("Numeric literals" in limitation for limitation in manifest["limitations"])
+
+
+def test_claim_evidence_checks_report_literal_match_without_claiming_semantic_proof():
+    from backend.app.agent_execution.research import _claim_evidence_checks
+    from backend.app.agent_execution.research_contracts import ResearchClaim
+    claim = ResearchClaim(text="The sample included 1,200 learners and improved by 25%.", sourceIds=["source1"])
+    sources = {"source1": {"excerpt": "The study included 1,200 learners. Recall improved by 25%."}}
+    checks = {item["criterion"]: item["status"] for item in _claim_evidence_checks(claim, sources)}
+    assert checks["source_references"] == "pass"
+    assert checks["numeric_literals"] == "pass"
+    assert checks["semantic_support"] == "unknown"
 
 
 def test_erasure_during_synthesis_cannot_retain_deleted_content(research_env):
@@ -287,11 +314,82 @@ def test_worker_recovers_stored_report_and_publishes_one_final(research_env):
     recovered = AgentWorker(store, research_factory=lambda db: ResearchService(db, evidence_service=evidence))
     recovered.tick()
     final = Repository(store).read("alice", run["id"])
-    assert final["status"] == "completed", final
+    # Recovery is successful, but the shared completion gate correctly keeps
+    # the task partial because coverage is an explicit unknown check.
+    assert final["status"] == "completed_partial", (final.get("error"), final.get("summary"), final.get("completion"))
+    assert final["completion"]["status"] == "partial"
+    assert any(check["status"] == "unknown" for check in final["completion"]["checks"])
     assert len(final["artifacts"]) == 2
     assert len(provider.search_calls) == 1
     with store.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM agent_activity WHERE item_key=:key"), {"key": "final:" + run["id"]}).scalar_one() == 1
+
+
+def test_partial_research_can_only_feed_explicitly_caveated_teaching(research_env):
+    store, _, _, evidence = research_env
+    run=task(store)
+    worker=AgentWorker(store,research_factory=lambda db:ResearchService(db,evidence_service=evidence))
+    worker.tick()
+    run=Repository(store).read('alice',run['id'])
+    assert run['status']=='completed_partial' and run['completion']['status']=='partial'
+
+    learning=LearningContinuation(store)
+    with pytest.raises(HTTPException) as denied:
+        learning.request('alice',run['id'],ContinuationRequest(kind='teach',expectedRevision=run['revision']),'without-acceptance')
+    assert denied.value.status_code==409
+    with pytest.raises(HTTPException) as quiz_denied:
+        learning.request('alice',run['id'],ContinuationRequest(kind='quiz',expectedRevision=run['revision'],acceptPartialResult=True),'partial-quiz')
+    assert quiz_denied.value.status_code==409
+
+    class Teacher:
+        provider_name='test-limited-research-teacher'
+        prompts=[]
+        def complete_json(self,prompt,max_tokens=4000):
+            self.prompts.append(prompt)
+            return {'blocks':[{'kind':'explanation','heading':'What the report says','body':'The report contains one cited research excerpt.'}]}
+    teacher=Teacher()
+    learning=LearningContinuation(store,teacher)
+    accepted=learning.request('alice',run['id'],ContinuationRequest(kind='teach',expectedRevision=run['revision'],acceptPartialResult=True),'accept-partial')
+    learning.tick()
+    result=learning.listing('alice',run['id'])['items'][0]
+    assert result['id']==accepted['id'] and result['status']=='completed'
+    assert result['acceptedPartialResult'] is True
+    assert 'coverage' in ' '.join(result['limitations']).lower()
+    assert 'explicitly accepted partial research result' in teacher.prompts[0]
+    note=result['lesson']['blocks'][0]
+    assert note['kind']=='source_note' and 'coverage has not been verified' in note['body']
+    assert 'In this experiment' in teacher.prompts[0]
+
+
+def test_research_with_owned_csv_can_delegate_a_bounded_general_analysis(research_env,monkeypatch):
+    store,_,_,evidence=research_env
+    monkeypatch.setenv('OPENLEARN_DELEGATION_ENABLED','true')
+    from backend.app.agent_execution.contracts import Message
+    body=Message(clientMessageId='research-with-csv',sessionId='research_session_alice',
+        text='Research the topic, then profile my attached dataset',capability='research',
+        researchSpec={'query':'Does retrieval practice improve recall?','sourcePolicy':'external'},
+        csvText='week,attendance,note\n1,25,quiz\n2,35,project\n3,,final\n')
+    response=Coordinator(store).admit('alice',body,'research-with-csv')
+    parent=Repository(store).read('alice',response['references'][0]['id'])
+    assert parent['csvText']==body.csv_text and parent['analysisMode']=='general'
+
+    AgentWorker(store,research_factory=lambda db:ResearchService(db,evidence_service=evidence)).tick()
+    parent=Repository(store).read('alice',parent['id'])
+    assert parent['status']=='completed_partial'
+    delegation=Delegation(store)
+    child=delegation.create('alice',parent['id'],ChildRequest(expectedRevision=parent['revision'],kind='lab_analysis',assignment='Profile each column and summarize numeric attendance.'),'profile-dataset')
+    child_run=Repository(store).read('alice',child['childId'])
+    assert child_run['parentTaskId']==parent['id'] and child_run['analysisMode']=='general'
+    assert child_run['dependencies']==[{'id':parent['id'],'kind':'task','status':'satisfied','required':True,'sourceId':parent['id'],'sourceRevision':parent['desired_input_revision']}]
+
+    AgentWorker(store).tick()
+    child_run=Repository(store).read('alice',child['childId'])
+    assert child_run['status']=='completed' and child_run['completion']['status']=='verified'
+    assert {item['name'] for item in child_run['artifacts']}=={'analysis.xlsx','analysis.csv','analysis.pdf','report.json'}
+    delegation.tick()
+    receipt=delegation.list('alice',parent['id'])['items'][0]
+    assert receipt['status']=='accepted'
+    assert receipt['verification']['semanticSupport']=='deterministic_analysis'
 
 
 @pytest.mark.parametrize("invalidation", ["delete", "expire", "delete_before_late_write"])

@@ -4,7 +4,9 @@ import { useSyncExternalStore } from 'react';
 import { RichContent } from './rich-content';
 import styles from './reading.module.css';
 import { Visualization, VisualizationPlaceholder } from './visualization';
-import { parseVisualization } from '@/lib/visualization-spec';
+import { openWorkspaceCanvas } from '@/lib/workspace-events';
+import { parseVisualArtifact as parseVisualization } from '@/lib/generated-visual';
+import { LessonVisualRuns } from './generated-visual/visual-runs';
 
 export type ReadingBlock = {
   id: string; heading?: string | null; body: string; visualizations?: unknown[];
@@ -43,8 +45,9 @@ function readingParts(block: ReadingBlock) {
   ]);
 }
 
-export function LessonReader({ id, blocks, onSelect, visualPending = false, lessonId, onExerciseResolved, onConceptSelect }: {
-  id: string; blocks: ReadingBlock[]; visualPending?: boolean; lessonId?: string;
+export function LessonReader({ id, blocks, onSelect, visualPending = false, hideHtmlSource = false, lessonId, onExerciseResolved, onConceptSelect, redundantHeading }: {
+  redundantHeading?: string;
+  id: string; blocks: ReadingBlock[]; visualPending?: boolean; hideHtmlSource?: boolean; lessonId?: string;
   onSelect?: (block: ReadingBlock, raw: string, equation?: boolean) => void;
   onExerciseResolved?: (id: string) => void;
   onConceptSelect?: (term: string) => void;
@@ -56,13 +59,14 @@ export function LessonReader({ id, blocks, onSelect, visualPending = false, less
   const leading = prefs.spacing === 'compact' ? '1.55' : prefs.spacing === 'spacious' ? '1.85' : '1.65';
   return <div style={{ '--reading-size': size, '--reading-leading': leading } as React.CSSProperties}>
     {blocks.map((block, blockIndex) => <section key={block.id} id={`${id}-${block.id}`} tabIndex={-1} data-reading-block className={styles.block} style={{ fontSize: size }}>
-      <h2>{block.heading || 'Explore this idea'}</h2>
+      {!(redundantHeading !== undefined && (!block.heading || (blockIndex === 0 && block.heading.trim().toLocaleLowerCase() === redundantHeading.trim().toLocaleLowerCase()))) ? <h2>{block.heading || 'Explore this idea'}</h2> : null}
       {readingParts(block).map((part, index) => <div key={part.key}>
-        {part.text && <RichContent body={part.text} onExplore={onSelect ? (raw, equation) => onSelect(block, raw, equation) : undefined} onExerciseResolved={onExerciseResolved} onConceptSelect={onConceptSelect}/>}
-        {part.visual && <Visualization value={part.visual} lessonId={part.visual.sourceLessonId || lessonId}/>}
+        {part.text && <RichContent body={part.text} hideHtmlSource={hideHtmlSource || visualPending || Boolean(block.visualizations?.length)} onExplore={onSelect ? (raw, equation) => onSelect(block, raw, equation) : undefined} onExerciseResolved={onExerciseResolved} onConceptSelect={onConceptSelect}/>}
+        {part.visual && <><button type="button" className="study-canvas-open" onClick={() => { if (part.visual) openWorkspaceCanvas({ ...part.visual, sourceLessonId: part.visual.sourceLessonId || lessonId }); }}>Open in Canvas</button><Visualization value={part.visual} lessonId={part.visual.sourceLessonId || lessonId}/></>}
         {visualPending && blockIndex === 0 && index === 0 && !(block.visualizations?.length) && <VisualizationPlaceholder/>}
       </div>)}
     </section>)}
     {!blocks.length && visualPending && <VisualizationPlaceholder/>}
+    {lessonId?<LessonVisualRuns lessonId={lessonId} existingIds={blocks.flatMap(block=>(block.visualizations||[]).map(parseVisualization).filter(value=>value!==null).map(value=>value.id))}/>:null}
   </div>;
 }

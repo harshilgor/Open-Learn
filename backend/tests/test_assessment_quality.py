@@ -30,7 +30,9 @@ def sources():
 
 
 def test_leakage_duplicate_ambiguous_and_unsupported_fixtures():
-    assert "answer_leakage" in deterministic_quality_failures(item(options=[Option(id="a", label="Conditioning restricts the population to observations compatible with the event."), Option(id="b", label="All observations")], correct_ids=["a"]), sources(), [])
+    repeated = item(options=[Option(id="a", label="Conditioning restricts the population to observations compatible with the event."), Option(id="b", label="All observations")], correct_ids=["a"])
+    assert "answer_leakage" not in deterministic_quality_failures(repeated, sources(), [])
+    assert "answer_leakage" in deterministic_quality_failures(repeated.model_copy(update={"stem": "The correct answer is Conditioning restricts the population to observations compatible with the event."}), sources(), [])
     assert "duplicate_template" in deterministic_quality_failures(item(stem="Which population remains after conditioning on 42 events?"), sources(), [{"stem": "Which population remains after conditioning on 12 events?"}])
     assert "ambiguous_options" in deterministic_quality_failures(item(options=[Option(id="a", label="Same"), Option(id="b", label=" same ")]), sources(), [])
     assert "unsupported_source" in deterministic_quality_failures(item(source_ids=["not-owned"]), sources(), [])

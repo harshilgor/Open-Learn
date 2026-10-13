@@ -3,6 +3,18 @@ export type Recording={id:string;owner:string;title:string;courseId:string;start
 export type PendingMessage={key:string;owner:string;path?:string;body:Record<string,unknown>;state:'pending'|'conflict'};
 export interface JsonStore {read<T>(key:string):Promise<T|null>;write(key:string,value:unknown):Promise<void>}
 export interface Transport {json<T>(path:string,init?:RequestInit):Promise<T>;binary<T>(path:string,bytes:Uint8Array,headers:Record<string,string>):Promise<T>}
+export type UsageAllowance={
+  windowId:string|null;windowState:'ready'|'active';serverTime:number;startsAt:number|null;resetsAt:number|null;
+  grantedMicrocredits:number;usedMicrocredits:number;heldMicrocredits:number;availableMicrocredits:number;
+  revision:number;availability:'available'|'unavailable';reasonCode:string|null;
+};
+export type UsageActivityItem={
+  id:string;root_id:string;period_id:string;component:string;microcredits:number;held_micro:number;grant_micro:number;
+  status:'pending'|'in_progress'|'settled';source:'exact'|'estimated'|'pending'|string;created_at:number|string;
+  components?:{component:string;microcredits:number;held_micro:number;source:'exact'|'estimated'|'pending'|string;created_at:number|string}[];
+};
+export type UsageActivityAdjustment={id:string;component:string;kind:string;microcredits:number;created_at:number|string};
+export type UsageActivityResponse={items:UsageActivityItem[];adjustments?:UsageActivityAdjustment[];nextCursor:string|null};
 export class ApiError extends Error {constructor(public status:number,message:string){super(message)}}
 export function safeDeepLink(value:string):{session:string;task?:string}|null {
   const match=/^(?:openlearn:\/\/|\/)?s\/([A-Za-z0-9_.:-]+)(?:\?task=([A-Za-z0-9_.:-]+))?$/.exec(value);

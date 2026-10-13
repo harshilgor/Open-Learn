@@ -6,7 +6,7 @@ export type InputRequest={requestId:string;revision:number;question:string;optio
 export type AgentArtifact={id:string;name:string;mediaType:string;size:number};
 export type AgentTask={schemaVersion:2;id:string;revision:number;sessionId:string;kind:string;message:string;status:string;phase:string;summary?:string;deckId?:string;resultReferences?:{kind:string;id:string}[];completion?:{status?:string};pendingRequests:InputRequest[];artifacts:AgentArtifact[];sources?:{id:string;title:string;canonicalUrl?:string|null;contentAvailable?:boolean}[];allowedCommands:string[];error?:string};
 export type Activity={id:string;sequence:number;taskId:string;type:string;text?:string};
-export type Snapshot={cursor:number;hasMore:boolean;items:Activity[];tasks:AgentTask[]};
+export type Snapshot={cursor:number;hasMore:boolean;items:Activity[];tasks:AgentTask[];resnapshotRequired?:boolean;prunedThrough?:number};
 export type Admission={handled:boolean;messageId:string;references:{kind:string;id:string}[]};
 
 export function snapshot(sessionId:string,after?:number){return request<Snapshot>(`/v1/assistant/sessions/${encodeURIComponent(sessionId)}/activity${after===undefined?'':`?after=${after}`}`);}

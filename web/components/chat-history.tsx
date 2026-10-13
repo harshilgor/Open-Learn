@@ -31,18 +31,22 @@ function relativeTime(iso: string, now: Date) {
   return new Date(iso).toLocaleDateString();
 }
 
-export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [], courseFilter = null }: {
+export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [], courseFilter = null, fixedBuddyId }: {
   activeSessionId: string | null;
   refreshKey: number;
   onOpen: (sessionId: string | null) => void;
   courses?: CourseSummary[];
   courseFilter?: string | null;
+  fixedBuddyId?: string;
 }) {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const [buddyFilter, setBuddyFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [pinned, setPinned] = useState<string[]>(()=>{try{const value:unknown=JSON.parse(localStorage.getItem('openlearn-pinned-chats-v1')||'[]');return Array.isArray(value)?value.filter((id):id is string=>typeof id==='string'):[];}catch{return [];}});
+  function togglePin(id:string){const next=pinned.includes(id)?pinned.filter(value=>value!==id):[...pinned,id];setPinned(next);try{localStorage.setItem('openlearn-pinned-chats-v1',JSON.stringify(next));}catch{/* Optional local preference. */}}
   const buddies=useBuddies();
   const refreshBuddies=buddies.refresh;
   const [total,setTotal]=useState(0),[loadingMore,setLoadingMore]=useState(false);
-  const [allChats,setAllChats]=useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [errorDetail, setErrorDetail] = useState('');
@@ -72,7 +76,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
       const result = await learningApi.listChatSessions({ limit: 100 });
       setSessions(result.sessions);
       setTotal(result.total);
-      await refreshBuddies();
+      void refreshBuddies().catch(() => {});
     } catch (cause) {
       const friendly = friendlyError(cause);
       setError(friendly.message);
@@ -109,17 +113,17 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
   const groups = useMemo(() => {
     const now = new Date();
     const buckets = new Map<string, ChatSessionSummary[]>();
-    const courseNames = new Map(courses.map(course => [course.id, course.name]));
-    for (const item of sessions) {
-      if(!buddies.snapshot)continue;
-      if(!allChats && buddies.snapshot.chats[item.id]!==buddies.active?.id)continue;
+    for (const item of [...sessions].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))) {
+      const filter = fixedBuddyId || buddyFilter;
+      if (filter && buddies.snapshot?.chats[item.id] !== filter) continue;
+      if (![item.title,item.preview,item.goal,courses.find(course=>course.id===item.courseId)?.name,buddies.snapshot?.profiles.find(buddy=>buddy.id===buddies.snapshot?.chats[item.id])?.name].filter(Boolean).join(' ').toLowerCase().includes(search.toLowerCase())) continue;
       if (courseFilter && item.courseId !== courseFilter) continue;
-      const group = item.courseId ? `course:${item.courseId}` : `date:${groupFor(item.updatedAt, now)}`;
+      const group = pinned.includes(item.id) ? 'date:Pinned' : `date:${groupFor(item.updatedAt, now)}`;
       if (!buckets.has(group)) buckets.set(group, []);
       buckets.get(group)!.push(item);
     }
-    return [...courses.map(course => `course:${course.id}`).filter(key => buckets.has(key)), ...[...buckets.keys()].filter(key => key.startsWith('course:') && !courseNames.has(key.slice(7))), ...GROUP_ORDER.map(group => `date:${group}`).filter(key => buckets.has(key))].map(key => ({ group: key.startsWith('course:') ? courseNames.get(key.slice(7)) || 'Other course' : key.slice(5), key, items: buckets.get(key)! }));
-  }, [sessions, courses, courseFilter,buddies.snapshot,buddies.active?.id,allChats]);
+    return ['Pinned',...GROUP_ORDER].map(group => `date:${group}`).filter(key => buckets.has(key)).map(key => ({ group: key.slice(5), key, items: buckets.get(key)! }));
+  }, [sessions, courseFilter, buddies.snapshot, buddyFilter, fixedBuddyId, search, pinned, courses]);
 
   async function commitRename(id: string) {
     const title = draft.trim();
@@ -172,8 +176,10 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
 
   return (
     <div className={styles.history}>
-      <div className={styles.label}>Recents</div>
-      <label className="px-3 text-xs"><input type="checkbox" checked={allChats} onChange={e=>setAllChats(e.target.checked)}/> All chats, including archived Buddies</label>
+      <div className={styles.filters}>
+        <label>Conversations<input type="search" aria-label="Search conversations" placeholder="Search chats…" value={search} onChange={event => setSearch(event.target.value)} /></label>
+        {!fixedBuddyId ? <select aria-label="Filter conversations by buddy" value={buddyFilter} onChange={event => setBuddyFilter(event.target.value)}><option value="">All buddies</option>{buddies.snapshot?.profiles.map(buddy => <option key={buddy.id} value={buddy.id}>{buddy.name}</option>)}</select> : null}
+      </div>
       {loading ? (
         <div aria-busy="true" aria-label="Loading chat history" className={styles.loading}>
           {[0, 1, 2].map(index => <span key={index} className={styles.skeleton} />)}
@@ -188,7 +194,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
       ) : null}
       {!loading && !error && groups.length === 0 ? (
         <div className={styles.state}>
-          <p>No conversations yet. Ask your first question and it will appear here.</p>
+          <p>{search || buddyFilter ? 'No matching conversations. Try another search or buddy.' : 'No conversations yet. Ask your first question and it will appear here.'}</p>
           <button type="button" className={styles.retry} onClick={() => onOpen(null)}><Plus size={14} />New chat</button>
         </div>
       ) : null}
@@ -220,7 +226,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
                     className={'nav-item ' + styles.item + (item.id === activeSessionId ? ' active' : '')}
                     onClick={() => onOpen(item.id)}
                   >
-                    <span className={styles.itemBody}><span className={styles.title}>{item.title}</span><span className={styles.meta}>{relativeTime(item.updatedAt, new Date())}<span className={styles.courseTag}>{buddies.snapshot?.profiles.find(p=>p.id===buddies.snapshot?.chats[item.id])?.name||'Buddy'}</span>{item.courseId ? <span className={styles.courseTag}>{courses.find(course => course.id === item.courseId)?.name || 'Course'}</span> : null}</span></span>
+                    <span className={styles.itemBody}><span className={styles.title}>{item.title}</span><span className={styles.preview}>{item.preview || item.goal}</span><span className={styles.meta}>{relativeTime(item.updatedAt, new Date())}<span className={styles.courseTag}>{buddies.snapshot?.profiles.find(p=>p.id===buddies.snapshot?.chats[item.id])?.name||'Buddy'}</span>{item.courseId ? <span className={styles.courseTag}>{courses.find(course => course.id === item.courseId)?.name || 'Course'}</span> : null}</span></span>
                   </button>
                 )}
                 {renamingId !== item.id ? (
@@ -238,6 +244,7 @@ export function ChatHistory({ activeSessionId, refreshKey, onOpen, courses = [],
                   <>
                     <button type="button" aria-hidden tabIndex={-1} className={styles.scrim} onClick={() => { setMenuId(null); setConfirmDeleteId(null); }} />
                     <div className={styles.menu} role="menu" aria-label={`Actions for ${item.title}`}>
+                      <button type="button" role="menuitem" onClick={()=>{togglePin(item.id);setMenuId(null);}}>{pinned.includes(item.id)?'Unpin':'Pin on this device'}</button>
                       <button type="button" role="menuitem" onClick={() => { setDraft(item.title); setRenamingId(item.id); setMenuId(null); setConfirmDeleteId(null); }}>Rename</button>
                       <button type="button" role="menuitem" disabled={busyId === item.id || item.turnCount === 0} onClick={() => void regenerateTitle(item.id)}>Regenerate title</button>
                       {confirmDeleteId === item.id ? (

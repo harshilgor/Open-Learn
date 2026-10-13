@@ -1,0 +1,363 @@
+"""Pinned upstream visual graph with Open Learn's provider/auth boundary."""
+import os
+import sys
+from contextvars import ContextVar
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+UPSTREAM = Path(os.getenv('OPENLEARN_OPENINTELLIGENTUI_ROOT', Path(__file__).parent / 'upstream'))
+sys.path.insert(0, str(UPSTREAM / 'apps/agent'))
+sys.path.insert(0, str(ROOT))
+
+os.environ['LANGSMITH_TRACING'] = 'false'
+os.environ['LANGCHAIN_TRACING_V2'] = 'false'
+
+from fastapi import FastAPI
+from starlette.responses import JSONResponse
+from langsmith import tracing_context
+from langchain_openai import ChatOpenAI
+from langchain.agents.middleware import AgentMiddleware, hook_config
+from copilotkit import CopilotKitMiddleware, LangGraphAGUIAgent
+from ag_ui_langgraph import add_langgraph_fastapi_endpoint
+from deepagents import create_deep_agent
+from src import model as upstream_model
+from src import visualization_router as upstream_router
+from src.anthropic_compat import ConsecutiveSystemMessagesMiddleware
+from src.bounded_memory_saver import BoundedMemorySaver
+from src.skill_backend import SKILL_SOURCES, build_agent_backend, _SKILL_TEXT
+from src.prompt import SYSTEM_PROMPT
+from src.trip_images import get_trip_stop_images
+from src.plan import plan_visualization
+import base64
+import hashlib
+import hmac
+import json
+import time
+import re
+ADAPTER_REVISION=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+
+API_ORIGIN = os.getenv('OPENLEARN_VISUAL_API_ORIGIN', 'http://127.0.0.1:8000')
+if not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{2,5}', API_ORIGIN):
+    raise ValueError('Visual provider proxy must stay on loopback')
+
+
+def verify_ticket(value):
+    secret = os.getenv('OPENLEARN_VISUAL_INTERNAL_SECRET', '')
+    encoded, signature = value.split('.', 1)
+    expected = hmac.new(secret.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    if len(secret) < 32 or len(value) > 2000 or not hmac.compare_digest(signature, expected):
+        raise ValueError('visual_unauthorized')
+    claim = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+    if claim['exp'] <= time.time():
+        raise ValueError('visual_unauthorized')
+    return claim
+
+
+def capability():
+    missing = [key for key in ('OPENLEARN_VISUAL_INTERNAL_SECRET',) if not os.getenv(key)]
+    return {'configured': not missing, 'missingFields': missing,
+            'model': os.getenv('OPENLEARN_VISUAL_MODEL') or os.getenv('OPENROUTER_MODEL', 'openrouter/free')}
+
+current_ticket = ContextVar('openlearn_visual_ticket', default=None)
+original_options = upstream_router.request_options
+
+
+def max_output_tokens():
+    # Mirrors backend visual_limits(); the API proxy enforces the same bound.
+    try:
+        value=int(os.getenv('OPENLEARN_VISUAL_MAX_OUTPUT_TOKENS','16000'))
+    except ValueError:
+        value=16000
+    return max(1024,min(16000,value))
+
+
+def request_model(_fallback):
+    ticket = current_ticket.get()
+    if not ticket:
+        raise ValueError('visual_unauthorized')
+    return ChatOpenAI(model=capability()['model'], api_key=ticket,
+        base_url=API_ORIGIN+'/internal/visuals/model/v1',
+        max_tokens=max_output_tokens(), max_retries=0, streaming=True, stream_usage=True,
+        timeout=90, openai_proxy='',
+        http_client=__import__('httpx').Client(trust_env=False),
+        http_async_client=__import__('httpx').AsyncClient(trust_env=False))
+
+
+def routing_options(context):
+    # Preserve upstream criteria and instructions while moving auth/billing to the host.
+    # The placeholder is never sent to the provider; its header is replaced below.
+    from src.credentials import current_credentials, Credentials
+    token = current_credentials.set(Credentials('internal', 'internal'))
+    try:
+        options = original_options(context)
+    finally:
+        current_credentials.reset(token)
+    options['headers'] = {'Authorization': 'Bearer ' + current_ticket.get()}
+    model = os.getenv('OPENLEARN_VISUAL_JEV_MODEL', 'typesafe/jev-1.13').strip()
+    options['json']['model'] = {'jev-latest': '~typesafe/jev-latest', 'jev-1.13': 'typesafe/jev-1.13'}.get(model, model)
+    return options
+
+
+upstream_model.request_model = request_model
+upstream_router.request_options = routing_options
+upstream_router.JEV_URL = API_ORIGIN+'/internal/visuals/jev'
+upstream_router.provider_trust_env = lambda: False
+original_routing_input = upstream_router.routing_input
+
+
+def routing_input(state):
+    # Open Learn repair feedback arrives as a user message; the presentation
+    # chosen for the learner's turn stands, so it is never re-routed (to text).
+    human = next((message for message in reversed(state.get('messages', [])) if message.type == 'human'), None)
+    content = human.content if human is not None and isinstance(human.content, str) else ''
+    if content.startswith('Open Learn tested this visual') and state.get('visualization_decision'):
+        return None
+    return original_routing_input(state)
+
+
+upstream_router.routing_input = routing_input
+
+# Preserve the bundled geographic skill while replacing CDN fetching with the
+# reviewed local module and stylesheet supplied by the host renderer.
+skill = _SKILL_TEXT['/advanced-visualization/SKILL.md']
+start = skill.index('Load Leaflet 1.9.4 from')
+end = skill.index('Use L.circleMarker', start)
+_SKILL_TEXT['/advanced-visualization/SKILL.md'] = skill[:start] + 'Load the locally bundled Leaflet 1.9.4 with `const {default:L}=await import("leaflet")`. Its CSS is already present in the frame. Do not fetch CSS or load CDN scripts.\n' + skill[end:]
+
+
+# Tool results that start with this marker are Open Learn verification
+# feedback, not a successful render. Shared with backend/app/openintelligentui.py.
+VERIFICATION_FEEDBACK_PREFIX = 'Open Learn tested this visual'
+# Latest candidate kept verbatim in repair context so the model can fix it in
+# place; older or larger ones are compacted to bound the request.
+MAX_REPAIR_SOURCE_CHARS = 64000
+
+
+def paired_tool_messages(messages,state_messages):
+    """Every tool call immediately followed by its result; no orphan results.
+
+    CopilotKit intercepts frontend tool calls and strips them (and any result
+    for them) from the graph history, but a provider-format copy of the call can
+    survive in additional_kwargs or content blocks and is serialized anyway.
+    Anthropic rejects such a call without a result ("tool_use ids were found
+    without tool_result blocks"). Calls are normalized here and each gets its
+    result from state or a neutral placeholder; Open Learn's repair feedback
+    follows as a user message.
+    """
+    from langchain.messages import ToolMessage
+    from langchain_core.messages import AIMessage
+    known={message.tool_call_id:message for message in state_messages if isinstance(message,ToolMessage)}
+    known.update({message.tool_call_id:message for message in messages if isinstance(message,ToolMessage)})
+    result=[]
+    for message in messages:
+        if isinstance(message,ToolMessage):
+            continue  # re-attached below, directly after its call
+        raw=(getattr(message,'additional_kwargs',None) or {}).get('tool_calls') if isinstance(message,AIMessage) else None
+        if raw and not getattr(message,'tool_calls',None):
+            # CopilotKit strips intercepted frontend calls from tool_calls but
+            # the provider-format copy survives and is serialized anyway.
+            calls=[]
+            for item in raw:
+                function=item.get('function') or {}
+                try:
+                    args=json.loads(function.get('arguments') or '{}')
+                except ValueError:
+                    args={}
+                if item.get('id'):
+                    calls.append({'id':item['id'],'name':function.get('name',''),'args':args if isinstance(args,dict) else {},'type':'tool_call'})
+            kwargs={key:value for key,value in message.additional_kwargs.items() if key!='tool_calls'}
+            message=message.model_copy(update={'tool_calls':calls,'additional_kwargs':kwargs})
+        if isinstance(message,AIMessage) and not getattr(message,'tool_calls',None) and isinstance(message.content,list):
+            # A Claude call can survive only as a tool_use content block, which
+            # the OpenAI converter turns back into a call later; normalize it
+            # here so its result is attached.
+            blocks=[block for block in message.content if isinstance(block,dict) and block.get('type') in {'tool_use','tool_call'} and block.get('id')]
+            if blocks:
+                calls=[{'id':block['id'],'name':block.get('name',''),'args':block.get('input',block.get('args')) or {},'type':'tool_call'} for block in blocks]
+                rest=[block for block in message.content if block not in blocks]
+                message=message.model_copy(update={'tool_calls':calls,'content':rest or ''})
+        result.append(message)
+        if isinstance(message,AIMessage):
+            for call in getattr(message,'tool_calls',None) or []:
+                answer=known.get(call.get('id'))
+                result.append(answer if answer is not None else ToolMessage(
+                    content=f"The host rendered the {call.get('name')} artifact. Any review feedback follows.",tool_call_id=call.get('id')))
+    return result
+
+
+class EndOnTextDecision(AgentMiddleware):
+    """When JEV selects plain text the tutor's explanation already answers the
+    turn, so the visual run ends without spending a model call."""
+
+    @staticmethod
+    def _text_only(state):
+        return (state.get('visualization_decision') or {}).get('renderer') == 'text'
+
+    @hook_config(can_jump_to=['end'])
+    def before_model(self, state, runtime):
+        return {'jump_to': 'end'} if self._text_only(state) else None
+
+    @hook_config(can_jump_to=['end'])
+    async def abefore_model(self, state, runtime):
+        return {'jump_to': 'end'} if self._text_only(state) else None
+
+
+class VisualToolsOnly(AgentMiddleware):
+    # generateSandboxedUi is a CopilotKit frontend tool: CopilotKitMiddleware
+    # intercepts the call and ends the run, so it is never executed here.
+    # Validation, runtime verification and repair happen in the Open Learn
+    # orchestrator, which answers the call with a tool result on this thread.
+
+    def wrap_model_call(self, request, handler):
+        return handler(self.limit(request))
+
+    async def awrap_model_call(self, request, handler):
+        return await handler(self.limit(request))
+
+    @staticmethod
+    def limit(request):
+        allowed = {'read_file', 'ls', 'glob', 'grep', 'generateSandboxedUi',
+                   'render_a2ui', 'send_a2ui_json_to_client', 'generate_a2ui', 'get_trip_stop_images','plan_visualization'}
+        tools = [tool for tool in request.tools if (tool.get('name') if isinstance(tool, dict) else tool.name) in allowed]
+        import logging
+        logging.getLogger(__name__).warning('Visual model tools: %s; presentation: %s',
+            [tool.get('name') if isinstance(tool, dict) else tool.name for tool in tools],
+            (request.state.get('visualization_decision') or {}).get('renderer'))
+        render_names={'generateSandboxedUi','render_a2ui','send_a2ui_json_to_client','generate_a2ui'}
+        calls={call['id'] for message in request.state.get('messages',[]) for call in getattr(message,'tool_calls',[]) if call.get('name') in render_names}
+        def feedback(message):
+            content=message.content if isinstance(message.content,str) else ''
+            return content.startswith(VERIFICATION_FEEDBACK_PREFIX)
+        published=any(getattr(message,'tool_call_id',None) in calls and getattr(message,'status','success')!='error' and not feedback(message)
+                      for message in request.state.get('messages',[]))
+        decision=request.state.get('visualization_decision') or {}
+        needs_visual=decision.get('renderer') in {'a2ui','open_generative_ui'}
+        # A visual producer must actually call a render tool before finishing;
+        # prose containing code is not a rendered artifact. Data/skill tools
+        # remain available while gathering context. The graph limit bounds it.
+        choice=request.tool_choice
+        system=request.system_message
+        messages=[]
+        # Normalize provider-format tool calls first so compaction sees them.
+        history=paired_tool_messages(request.messages,request.state.get('messages',[]))
+        latest=next((call['id'] for message in reversed(history) for call in reversed(getattr(message,'tool_calls',None) or [])
+                     if call.get('name')=='generateSandboxedUi'),None)
+        for message in history:
+            original_calls=getattr(message,'tool_calls',[])
+            if original_calls:
+                compact=[]
+                for call in original_calls:
+                    if call.get('name')=='generateSandboxedUi' and call.get('id')==latest and len(json.dumps(call.get('args',{})))<=MAX_REPAIR_SOURCE_CHARS:
+                        # The candidate under repair stays verbatim so the model
+                        # fixes the reported problems instead of starting over.
+                        compact.append(call)
+                    elif call.get('name')=='generateSandboxedUi':
+                        # Older attempts are output code, not fresh evidence.
+                        # Rebuild from the grounded brief and the typed
+                        # validation error instead of echoing unbounded failed code.
+                        args=call.get('args',{})
+                        compact.append(call|{'args':{'html':str(args.get('html',''))[:1000],
+                            'css':str(args.get('css',''))[:500],
+                            'jsFunctions':'/* Prior code omitted; rebuild using grounded data and validation feedback. */'}})
+                    else:compact.append(call)
+                message=message.model_copy(update={'tool_calls':compact,'additional_kwargs':{key:value for key,value in message.additional_kwargs.items() if key!='tool_calls'}})
+            messages.append(message)
+        if needs_visual and not published:
+            names={tool.get('name') if isinstance(tool,dict) else tool.name for tool in tools}
+            chosen='generateSandboxedUi' if decision['renderer']=='open_generative_ui' else 'render_a2ui'
+            photo_calls={call['id'] for message in request.state.get('messages',[]) for call in getattr(message,'tool_calls',[]) if call.get('name')=='get_trip_stop_images'}
+            if decision.get('visualization')=='animated_route' and not photo_calls:chosen='get_trip_stop_images'
+            # Some OpenRouter endpoints accept "required" but still emit prose;
+            # a specific named tool is tested and enforced instead. Models with
+            # mandatory reasoning (Claude Sonnet/Opus 5.5) reject any forced
+            # choice, so OPENLEARN_VISUAL_TOOL_CHOICE=auto instructs instead; the
+            # orchestrator retries a run that produces no artifact.
+            forced=os.getenv('OPENLEARN_VISUAL_TOOL_CHOICE','named').strip().lower()!='auto'
+            if chosen in names and forced:choice={'type':'function','function':{'name':chosen}}
+            instruction='' if forced or chosen not in names else (
+                f'\nRespond only by calling {chosen} with the complete artifact. Do not answer in prose and do not describe the code.')
+            # Supply the focused skill directly so forced rendering does not skip its guidance.
+            if instruction and decision['renderer']!='open_generative_ui':
+                from langchain.messages import SystemMessage
+                original=system.content if system else ''
+                system=SystemMessage(content=original+instruction if isinstance(original,str) else [*original,{'type':'text','text':instruction}])
+            if decision['renderer']=='open_generative_ui':
+                from langchain.messages import SystemMessage
+                skill_name='svg-diagrams' if decision.get('visualization') in {'flowchart','static_diagram'} else 'advanced-visualization'
+                guidance=_SKILL_TEXT[f'/{skill_name}/SKILL.md']
+                if skill_name=='advanced-visualization':
+                    # Do not repeat every unrelated visualization recipe in a
+                    # forced tool request. Full skills remain in the read backend.
+                    sections=re.split(r'(?=^## )',guidance,flags=re.M)
+                    geographic=decision.get('visualization') in {'animated_route','map','geographic_map'}
+                    guidance='\n'.join(section for section in sections if
+                        not section.startswith(('## Live geographic maps','## Trip itineraries')) or geographic)
+                    if geographic:
+                        guidance='\n'.join(section for section in sections if
+                            section.startswith(('## Streaming','## Live geographic maps','## Trip itineraries')))
+                guidance+=instruction
+                original=system.content if system else ''
+                system=SystemMessage(content=original+'\n'+guidance if isinstance(original,str) else [*original,{'type':'text','text':guidance}])
+        return request.override(tools=tools,tool_choice=choice,system_message=system,messages=messages)
+
+
+graph = create_deep_agent(
+    model=upstream_model.CredentialScopedModel(fallback=upstream_model.UnconfiguredModel()),
+    tools=[get_trip_stop_images,plan_visualization], middleware=[upstream_model.RequestModelMiddleware(), CopilotKitMiddleware(),
+        upstream_router.JevVisualizationMiddleware(), EndOnTextDecision(), ConsecutiveSystemMessagesMiddleware(), VisualToolsOnly()],
+    skills=SKILL_SOURCES, backend=build_agent_backend,
+    checkpointer=BoundedMemorySaver(max_threads=40),
+    system_prompt=SYSTEM_PROMPT + '\n' + (Path(__file__).parent/'design-skill.md').read_text(encoding='utf-8') + '\nYou are Open Learn\'s visual producer. Produce the selected useful visual from the supplied grounded context. '
+        'The primary tutor already supplies the explanation: avoid repeating it outside the visual. '
+        'No external actions, saved-account claims, credential forms, or fabricated sources. Include units and an accessible text explanation inside the artifact.'
+        ' The host import map supports only three, three/addons/controls/OrbitControls.js, gsap, d3, chart.js and leaflet. '
+        'Use bare module imports for those libraries or inline SVG and native DOM. Remote scripts and network requests are blocked. Images may use only the USGS tile path and sourced Wikimedia hosts described in the map skill. '
+        'Libraries are ES modules, not globals: await import("three") or await import("chart.js") inside an async initialization function; assign the returned exports before using them. Do not assume THREE, Chart, d3, gsap or L are already globals. Call and await initialization from jsExpressions, which is a JSON array of strings such as ["init()"]: quote the code; never write bare code as its value. '
+        'Follow-ups use Websandbox.connection.remote.sendPrompt({text}) and links use Websandbox.connection.remote.openLink({url}). '
+        'The host asks the learner to review these actions; never claim a follow-up was automatically sent.'
+        ' For adjustable numeric inputs, use a unique safe id, aria-label, type range or number, explicit min/max/value, and an input event listener. '
+        'Initialize the simulation from await Websandbox.connection.remote.getState().controls when available, otherwise the input value. '
+        'Always recompute from input values; never hardcode the original values into the event handler. This lets verified voice updates replay saved numeric state.'
+        ' If a tool result reports verification problems, fix every named problem and submit the complete corrected visual. Never leave TODOs or placeholder code. Use every DOM ID exactly as declared in HTML.\n'
+        + (Path(__file__).parent/'quality-contract.md').read_text(encoding='utf-8')
+)
+
+app = FastAPI(title='Open Learn visual graph')
+
+
+class TicketMiddleware:
+    def __init__(self, app): self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http' or scope['path'] == '/health':
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get('headers', []))
+        value = headers.get(b'x-openlearn-visual-ticket', b'').decode()
+        try:
+            verify_ticket(value)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning('Visual request rejected (ticket present: %s)', bool(value))
+            return await JSONResponse({'error': 'visual_unauthorized'}, status_code=401)(scope, receive, send)
+        token = current_ticket.set(value)
+        try:
+            with tracing_context(enabled=False):
+                await self.app(scope, receive, send)
+        finally:
+            current_ticket.reset(token)
+
+
+app.add_middleware(TicketMiddleware)
+
+
+@app.get('/health')
+def health():
+    return {'status': 'ok', 'service': 'openlearn-visual-agent', 'capability': capability(),
+            'checkpointMode': 'local_bounded_memory','adapterRevision':ADAPTER_REVISION}
+
+
+add_langgraph_fastapi_endpoint(app=app, agent=LangGraphAGUIAgent(name='openlearn_visuals', description='Open Learn interactive visual producer', graph=graph, config={'recursion_limit': 24}), path='/')
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host='127.0.0.1', port=8123, log_level='warning')

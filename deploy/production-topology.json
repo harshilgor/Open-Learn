@@ -1,0 +1,12 @@
+{
+  "apiOrigin": "https://openlearn-api-virginia.onrender.com",
+  "serviceId": "srv-db68giu7bikc73fipn6g",
+  "region": "virginia",
+  "frontendOrigin": "https://open-learn-eta.vercel.app",
+  "rollbackApiOrigin": "https://openlearn-api-saku.onrender.com",
+  "rollbackServiceId": "srv-db1jh5c9v7es73fseqv0",
+  "executionMode": "embedded",
+  "databaseRegion": "us-east-1",
+  "databaseSharedServerPool": 15,
+  "verifiedApplicationCommit": "e91b4038cc4b76496fb32c1f40a4643299d70d87"
+}

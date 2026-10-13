@@ -80,6 +80,8 @@ def create_policy(store, owner, command, identifier=None):
     data = command.model_dump(by_alias=True, exclude_none=True)
     data.pop('expectedRevision', None)
     with store.transaction() as conn:
+        from ..calendar.service import invalidate_calendar
+        invalidate_calendar(owner)
         assert_owner_active(conn, owner)
         from ..academic_planning import AcademicPlanningService
         svc = AcademicPlanningService(store)

@@ -1,0 +1,59 @@
+"use client";
+
+import { request } from './api';
+import { cachedAccountOwnerId } from './account-session';
+import { sendMessage } from './assistant-client';
+import { routeFlashcardRequest } from './flashcards-client';
+
+type AdmissionReply = Awaited<ReturnType<typeof sendMessage>> & {
+  question?: string; directive?: { kind: string; taskId?: string; action?: string };
+  runtimeOwner?: string; status?: string; message?: string; calendarReceipt?: {message:string};
+};
+type Pending = { key: string; body: Record<string, unknown> };
+export type ConversationReplyTarget = {
+  targetTaskId: string;
+  replyToRequestId: string;
+  expectedRevision: number;
+  expectedRequestRevision: number;
+};
+
+/** Both chat surfaces admit a message once before selecting a domain execution owner. */
+export async function admitConversation(message: string, sessionId: string, courseId?: string | null, previousBrowserTaskId?: string, attachments: {versionId:string;name:string}[] = [], presentation: 'conversation'|'ask'|'learn'|'quiz' = 'conversation', replyTarget?: ConversationReplyTarget): Promise<AdmissionReply & { message?: string }> {
+  // The normal chat path has already made an authenticated browser-task request,
+  // which resolves and caches the current owner. Avoid a second identity RTT.
+  // Keep the request fallback for other callers and cold local sessions.
+  const ownerId = cachedAccountOwnerId() || (await request<{ ownerId: string }>('/v1/account')).ownerId;
+  const storageKey = `openlearn-conversation-admission:${ownerId}:${sessionId}`;
+  const saved = sessionStorage.getItem(storageKey);
+  const pending: Pending = saved ? JSON.parse(saved) : {
+    key: crypto.randomUUID(), body: { clientMessageId: crypto.randomUUID(), sessionId, text: message,
+      ...(courseId ? { courseId } : {}), attachments, presentation, ...(previousBrowserTaskId ? { previousBrowserTaskId } : {}),
+      ...(replyTarget || {}), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+  };
+  const expectedTarget = replyTarget || {};
+  if (pending.body.text !== message || JSON.stringify(pending.body.attachments || []) !== JSON.stringify(attachments)
+      || ['targetTaskId','replyToRequestId','expectedRevision','expectedRequestRevision'].some(key => pending.body[key] !== (expectedTarget as Record<string, unknown>)[key])) {
+    throw new Error('An earlier message is awaiting acknowledgement. Retry its original text and reply target before sending a changed request.');
+  }
+  sessionStorage.setItem(storageKey, JSON.stringify(pending));
+  let admission: AdmissionReply;
+  try { admission = await sendMessage(pending.body, pending.key) as AdmissionReply; }
+  catch (cause) {
+    const status = typeof cause === 'object' && cause !== null && 'status' in cause ? Number(cause.status) : 0;
+    if ([400,403,404,422].includes(status)) sessionStorage.removeItem(storageKey);
+    throw cause;
+  }
+  const result: AdmissionReply & { message?: string } = admission;
+  if (admission.directive?.kind === 'flashcards') {
+    await routeFlashcardRequest(message, sessionId, courseId || undefined);
+  } else if (admission.directive?.kind === 'browser_control') {
+    const task = await request<{ revision: number }>(`/v1/assistant/tasks/${admission.directive.taskId}`);
+    await request(`/v1/assistant/tasks/${admission.directive.taskId}/commands`, {
+      method: 'POST', body: JSON.stringify({ action: admission.directive.action, expectedRevision: task.revision }),
+    });
+  }
+  sessionStorage.removeItem(storageKey);
+  window.dispatchEvent(new Event('openlearn-browser-task-changed'));
+  window.dispatchEvent(new Event('openlearn-agent-activity-changed'));
+  return result;
+}

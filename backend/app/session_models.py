@@ -68,6 +68,7 @@ class SessionCreate(ApiModel):
 
     graph_id: str | None = None
     buddy_id: str | None = Field(default=None, max_length=160)
+    parent_session_id: str | None = Field(default=None, max_length=160)
     graph_revision: int | None = Field(default=None, ge=1)
     goal: str | None = Field(default=None, max_length=1000)
     scope_id: str | None = None
@@ -91,6 +92,7 @@ class SessionCreate(ApiModel):
 
 class LearningSession(ApiModel):
     id: str
+    parent_session_id: str | None = None
     buddy_id: str | None = None
     learner_id: str = Field(default="local", min_length=1, max_length=120, pattern=r"^[A-Za-z0-9_.:-]+$")
     graph_id: str
@@ -330,7 +332,7 @@ class SessionRenameInput(ApiModel):
 
 
 class SessionSummary(ApiModel):
-    """Lightweight chat-history entry: metadata only, never lesson content."""
+    """Lightweight history entry with a learner preview, never lesson content."""
 
     id: str
     title: str
@@ -338,9 +340,12 @@ class SessionSummary(ApiModel):
     course_id: str | None = None
     updated_at: datetime
     turn_count: int = Field(default=0, ge=0)
+    preview: str | None = None
 
     def to_summary_dict(self) -> dict[str, Any]:
         data = self.model_dump(mode="json", by_alias=True)
         if self.course_id is None:
             data.pop("courseId", None)
+        if self.preview is None:
+            data.pop("preview", None)
         return data

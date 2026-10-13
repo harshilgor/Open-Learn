@@ -18,6 +18,8 @@ The web API client reads NEXT_PUBLIC_LEARNING_API_URL and otherwise defaults to 
 
 ## Architecture and implementation references
 
+- [Visual stack parity audit](OPENINTELLIGENTUI_PARITY_AUDIT.md) and [local/hosted integration](OPENINTELLIGENTUI_LOCAL_INTEGRATION.md): owned durable visual jobs, contextual generation, portable isolated exports, MCP resources and release acceptance boundaries.
+
 - [Original 2.0 architecture proposal](OPENLEARN_2_0_ARCHITECTURE_BRIEF.md): product direction and learner intelligence architecture.
 - [Implementation tracker](OPENLEARN_2_IMPLEMENTATION_TRACKER.md): historical delivery/gap tracking; verify claims against the current checkout.
 - [2.0 component index](../Open%20Learn%202.0/README.md): original component specifications and scope extension.
@@ -25,6 +27,8 @@ The web API client reads NEXT_PUBLIC_LEARNING_API_URL and otherwise defaults to 
 - [Product/provider and phone proposal](../Open%20Learn%202.0/27_mobile_and_provider_choices.md): message-first mobile interface, recording, API candidates, and current selections.
 
 ## Planned additions
+
+- [OpenIntelligentUI visual stack replacement plan](OPENINTELLIGENTUI_VISUAL_STACK_MIGRATION_PLAN.md): replacement design covering JEV presentation routing, Deep Agents/LangGraph, CopilotKit/AG-UI, A2UI and Websandbox. The [local integration status](OPENINTELLIGENTUI_LOCAL_INTEGRATION.md) records the implemented first slice, setup, tests and outstanding acceptance gates. It is not activated or accepted for production.
 
 A native Expo mobile application, Daytona agent sandbox adapter, broader connected apps, selected hosted workflow infrastructure, and the complete general-purpose agent track remain design/implementation work. Installing the Daytona SDK or preparing a smoke check does not implement those capabilities. Existing service contracts should be reconciled before introducing replacements.
 

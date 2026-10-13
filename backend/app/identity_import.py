@@ -26,12 +26,16 @@ OMIT = {'learning_jobs', 'material_jobs', 'execution_outbox', 'projection_waterm
 _profile_locks = defaultdict(RLock)
 OMIT.update({'agent_app_connections','agent_app_oauth','agent_standing_grants','agent_action_decisions','agent_action_drafts','agent_action_operations','agent_delegation_budgets','agent_delegated_children','agent_delegation_charges'})
 OMIT.add('agent_connector_intakes')
+OMIT.update({'calendar_permissions','calendar_proposals','calendar_operations','calendar_sync'})
 OMIT.add('class_material_intakes')
 # In-progress resource selections are not resumed when class sessions are
 # copied. NeedInfo is reconstructed lazily from the copied class snapshot.
 OMIT.add('class_resource_intents')
 OMIT.add('class_caption_interims')
 OMIT.add('flashcard_commands')
+OMIT.update({'voice_sessions', 'voice_turns', 'voice_actions', 'voice_events', 'voice_speech_segments', 'voice_usage'})
+OMIT.update({'usage_accounts','usage_periods','usage_reservations','usage_events','usage_platform_periods',
+             'usage_rate_cards','usage_provider_rate_cards','usage_adjustments','usage_alerts','usage_outbox'})
 
 
 def source_snapshot(conn, profile):
@@ -204,6 +208,9 @@ def _import_profile(store, owner, expected_checksum, profile='local', *, package
             for row in rows.get(name, []):
                 grant_resource(conn, name, mapping[row['id']], owner)
         conn.execute(text("UPDATE identity_imports SET status='completed' WHERE id=:id"), {'id': import_id})
+        # Bulk-copied rows bypass domain services; drop every owner-scoped cache view.
+        from .cache import invalidate_owner
+        invalidate_owner(owner)
     return {'id': import_id, 'status': 'completed', 'sourcePreserved': True, 'mappingCount': len(mapping)}
 
 

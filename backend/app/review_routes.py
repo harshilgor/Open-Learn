@@ -33,6 +33,9 @@ def _authorize(learner_id: str, claimed: str | None) -> None:
 
 
 
+from .usage.context import usage_job
+
+@usage_job
 def run_review_job(store, provider, job_id: str) -> None:
     records = WorkflowStore(store)
     job = records.claim(job_id)

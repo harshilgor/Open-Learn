@@ -3,14 +3,42 @@
 from __future__ import annotations
 
 import os
+import json
+from functools import lru_cache
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
+from .performance import ObservedQueuePool, instrument_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def approved_schema_heads(expected: set[str]) -> list[set[str]]:
+    contract_path = BACKEND_ROOT.parent / 'deploy' / 'release-contract.json'
+    if not contract_path.exists():
+        return [expected]
+    contract = json.loads(contract_path.read_text(encoding='utf-8'))
+    if set(contract['schemaHeads']) != expected:
+        raise RuntimeError('Release contract does not match code migrations.')
+    approved = [set(heads) for heads in contract.get('compatibleSchemaHeads', [sorted(expected)])]
+    if expected not in approved:
+        raise RuntimeError('Release contract must include its current schema.')
+    return approved
+
+
+@lru_cache(maxsize=4)
+def _postgres_engine(url: str) -> Engine:
+    # Domain Store objects share one bounded pool per process. Separate default
+    # pools per domain exhaust Supabase's session limit during deploy overlap.
+    from .capacity import process_budget
+    budget = process_budget()
+    return instrument_engine(create_engine(url, pool_pre_ping=True, pool_size=budget.pool_size, max_overflow=0,
+                         pool_timeout=budget.pool_timeout, pool_recycle=300, poolclass=ObservedQueuePool,
+                         connect_args={'connect_timeout': budget.connect_timeout}))
 
 
 def database_url() -> str:
@@ -33,6 +61,8 @@ def database_url() -> str:
 
 def create_database_engine(url: str | None = None) -> Engine:
     resolved = url or database_url()
+    if resolved.startswith('postgresql'):
+        return _postgres_engine(resolved)
     if resolved.startswith("sqlite") and ":memory:" not in resolved:
         database_file = make_url(resolved).database
         if database_file and not database_file.startswith("file:"):
@@ -44,7 +74,7 @@ def create_database_engine(url: str | None = None) -> Engine:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
-    return engine
+    return instrument_engine(engine)
 
 
 def run_migrations(url: str | None = None) -> None:
@@ -56,6 +86,9 @@ def run_migrations(url: str | None = None) -> None:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
     config.set_main_option("sqlalchemy.url", resolved.replace("%", "%%"))
+    # Programmatic migrations must use the caller's database, not a different
+    # inherited DATABASE_URL. CLI Alembic retains its environment override.
+    config.attributes['openlearn_explicit_url'] = True
     command.upgrade(config, "head")
 
 
@@ -66,10 +99,11 @@ def require_current_schema(url: str) -> None:
     config=Config(str(BACKEND_ROOT / 'alembic.ini'))
     config.set_main_option('script_location',str(BACKEND_ROOT / 'migrations'))
     expected=set(ScriptDirectory.from_config(config).get_heads())
-    engine=create_database_engine(url)
+    # Schema probes must not dispose the application's shared pool.
+    engine=create_engine(url, poolclass=NullPool) if url.startswith('postgresql') else create_database_engine(url)
     try:
         with engine.connect() as conn:
-            if set(MigrationContext.configure(conn).get_current_heads())!=expected:
+            if set(MigrationContext.configure(conn).get_current_heads()) not in approved_schema_heads(expected):
                 raise RuntimeError('Database schema is not current. Run the release migration before starting services.')
     finally:engine.dispose()
 

@@ -15,12 +15,18 @@ from backend.app.academic_planning import AcademicPlanningService
 from backend.app.browser_assistant.contracts import *
 from backend.app.browser_assistant.connections import Connections
 from backend.app.browser_assistant.service import AssistantService
-from backend.app.browser_assistant.store import AssistantStore
+from backend.app.browser_assistant.store import AssistantStore, public_run
 from backend.app.browser_assistant.workers import AssistantWorker
 from backend.app.browser_assistant.policy import authorize_action, origin
 from backend.app.browser_assistant.intent import fallback_intent
 from backend.app.browser_assistant.reminders import create_policy, rebuild, tick_reminders, event_instant
 from backend.app.browser_assistant.evidence import validate_candidate, date_supported
+
+
+@pytest.fixture(autouse=True)
+def disable_semantic_classification_rollouts(monkeypatch):
+    monkeypatch.setenv('OPENLEARN_CLASSIFICATION_MODE','off')
+
 
 @pytest.fixture
 def environment():
@@ -96,6 +102,311 @@ def test_device_ack_fencing_duplicate_and_cancel(environment):
     current=AssistantStore(store).read('assistant_runs','alice',task['id'])
     svc.command('alice',task['id'],TaskCommand(action='cancel',expected_revision=current['revision']))
     assert svc.poll(device)['commands']==[] and svc.poll(device)['activeTaskIds']==[]
+
+
+def test_browser_input_request_is_revision_bound_owner_scoped_and_idempotent(environment):
+    store,_=environment
+    service=AssistantService(store);repo=AssistantStore(store)
+    task=service.create('alice',TaskCreate(message='Open my university site and find the syllabus'))
+    with store.transaction() as conn:
+        run=repo.run(conn,'alice',task['id'])
+        run=repo.update_run(conn,run,status='waiting_for_user',error='connection_required',question='Which website should I open?')
+        repo.event(conn,run,'task.attention',run['question'])
+    waiting=repo.read('assistant_runs','alice',task['id'])
+    descriptor=public_run(waiting)
+    request=descriptor['pendingRequests'][0]
+    assert request=={'requestId':waiting['inputRequestId'],'taskId':task['id'],'revision':1,
+                     'question':'Which website should I open?','required':True,'inputKind':'text','state':'open'}
+    events=repo.events('alice',task['id'])
+    assert events[-1]['request']['requestId']==request['requestId']
+    assert events[-1]['request']['revision']==request['revision']
+
+    with pytest.raises(HTTPException) as wrong_request:
+        with store.transaction() as conn:
+            service.resolve_conversation_input(conn,'alice',task['id'],'other-request',waiting['revision'],request['revision'],'https://study.example.org','message-1')
+    assert wrong_request.value.status_code==404
+    with pytest.raises(HTTPException) as stale_task:
+        with store.transaction() as conn:
+            service.resolve_conversation_input(conn,'alice',task['id'],request['requestId'],waiting['revision']-1,request['revision'],'https://study.example.org','message-1')
+    assert stale_task.value.status_code==409
+    with pytest.raises(HTTPException) as stale_question:
+        with store.transaction() as conn:
+            service.resolve_conversation_input(conn,'alice',task['id'],request['requestId'],waiting['revision'],request['revision']+1,'https://study.example.org','message-1')
+    assert stale_question.value.status_code==409
+    with pytest.raises(HTTPException) as untargeted_resume:
+        service.command('alice',task['id'],TaskCommand(action='resume',expectedRevision=waiting['revision']))
+    assert untargeted_resume.value.status_code==409
+
+    with store.transaction() as conn:
+        accepted=service.resolve_conversation_input(conn,'alice',task['id'],request['requestId'],waiting['revision'],request['revision'],'https://study.example.org','message-1')
+    assert accepted['status']=='queued' and accepted['pendingRequests']==[]
+    assert accepted['revision']==waiting['revision']+1
+    changed=repo.read('assistant_runs','alice',task['id'])
+    assert changed['clarificationAnswer']=='https://study.example.org'
+    assert changed['intent'] is None and changed['reclassifyWithClarification'] is True
+    assert repo.events('alice',task['id'])[-1]['replyToRequestId']==request['requestId']
+    with store.transaction() as conn:
+        duplicate=service.resolve_conversation_input(conn,'alice',task['id'],request['requestId'],waiting['revision'],request['revision'],'https://study.example.org','message-1')
+    assert duplicate['revision']==accepted['revision']
+    with pytest.raises(HTTPException) as changed_message:
+        with store.transaction() as conn:
+            service.resolve_conversation_input(conn,'alice',task['id'],request['requestId'],waiting['revision'],request['revision'],'https://different.example','message-1')
+    assert changed_message.value.status_code==409
+
+
+def test_shared_admission_routes_exact_browser_reply_to_the_same_task(environment,monkeypatch):
+    from backend.app.agent_execution.coordinator import Coordinator
+    from backend.app.agent_execution.contracts import Message
+    from backend.app.models import TopicScope,utc_now
+    from backend.app.graph_generator import GraphGenerator
+    from backend.app.session_models import LearningSession
+    store,_=environment
+    monkeypatch.setenv('AI_TUTOR_ENV','development');monkeypatch.setenv('AI_TUTOR_DEV_IDENTITY','true')
+    monkeypatch.setenv('OPENLEARN_AGENT_ADMISSION_ENABLED','true')
+    scope=TopicScope(id='browser-scope',topic='biology',resolved_meaning='biology',objective='study',depth='introductory',created_at=utc_now())
+    store.save_scope(scope);graph=GraphGenerator().generate(scope);store.save_graph(graph)
+    store.save_session(LearningSession(id='browser-session',learner_id='alice',graph_id=graph.id,created_at=utc_now(),updated_at=utc_now()))
+    coordinator=Coordinator(store)
+    create_body=Message(clientMessageId='browser-create',sessionId='browser-session',
+                        text='Open https://study.example.org and find my syllabus')
+    created=coordinator.admit('alice',create_body,'browser-create')
+    assert created['status']=='queued' and created['runtimeOwner']=='browser_legacy'
+    task_id=created['references'][0]['id']
+    repo=AssistantStore(store)
+    with store.transaction() as conn:
+        run=repo.run(conn,'alice',task_id)
+        run=repo.update_run(conn,run,status='waiting_for_user',error='connection_required',
+                            question='Which website should I open?')
+        repo.event(conn,run,'task.attention',run['question'])
+    current=public_run(repo.read('assistant_runs','alice',task_id))
+    request=current['pendingRequests'][0]
+    body=Message(clientMessageId='browser-answer',sessionId='browser-session',
+        text='https://school.example.edu',targetTaskId=task_id,replyToRequestId=request['requestId'],
+        expectedRevision=current['revision'],expectedRequestRevision=request['revision'])
+    answered=coordinator.admit('alice',body,'browser-answer')
+    assert answered['status']=='accepted' and answered['runtimeOwner']=='browser_legacy'
+    assert answered['references'][0]=={'kind':'task','id':task_id}
+    assert coordinator.admit('alice',body,'browser-answer')==answered
+    saved=repo.read('assistant_runs','alice',task_id)
+    assert saved['status']=='queued' and saved['clarificationAnswer']=='https://school.example.edu'
+    assert saved.get('reclassifyWithClarification') is True
+    assert len(AssistantStore(store).list('assistant_runs','alice'))==1
+    wrong_session=body.model_copy(update={'client_message_id':'foreign-answer','session_id':'other-session',
+                                          'expected_revision':saved['revision']})
+    with pytest.raises(HTTPException) as rejected:coordinator.admit('alice',wrong_session,'foreign-answer')
+    assert rejected.value.status_code==404
+
+
+def test_browser_control_handoff_waits_for_the_inflight_action(environment):
+    store,_=environment
+    from backend.app.browser_assistant.control import BrowserControl
+    sites=Connections(store);service=AssistantService(store);repo=AssistantStore(store)
+    site=sites.create('alice',ConnectionCreate(label='Study',origin='https://study.example.org'))
+    grant=sites.pair('alice',site['id'])
+    task=service.create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    with store.transaction() as conn:
+        run=repo.run(conn,'alice',task['id'])
+        run=repo.update_run(conn,run,status='running',pendingCommand='step-1',
+                            browserControl={'owner':'agent','generation':'agent-1','executor':'local'},
+                            browserInputInFlight='step-1')
+    control=BrowserControl(store)
+    takeover=control.command('alice',task['id'],TaskCommand(action='takeover',expected_revision=run['revision']))
+    assert takeover['browserControl']['owner']=='requesting'
+    assert takeover['status']=='paused'
+    assert control.begin('alice',task['id'],'step-1') is False
+
+    control.end('alice',task['id'],'step-1')
+    handed=repo.read('assistant_runs','alice',task['id'])
+    assert handed['browserControl']['owner']=='human'
+    assert control.view('alice',task['id'])=={'kind':'local','generation':takeover['browserControl']['generation'],
+                                               'message':'Use the connected desktop browser.'}
+    principal=Principal('alice','browser',grant['deviceId'])
+    assert control.acknowledge(principal,task['id'],takeover['browserControl']['generation'])['duplicate'] is True
+
+    returned=control.command('alice',task['id'],TaskCommand(action='return_control',expected_revision=handed['revision']))
+    assert returned['browserControl']['owner']=='agent'
+    assert returned['status']=='queued'
+    assert repo.read('assistant_runs','alice',task['id'])['reobserve'] is True
+
+
+def test_cloud_takeover_return_waits_until_session_termination(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.control import BrowserControl
+    from backend.app.browser_assistant.executors.cloud import CloudExecutor
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    repo=AssistantStore(store)
+    with store.transaction() as conn:
+        run=repo.run(conn,'alice',task['id'])
+        run=repo.update_run(conn,run,status='running',browserControl={'owner':'agent','generation':'agent-1','executor':'cloud'})
+        conn.execute(text("INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload) VALUES('cloud-lease','alice',:run,:connection,'provider-session','active',:expires,'{}')"),
+                     {'run':task['id'],'connection':site['id'],'expires':time.time()+600})
+    control=BrowserControl(store)
+    monkeypatch.setattr(CloudExecutor,'release_control',lambda *_args:False)
+    takeover=control.command('alice',task['id'],TaskCommand(action='takeover',expected_revision=run['revision']))
+    assert takeover['browserControl']['owner']=='human'
+    with pytest.raises(HTTPException) as pending:
+        control.command('alice',task['id'],TaskCommand(action='return_control',expected_revision=takeover['revision']))
+    assert pending.value.status_code==503
+    waiting=repo.read('assistant_runs','alice',task['id'])
+    assert waiting['browserControl']['owner']=='returning'
+    assert waiting['status']=='paused'
+
+    monkeypatch.setattr(CloudExecutor,'release_control',lambda *_args:True)
+    returned=control.command('alice',task['id'],TaskCommand(action='return_control',expected_revision=waiting['revision']))
+    assert returned['browserControl']['owner']=='agent'
+    assert returned['status']=='queued'
+    assert repo.read('assistant_runs','alice',task['id'])['reobserve'] is True
+
+
+def _add_cloud_inflight_step(store, repo, run, site, *, status='running', control_owner='agent'):
+    with store.transaction() as conn:
+        current=repo.run(conn,'alice',run['id'])
+        current=repo.update_run(conn,current,status=status,pendingCommand='step-interrupted',
+            browserInputInFlight='step-interrupted',browserControl={'owner':control_owner,'generation':'control-1','executor':'cloud'})
+        job=conn.execute(text("SELECT id FROM learning_jobs WHERE owner_id='alice' AND target_id=:run ORDER BY created_at LIMIT 1"),
+                         {'run':run['id']}).scalar_one()
+        conn.execute(text("UPDATE learning_jobs SET status='completed',expires=NULL WHERE id=:id"),{'id':job})
+        conn.execute(text("""INSERT INTO assistant_steps(id,owner_id,run_id,job_id,generation,connection_revision,device_id,status,payload,expires_at,created_at)
+            VALUES('step-interrupted','alice',:run,:job,'worker-generation',:revision,NULL,'dispatched','{}',:expires,:now)"""),
+            {'run':run['id'],'job':job,'revision':site['revision'],'expires':time.time()+60,'now':time.time()-180})
+        conn.execute(text("INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload) VALUES('cloud-lease','alice',:run,:connection,'provider-session','active',:expires,'{}')"),
+                     {'run':run['id'],'connection':site['id'],'expires':time.time()+600})
+    return current
+
+
+def test_cloud_worker_crash_stops_session_then_reobserves_without_replay(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors.cloud import CloudExecutor
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    repo=AssistantStore(store)
+    _add_cloud_inflight_step(store,repo,task,site)
+    calls=[]
+    def stop_and_confirm(_self,owner,run_id):
+        calls.append((owner,run_id))
+        with store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE owner_id=:owner AND run_id=:run"),{'owner':owner,'run':run_id})
+        return True
+    monkeypatch.setattr(CloudExecutor,'release_control',stop_and_confirm)
+
+    AssistantWorker(store).recover_cloud_inflight()
+
+    recovered=repo.read('assistant_runs','alice',task['id'])
+    assert calls==[('alice',task['id'])]
+    assert recovered['status']=='queued'
+    assert recovered['error']=='outcome_unknown'
+    assert recovered['reobserve'] is True
+    assert recovered['browserInputInFlight'] is None and recovered['pendingCommand'] is None
+    assert recovered['browserControl']['owner']=='agent'
+    with store.engine.connect() as conn:
+        assert conn.execute(text("SELECT status FROM assistant_steps WHERE id='step-interrupted'")).scalar_one()=='outcome_unknown'
+        assert conn.execute(text("SELECT status FROM browser_session_leases WHERE id='cloud-lease'")).scalar_one()=='closed'
+        assert conn.execute(text("SELECT count(*) FROM learning_jobs WHERE target_id=:run AND kind='assistant_step' AND status='queued'"),{'run':task['id']}).scalar_one()==1
+
+
+def test_cloud_takeover_crash_requires_learner_resume_after_confirmed_stop(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.control import BrowserControl
+    from backend.app.browser_assistant.executors.cloud import CloudExecutor
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    repo=AssistantStore(store)
+    _add_cloud_inflight_step(store,repo,task,site,status='paused',control_owner='requesting')
+    # Use a real lease-state update while keeping the provider call deterministic.
+    def stop_and_confirm(_self,owner,run_id):
+        with store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE owner_id=:owner AND run_id=:run"),{'owner':owner,'run':run_id})
+        return True
+    monkeypatch.setattr(CloudExecutor,'release_control',stop_and_confirm)
+
+    AssistantWorker(store).recover_cloud_inflight()
+
+    waiting=repo.read('assistant_runs','alice',task['id'])
+    assert waiting['status']=='waiting_for_user' and waiting['error']=='outcome_unknown'
+    assert waiting['browserControl']['owner']=='agent'
+    public_waiting=public_run(waiting)
+    assert public_waiting['pendingRequests'][0]['inputKind']=='text'
+    assert 'reread the page' in waiting['question']
+    request=public_waiting['pendingRequests'][0]
+    with store.transaction() as conn:
+        resumed=AssistantService(store).resolve_conversation_input(conn,'alice',task['id'],request['requestId'],
+            waiting['revision'],request['revision'],'continue','resume-after-cloud-crash')
+    assert resumed['status']=='queued'
+    assert repo.read('assistant_runs','alice',task['id'])['reobserve'] is True
+
+
+def test_cloud_takeover_ack_cannot_grant_control_while_input_is_inflight(environment):
+    store,_=environment
+    from backend.app.browser_assistant.control import BrowserControl
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    repo=AssistantStore(store)
+    with store.transaction() as conn:
+        run=repo.run(conn,'alice',task['id'])
+        run=repo.update_run(conn,run,status='paused',pendingCommand='step-1',browserInputInFlight='step-1',
+            browserControl={'owner':'requesting','generation':'takeover-1','executor':'cloud'})
+        site_row=repo.row(conn,'site_connections','alice',site['id'])
+        site_row['deviceId']='device-1'
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id AND owner_id=:owner'),
+                     {'payload':json.dumps(site_row),'id':site['id'],'owner':'alice'})
+    with pytest.raises(HTTPException) as rejected:
+        BrowserControl(store).acknowledge(Principal('alice','browser','device-1'),task['id'],'takeover-1')
+    assert rejected.value.status_code==409
+    assert repo.read('assistant_runs','alice',task['id'])['browserControl']['owner']=='requesting'
+
+
+def test_cloud_takeover_retries_reconciliation_and_never_grants_on_unknown_provider_state(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.control import BrowserControl
+    from backend.app.browser_assistant.executors.cloud import CloudExecutor
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    repo=AssistantStore(store)
+    _add_cloud_inflight_step(store,repo,task,site,status='paused',control_owner='requesting')
+    with store.engine.begin() as conn:
+        row=conn.execute(text('SELECT payload FROM site_connections WHERE id=:id AND owner_id=\'alice\''),{'id':site['id']}).scalar_one()
+        connection_payload=json.loads(row);connection_payload['deviceId']='device-1'
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id AND owner_id=\'alice\''),
+                     {'payload':json.dumps(connection_payload),'id':site['id']})
+    calls=[]
+    def stop_provider(_self,owner,run_id):
+        calls.append(run_id)
+        if len(calls)==1:return False
+        with store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE owner_id=:owner AND run_id=:run"),{'owner':owner,'run':run_id})
+        return True
+    monkeypatch.setattr(CloudExecutor,'release_control',stop_provider)
+
+    AssistantWorker(store).recover_cloud_inflight()
+    unresolved=repo.read('assistant_runs','alice',task['id'])
+    assert unresolved['status']=='paused' and unresolved['browserControl']['owner']=='requesting'
+    assert unresolved['browserInputInFlight']=='step-interrupted'
+    with pytest.raises(HTTPException) as rejected:
+        BrowserControl(store).acknowledge(Principal('alice','browser','device-1'),task['id'],'control-1')
+    assert rejected.value.status_code==409
+    with store.transaction() as conn:
+        current=repo.run(conn,'alice',task['id'])
+        repo.update_run(conn,current,cloudRecovery={**current['cloudRecovery'],'leaseUntil':0})
+
+    AssistantWorker(store).recover_cloud_inflight()
+
+    recovered=repo.read('assistant_runs','alice',task['id'])
+    assert calls==[task['id'],task['id']]
+    assert recovered['status']=='waiting_for_user' and recovered['browserControl']['owner']=='agent'
+
+
+def test_external_write_intent_pauses_before_browser_allocation(environment):
+    store,_=environment
+    site=Connections(store).create('alice',ConnectionCreate(label='Study',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Open https://study.example.org and submit the assignment',connection_id=site['id']))
+    result=run_to_end(AssistantWorker(store),task['id'])
+    assert result['status']=='waiting_for_user'
+    assert result['error']=='external_write_unsupported'
+    assert result['actionsUsed']==0
+    assert result['question'].startswith('This assistant currently reads websites')
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM browser_session_leases WHERE run_id=:run'),{'run':task['id']}).scalar_one()==0
 
 
 def test_timeout_recovery_is_attention_not_completion(environment):
@@ -178,9 +489,181 @@ def test_api_owner_device_scope_and_event_replay(environment):
     assert [e['sequence'] for e in events]==[1]
     assert client.get('/v1/assistant/tasks/'+task['id']+'/events?after=1',headers=headers).json()['events']==[]
     assert client.patch('/v1/site-connections/'+site['id'],headers=headers,json={'expectedRevision':site['revision'],'preferred':True}).status_code==409
-    assert client.post('/v1/site-connections/'+site['id']+'/cloud-login',headers=headers,json={'expectedRevision':2}).status_code==503
+    assert client.post('/v1/site-connections/'+site['id']+'/cloud-login',headers=headers,json={'expectedRevision':2}).status_code==422
     assert client.delete('/v1/site-connections/'+site['id'],headers=headers).status_code==200
     assert client.get('/v1/browser-devices/commands',headers=device).status_code==401
+
+
+def test_cloud_browser_requires_verified_bounded_lifecycle(monkeypatch):
+    monkeypatch.setenv('OPENLEARN_USAGE_MODE','enforce')
+    monkeypatch.setenv('OPENLEARN_USAGE_PAID_ROUTES_ENABLED','true')
+    monkeypatch.setenv('OPENLEARN_PROVIDER_RATE_VERSION','browser-test-rates-v1')
+    monkeypatch.setenv('OPENLEARN_PLATFORM_DAILY_BUDGET_USD','10')
+    monkeypatch.setenv('OPENLEARN_PLATFORM_MONTHLY_BUDGET_USD','100')
+    monkeypatch.setenv('OPENLEARN_CLOUD_BROWSER_ENABLED','true')
+    monkeypatch.setenv('OPENLEARN_BROWSERBASE_USD_PER_MINUTE','0.002')
+    monkeypatch.setenv('BROWSERBASE_API_KEY','test-key')
+    monkeypatch.delenv('BROWSERBASE_PROJECT_ID',raising=False)
+    monkeypatch.setenv('OPENLEARN_BROWSER_EGRESS_VERIFIED','true')
+    monkeypatch.setenv('OPENLEARN_BROWSER_LIFECYCLE_VERIFIED','false')
+    monkeypatch.setenv('OPENLEARN_SANDBOX_ENABLED','false')
+    monkeypatch.setenv('AI_TUTOR_WEB_EVIDENCE','false')
+    monkeypatch.setenv('AI_TUTOR_MODE_CLASSIFICATION','rules')
+    monkeypatch.setenv('AI_TUTOR_EMBEDDING_MODEL','')
+    from backend.app.browser_assistant.executors.cloud import readiness, require_cloud_ready
+    from fastapi import HTTPException
+    assert readiness()['credentialsConfigured'] is True
+    assert readiness()['lifecycleVerified'] is False
+    with pytest.raises(HTTPException) as error:
+        require_cloud_ready()
+    assert error.value.detail['code']=='capability_unavailable'
+
+
+def test_cloud_executor_never_reuses_saved_profiles_before_private_acceptance(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    from backend.app.browser_assistant.contracts import ConnectionCreate,TaskCreate
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    run=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    with store.engine.begin() as conn:
+        row=conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one()
+        payload=json.loads(row);payload.update(cloudLogin=True,providerContextId='private-profile',browserContextExpiresAt=time.time()+3600)
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id'),{'payload':json.dumps(payload),'id':site['id']})
+    monkeypatch.setattr(cloud,'require_cloud_ready',lambda:{})
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':False})
+    class Provider:
+        def create(self,*_args,**_kwargs):raise AssertionError('private context must not start')
+    with pytest.raises(HTTPException) as error:
+        cloud.CloudExecutor(store,Provider()).session({**site,'cloudLogin':True,'providerContextId':'private-profile','browserContextExpiresAt':time.time()+3600},{**run,'owner_id':'alice'})
+    assert error.value.detail['code']=='capability_unavailable'
+
+
+def test_saved_cloud_profile_expiry_waits_for_session_shutdown(environment,monkeypatch):
+    store,_=environment
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    task=AssistantService(store).create('alice',TaskCreate(message='Read my study website',connection_id=site['id']))
+    expired=time.time()-1
+    context_id='provider-context-test'
+    with store.engine.begin() as conn:
+        payload=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+        payload.update(cloudLogin=True,providerContextId=context_id,browserContextExpiresAt=expired)
+        conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id'),{'payload':json.dumps(payload),'id':site['id']})
+        conn.execute(text("INSERT INTO browser_session_leases(id,owner_id,run_id,connection_id,provider_session,status,expires_at,payload) VALUES('active-lease','alice',:run,:connection,'active-provider-session','active',:expires,'{}')"),
+                     {'run':task['id'],'connection':site['id'],'expires':time.time()+600})
+    deleted=[]
+    monkeypatch.setattr('backend.app.browser_assistant.executors.cloud.BrowserbaseProvider.delete_context',lambda _provider,identifier:deleted.append(identifier))
+    worker=AssistantWorker(store)
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        pending=conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()
+        persisted=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    assert pending==0 and context_id not in deleted
+    assert persisted['providerContextId']==context_id
+
+    with store.engine.begin() as conn:
+        conn.execute(text("UPDATE browser_session_leases SET status='closed' WHERE id='active-lease'"))
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        persisted=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+        pending=conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()
+    assert 'providerContextId' not in persisted and pending==1
+    worker.cleanup()
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar_one()==0
+    assert deleted==[context_id]
+
+
+def test_profile_forget_cleanup_is_scoped_to_the_owning_account(environment,monkeypatch):
+    store,_=environment
+    sites=Connections(store)
+    alice=sites.create('alice',ConnectionCreate(label='Alice school',origin='https://alice.example.edu',executor='cloud'))
+    bob=sites.create('bob',ConnectionCreate(label='Bob school',origin='https://bob.example.edu',executor='cloud'))
+    with store.engine.begin() as conn:
+        for site,context_id in ((alice,'alice-private-context'),(bob,'bob-private-context')):
+            payload=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+            payload.update(cloudLogin=True,providerContextId=context_id,browserContextExpiresAt=time.time()+3600)
+            conn.execute(text('UPDATE site_connections SET payload=:payload WHERE id=:id'),{'payload':json.dumps(payload),'id':site['id']})
+    with pytest.raises(HTTPException) as foreign:
+        AssistantStore(store).read('site_connections','bob',alice['id'])
+    assert foreign.value.status_code==404
+    Connections(store).revoke('alice',alice['id'])
+    deleted=[]
+    monkeypatch.setattr('backend.app.browser_assistant.executors.cloud.BrowserbaseProvider.delete_context',
+                        lambda _provider,identifier:deleted.append(identifier))
+    AssistantWorker(store).cleanup()
+    assert deleted==['alice-private-context']
+    saved=AssistantStore(store).read('site_connections','bob',bob['id'])
+    assert saved['providerContextId']=='bob-private-context'
+
+
+def test_remembered_cloud_signin_is_opt_in_and_keeps_owner_profile(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    monkeypatch.setattr(cloud,'require_cloud_ready',lambda:{})
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':True})
+    with pytest.raises(HTTPException) as error:
+        Connections(store).cloud_login('alice',site['id'],site['revision'])
+    assert error.value.detail['code']=='privacy_consent_required'
+
+    consented=Connections(store).patch('alice',site['id'],ConnectionPatch(expectedRevision=site['revision'],cloudLogin=True))
+    calls=[]
+    class Provider:
+        def create_context(self,name):
+            calls.append(('context',name))
+            return {'id':'private-context'}
+        def create(self,connection,usage_ticket=None,*,persist_context=False):
+            calls.append(('session',connection.get('providerContextId'),persist_context))
+            return {'id':'login-session','connectUrl':'wss://browser.example/session'}
+        def live_view(self,identifier):
+            return 'https://debug.browserbase.com/session?session='+identifier
+    monkeypatch.setattr(cloud,'BrowserbaseProvider',Provider)
+    monkeypatch.setattr('backend.app.usage.operations.configured_rate',lambda _key:100_000_000)
+    monkeypatch.setattr('backend.app.usage.operations.rate_liability',lambda *_args,**_kwargs:1)
+    monkeypatch.setattr('backend.app.usage.operations.begin_external',lambda *_args,**_kwargs:(None,None,{'id':'reservation','component':'browser','liability_nano':1}))
+    started=Connections(store).cloud_login('alice',consented['id'],consented['revision'])
+    assert started['liveViewUrl'].startswith('https://debug.browserbase.com/')
+    assert len(calls)==2 and calls[0][0]=='context' and calls[1]==('session','private-context',True)
+    assert calls[0][1].startswith('openlearn-') and len(calls[0][1])==34
+    assert 'liveViewUrl' not in json.dumps(AssistantStore(store).read('site_connections','alice',site['id']))
+
+    def close_and_settle(_store,_provider,lease):
+        with _store.engine.begin() as conn:
+            conn.execute(text("UPDATE browser_session_leases SET status='closed',payload='{}' WHERE id=:id"),{'id':lease['id']})
+        return True
+    monkeypatch.setattr(cloud,'stop_and_settle',close_and_settle)
+    monkeypatch.setattr('backend.app.browser_assistant.connections.time.sleep',lambda _seconds:None)
+    finished=Connections(store).cloud_login('alice',site['id'],started['connection']['revision'],finish=True)
+    saved=AssistantStore(store).read('site_connections','alice',site['id'])
+    assert finished['status']=='connected' and saved['providerContextId']=='private-context'
+    assert saved['cloudLogin'] is True and saved['browserContextExpiresAt']>time.time()+29*24*60*60
+
+
+def test_finishing_login_after_private_gate_closes_and_discards_profile(environment,monkeypatch):
+    store,_=environment
+    from backend.app.browser_assistant.executors import cloud
+    site=Connections(store).create('alice',ConnectionCreate(label='Cloud',origin='https://study.example.org',executor='cloud'))
+    with store.engine.connect() as conn:
+        payload=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    payload.update(cloudLogin=True,browserProfileConsentAt=time.time(),providerContextId='private-profile',loginSessionId='login-session')
+    with store.engine.begin() as conn:
+        conn.execute(text('UPDATE site_connections SET payload=:payload,status=:status WHERE id=:id'),
+                     {'payload':json.dumps(payload),'status':'logging_in','id':site['id']})
+    deleted=[]
+    class Provider:
+        def stop(self,_identifier):pass
+        def request(self,*_args,**_kwargs):return {'status':'RELEASED'}
+        def delete_context(self,identifier):deleted.append(identifier)
+    monkeypatch.setattr(cloud,'BrowserbaseProvider',Provider)
+    monkeypatch.setattr(cloud,'readiness',lambda:{'privateLoginVerified':False})
+    finished=Connections(store).cloud_login('alice',site['id'],site['revision'],finish=True)
+    assert finished['cloudLogin'] is False
+    assert deleted==['private-profile']
+    with store.engine.connect() as conn:
+        saved=json.loads(conn.execute(text('SELECT payload FROM site_connections WHERE id=:id'),{'id':site['id']}).scalar_one())
+    assert 'providerContextId' not in saved and 'loginSessionId' not in saved
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM browser_provider_cleanup')).scalar()==0
 
 
 def test_export_and_erasure_remove_credentials_and_queue_provider_cleanup(environment):

@@ -314,6 +314,8 @@ class MaterialIndexService:
                     conn.execute(text("UPDATE material_ocr_work SET status='budget_exhausted' WHERE version_id=:v AND page_index=:p"),{'v':row['version_id'],'p':row['page_index']})
                     return True
                 content=result['text'][:200000]
+                from .material_service import MaterialService
+                MaterialService.invalidate_blocks(row['owner_id'], row['version_id'])
                 for ordinal, offset in enumerate(range(0,len(content),3500)):
                     passage=content[offset:offset+3500];identifier=stable(row['version_id'],row['page_index'],'ocr',ordinal)
                     payload={'pageLabel':page['page_label'] if page else str(row['page_index']+1), 'extractionStatus':'ocr_extracted_estimated','ocrConfidence':result.get('confidence'), 'textHash':hashlib.sha256(passage.encode()).hexdigest(), 'geometry':{'status':'unavailable','regions':[]}}

@@ -31,8 +31,8 @@ def build_connected_router(get_store):
     @router.delete('/v1/assistant/app-connections/{identifier}',status_code=204)
     def disconnect(identifier:str):safe(lambda:GoogleConnections(get_store()).disconnect(owner(),identifier))
     @router.get('/v1/assistant/app-connections/{identifier}/sources')
-    def read(identifier:str,kind:str=Query(pattern='^(drive|gmail)$'),sourceId:str|None=Query(default=None,max_length=300),pageToken:str|None=Query(default=None,max_length=2000)):
-        return safe(lambda:GoogleAdapter(GoogleConnections(get_store())).read(owner(),identifier,kind,sourceId,pageToken))
+    def read(identifier:str,kind:str=Query(pattern='^(drive|gmail|calendar)$'),sourceId:str|None=Query(default=None,max_length=300),pageToken:str|None=Query(default=None,max_length=2000),calendarId:str|None=Query(default=None,max_length=300),timeMin:str|None=Query(default=None,max_length=40),timeMax:str|None=Query(default=None,max_length=40)):
+        return safe(lambda:GoogleAdapter(GoogleConnections(get_store())).read(owner(),identifier,kind,sourceId,pageToken,calendar_id=calendarId,time_min=timeMin,time_max=timeMax))
     @router.post('/v1/assistant/app-connections/{identifier}/drive/{source_id}/import')
     def intake(identifier:str,source_id:str,idempotency_key:str|None=Header(default=None,alias='Idempotency-Key')):
         learner=owner();store=get_store()

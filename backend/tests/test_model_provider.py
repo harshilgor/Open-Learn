@@ -10,6 +10,43 @@ from backend.app.context_engine import GenerationContext
 from backend.app.context_engine import ContextBlock, ContextEngine
 
 
+def lesson_context():
+    from types import SimpleNamespace
+    from backend.app.learning_policy import resolve_teaching_profile
+    from backend.app.session_models import TeachingGear, TeachingIntent
+    from backend.app.policy_models import LearnerEvidenceProjection
+    return SimpleNamespace(teaching_profile=resolve_teaching_profile(TeachingGear.quick,TeachingIntent.teach),
+                           branch_id=None,request_message='Volcanoes',
+                           learner_evidence=LearnerEvidenceProjection(learner_id='alice',state_version=0))
+
+
+def test_stream_stops_at_completion_and_voice_requests_fast_free_response(monkeypatch):
+    import asyncio
+    sent = {}
+    class Response:
+        def raise_for_status(self): pass
+        async def aiter_lines(self):
+            yield 'data: '+json.dumps({'choices':[{'delta':{'content':'A short explanation.'}}]})
+            yield 'data: '+json.dumps({'choices':[],'usage':{'prompt_tokens':10,'completion_tokens':4}})
+            yield 'data: [DONE]'
+            raise AssertionError('Read beyond the terminal provider event')
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+    class Client:
+        def __init__(self,**kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+        def stream(self,*args,**kwargs): sent.update(kwargs['json']);return Response()
+    monkeypatch.setattr(httpx,'AsyncClient',Client)
+    provider=OpenRouterLessonProvider('test-key','openrouter/free',None,None)
+    async def collect():
+        return ''.join([value async for value in provider.stream_text('Teach briefly.',max_tokens=100,prefer_fast_response=True)])
+    assert asyncio.run(collect()) == 'A short explanation.'
+    assert sent['model'] == 'openrouter/free'
+    assert sent['reasoning'] == {'enabled':False}
+    assert provider.last_usage is not None
+
+
 def test_openrouter_provider_parses_structured_lesson(monkeypatch):
     provider = OpenRouterLessonProvider("test-key", "openai/gpt-4o", None, None)
     response = httpx.Response(200, request=httpx.Request("POST", "https://example.test"), json={"choices": [{"message": {"content": json.dumps({"blocks": [
@@ -17,7 +54,7 @@ def test_openrouter_provider_parses_structured_lesson(monkeypatch):
         {"kind": "check", "heading": "Try it", "body": "What would change?"},
     ]})}}]})
     monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: response)
-    blocks = provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=None, plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
+    blocks = provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=lesson_context(), plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
     assert [block.kind for block in blocks] == ["explanation", "check"]
 
 
@@ -50,7 +87,7 @@ def test_openrouter_provider_rejects_invalid_blocks(monkeypatch):
     response = httpx.Response(200, request=httpx.Request("POST", "https://example.test"), json={"choices": [{"message": {"content": '{"blocks": []}'}}]})
     monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: response)
     with pytest.raises(ModelProviderError):
-        provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=None, plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
+        provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=lesson_context(), plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
 
 
 def test_openrouter_provider_uses_explanation_for_unknown_presentation_kind(monkeypatch):
@@ -60,7 +97,7 @@ def test_openrouter_provider_uses_explanation_for_unknown_presentation_kind(monk
         {"kind": "check", "heading": "Try it", "body": "What would change?"},
     ]})}}]})
     monkeypatch.setattr(httpx, "post", lambda *args, **kwargs: response)
-    blocks = provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=None, plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
+    blocks = provider.generate(graph=None, concept=type("Concept", (), {"title": "Volcanoes"})(), context=lesson_context(), plan=type("Plan", (), {"strategy": type("S", (), {"value": "direct_explanation"})(), "representation_sequence": ["intuition"]})(), intent=type("I", (), {"value": "teach"})())
     assert blocks[0].kind == "explanation"
 
 

@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { Download, Sparkles } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog';
+import { Download, X } from 'lucide-react';
 import { Button } from './ui/button';
 
 interface InstallEvent extends Event {
@@ -44,17 +43,17 @@ export function AppInstall() {
     } catch { setAvailable(null); setError('The installation prompt could not open. Use your browser menu to install.'); }
     finally { setBusy(false); }
   }
-  return <Dialog open={open} onOpenChange={value => { setOpen(value); if (!value) remember(); }}>
-    <DialogContent>
-      <Sparkles size={32} aria-hidden="true" />
-      <DialogTitle>Make room for a little learning.</DialogTitle>
-      <DialogDescription>Install Open Learn on your phone or desktop. Keep your courses, notes, and Buddy chat a tap away.</DialogDescription>
-      {available ? <Button disabled={busy} onClick={() => void install()}><Download size={16} />{busy ? 'Opening installer…' : 'Install Open Learn'}</Button> : <div className="rounded-lg bg-muted p-4 text-sm leading-relaxed">
-        {ios ? 'On iPhone or iPad, open this page in Safari, tap Share, then Add to Home Screen and Add.' : 'Open your browser menu and look for “Install Open Learn”, “Install app”, or “Add to Home screen”. On Mac Safari, use File → Add to Dock. If no install option appears, continue in your browser.'}
-      </div>}
-      {error ? <p role="alert" className="text-sm">{error}</p> : null}
-      <Button variant="ghost" onClick={() => { remember(); setOpen(false); }}>Continue in browser</Button>
-      <p className="text-xs text-muted-foreground">You can also install later from your browser menu.</p>
-    </DialogContent>
-  </Dialog>;
+  if (!open) return null;
+  const dismiss = () => { remember(); setOpen(false); };
+  return <aside aria-label="Install Open Learn" className="fixed bottom-4 left-4 z-50 w-[calc(100vw-2rem)] max-w-sm rounded-xl border border-border bg-background p-5 text-foreground shadow-lg">
+    <button type="button" aria-label="Dismiss install invitation" onClick={dismiss} className="absolute right-2 top-2 rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"><X size={16} aria-hidden="true" /></button>
+    <h2 className="pr-6 text-sm font-semibold">Install Open Learn</h2>
+    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">Open it straight from your home screen or desktop.</p>
+    {!available ? <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{ios ? 'In Safari, tap Share → Add to Home Screen.' : 'Use your browser’s install button or menu. On Mac Safari: File → Add to Dock.'}</p> : null}
+    {error ? <p role="alert" className="mt-3 text-sm">{error}</p> : null}
+    <div className="mt-4 flex items-center gap-2">
+      {available ? <Button size="sm" disabled={busy} onClick={() => void install()}><Download size={14} aria-hidden="true" />{busy ? 'Opening…' : 'Install'}</Button> : null}
+      <Button size="sm" variant="ghost" onClick={dismiss}>Not now</Button>
+    </div>
+  </aside>;
 }

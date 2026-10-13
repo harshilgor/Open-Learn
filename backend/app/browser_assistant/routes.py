@@ -5,14 +5,14 @@ import json
 import os
 import time
 from fastapi import APIRouter, Header, Request, Query
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from .contracts import TaskCreate, TaskCommand, ConnectionCreate, ConnectionPatch, BrowserResult, ReminderPolicyInput, RefreshInput, PushInput, CloudLoginInput
 from .connections import Connections
 from .service import AssistantService
 from .store import AssistantStore, public_run, public_connection
-from .intent import compile_intent, candidate, followup
+from .intent import compile_intent
 from .policy import TERMINAL, timezone, checksum
 from ..identity import current_principal, fail, assert_owner_active
 from ..workflow_store import uid, encoded
@@ -55,14 +55,19 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
     def intent(body: TaskCreate):
         learner = owner()
         if os.getenv('OPENLEARN_BROWSER_ASSISTANT_ENABLED', 'true') != 'true': return {'handled': False}
+        connections = AssistantStore(store_getter()).list('site_connections', learner)
         previous = None
         repo = AssistantStore(store_getter())
         if body.previous_task_id:
             previous = repo.read('assistant_runs',learner,body.previous_task_id)
             if not body.session_id or previous.get('sessionId') != body.session_id: fail('not_found','Website task unavailable in this conversation.',404)
             previous = public_run(previous)
-        if not candidate(body.message) and not (previous and followup(body.message)): return {'handled': False}
-        result = compile_intent(body.message, provider_getter(), repo.list('site_connections', learner), previous)
+        # The browser-task contract owns the semantic decision here. Running
+        # the general route contract first would add a second JEV round trip to
+        # this same intent request.
+        result = compile_intent(body.message, provider_getter(), connections, previous)
+        if not result.handled:
+            return {'handled': False}
         return result.model_dump(by_alias=True)
 
     @router.post('/assistant/tasks', status_code=202)
@@ -109,18 +114,18 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
     async def events(identifier: str, request: Request, after: int = Query(default=0, ge=0), stream: bool = False,
                      last_event_id: str | None = Header(default=None, alias='Last-Event-ID')):
         learner = owner(); repo = AssistantStore(store_getter())
-        repo.read('assistant_runs', learner, identifier)
+        await asyncio.to_thread(repo.read, 'assistant_runs', learner, identifier)
         if last_event_id:
             try: after = max(after, int(last_event_id))
             except ValueError: fail('invalid_input', 'Invalid event cursor.', 422)
-        if not stream: return {'events': repo.events(learner, identifier, after)}
+        if not stream: return {'events': await asyncio.to_thread(repo.events, learner, identifier, after)}
         async def generate():
             sequence = after
             while not await request.is_disconnected():
-                for event in repo.events(learner, identifier, sequence):
+                for event in await asyncio.to_thread(repo.events, learner, identifier, sequence):
                     sequence = event['sequence']
                     yield f'id: {sequence}\nevent: assistant\ndata: {json.dumps(event)}\n\n'
-                state = repo.read('assistant_runs', learner, identifier)
+                state = await asyncio.to_thread(repo.read, 'assistant_runs', learner, identifier)
                 if state['status'] in TERMINAL: break
                 yield ': keepalive\n\n'
                 await asyncio.sleep(1)
@@ -162,11 +167,13 @@ def build_assistant_router(store_getter, provider_getter=lambda: None):
 
     @router.post('/site-connections/{identifier}/cloud-login')
     def cloud_login(identifier: str, body: CloudLoginInput):
-        return Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision)
+        result = Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision)
+        return JSONResponse(result, headers={'Cache-Control':'no-store','Pragma':'no-cache'})
 
     @router.post('/site-connections/{identifier}/cloud-login/finish')
     def cloud_login_finish(identifier: str, body: CloudLoginInput):
-        return Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision, finish=True)
+        result = Connections(store_getter()).cloud_login(owner(), identifier, body.expected_revision, finish=True)
+        return JSONResponse(result, headers={'Cache-Control':'no-store','Pragma':'no-cache'})
 
     @router.post('/site-connections/{identifier}/refresh', status_code=202)
     def refresh(identifier: str, body: TaskCreate | None = None):

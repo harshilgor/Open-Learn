@@ -1,0 +1,54 @@
+.indicator {
+  display: inline-flex;
+  min-height: 26px;
+  max-width: 100%;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted-foreground);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--foreground) 14%, transparent);
+  border-radius: 50%;
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--background) 68%, transparent);
+}
+
+.copy {
+  display: inline-grid;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.label {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dots {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding-left: 1px;
+}
+
+.dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dots { opacity: 0.7; }
+}

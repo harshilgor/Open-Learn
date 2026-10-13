@@ -17,19 +17,19 @@ function visit() { act(() => root.render(<AppInstall />)); act(() => vi.advanceT
 function button(text: string) { return [...document.querySelectorAll('button')].find(node => node.textContent === text)!; }
 
 it('remembers dismissal and allows explicitly reopening instructions', () => {
-  visit(); expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-  act(() => button('Continue in browser').click());
+  visit(); expect(document.querySelector('aside[aria-label="Install Open Learn"]')).not.toBeNull();
+  act(() => button('Not now').click());
   expect(localStorage.getItem('openlearn-install-invitation-v1')).toBe('seen');
   act(() => window.dispatchEvent(new Event('openlearn:install')));
-  expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).not.toBeNull();
 });
 it('does not invite returning visitors', () => {
   localStorage.setItem('openlearn-install-invitation-v1', 'seen'); visit();
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
 });
 it('does not invite standalone visitors', () => {
   vi.stubGlobal('matchMedia', () => ({ matches: true })); visit();
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
 });
 it('only triggers the native prompt on a click, then consumes it', async () => {
   visit();
@@ -37,7 +37,7 @@ it('only triggers the native prompt on a click, then consumes it', async () => {
   const event = Object.assign(new Event('beforeinstallprompt', { cancelable: true }), { prompt, userChoice: Promise.resolve({ outcome: 'accepted' }) });
   act(() => window.dispatchEvent(event));
   expect(event.defaultPrevented).toBe(true); expect(prompt).not.toHaveBeenCalled();
-  await act(async () => button('Install Open Learn').click());
+  await act(async () => button('Install').click());
   expect(prompt).toHaveBeenCalledTimes(1);
-  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('aside[aria-label="Install Open Learn"]')).toBeNull();
 });

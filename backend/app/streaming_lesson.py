@@ -19,15 +19,24 @@ _KINDS = {
 }
 
 
+def _display_heading(heading: str, default_heading: str) -> str:
+    """Drop generic section labels while preserving useful content headings."""
+    if heading.strip().casefold().rstrip(':') == 'explanation':
+        return ''
+    if heading.strip().casefold() == default_heading.strip().casefold():
+        return ''
+    return heading
+
+
 def semantic_blocks(markdown: str, default_heading: str) -> list[GeneratedBlock]:
     """Create meaningful blocks when headings are present; keep prose intact otherwise."""
     matches = list(_HEAD.finditer(markdown))
     if not matches:
-        return [GeneratedBlock(kind="explanation", heading=default_heading, body=markdown.strip())]
+        return [GeneratedBlock(kind="explanation", heading="", body=markdown.strip())]
     blocks: list[GeneratedBlock] = []
     preface = markdown[:matches[0].start()].strip()
     if preface:
-        blocks.append(GeneratedBlock(kind="explanation", heading=default_heading, body=preface))
+        blocks.append(GeneratedBlock(kind="explanation", heading="", body=preface))
     for index, match in enumerate(matches):
         heading = match.group(1).strip()
         body = markdown[match.end():matches[index + 1].start() if index + 1 < len(matches) else len(markdown)].strip()
@@ -35,8 +44,8 @@ def semantic_blocks(markdown: str, default_heading: str) -> list[GeneratedBlock]
             continue
         normalized = heading.lower().rstrip(":")
         kind = _KINDS.get(normalized, "explanation")
-        blocks.append(GeneratedBlock(kind=kind, heading=heading, body=body))
-    return blocks or [GeneratedBlock(kind="explanation", heading=default_heading, body=markdown.strip())]
+        blocks.append(GeneratedBlock(kind=kind, heading=_display_heading(heading, default_heading), body=body))
+    return blocks or [GeneratedBlock(kind="explanation", heading="", body=markdown.strip())]
 
 
 @dataclass(frozen=True)
@@ -63,19 +72,21 @@ class ProgressiveLessonParser:
         self.block_id = ""
         self.kind = "explanation"
         self.heading = default_heading
+        self.line_start = True
 
     def _start(self, heading: str, kind: str) -> LessonStreamOperation:
         self.block_index += 1
         self.block_id = f"stream_{self.generation_id}_{self.block_index}"
-        self.heading, self.kind = heading, kind
-        return LessonStreamOperation("start", self.block_id, kind, heading)
+        self.heading, self.kind = _display_heading(heading, self.default_heading), kind
+        return LessonStreamOperation("start", self.block_id, kind, self.heading)
 
     def feed(self, delta: str) -> list[LessonStreamOperation]:
         self.pending += delta
         operations: list[LessonStreamOperation] = []
         while "\n" in self.pending:
             line, self.pending = self.pending.split("\n", 1)
-            match = re.match(r"^#{1,3}\s+(.+?)\s*$", line)
+            match = re.match(r"^#{1,3}\s+(.+?)\s*$", line) if self.line_start else None
+            self.line_start = True
             if match:
                 if self.block_id:
                     operations.append(LessonStreamOperation("complete", self.block_id))
@@ -83,19 +94,23 @@ class ProgressiveLessonParser:
                 operations.append(self._start(heading, _KINDS.get(heading.lower().rstrip(":"), "explanation")))
                 continue
             if not self.block_id:
-                operations.append(self._start(self.default_heading, "explanation"))
+                operations.append(self._start("", "explanation"))
             operations.append(LessonStreamOperation("delta", self.block_id, text=line + "\n"))
         # Once a line cannot be a heading, stream it without waiting for a newline.
-        if self.pending and self.block_id and not self.pending.startswith("#"):
+        could_be_heading = self.line_start and re.match(r'^#{1,3}(?:\s|$)', self.pending) is not None
+        if self.pending and not could_be_heading:
+            if not self.block_id:
+                operations.append(self._start('', 'explanation'))
             operations.append(LessonStreamOperation("delta", self.block_id, text=self.pending))
             self.pending = ""
+            self.line_start = False
         return operations
 
     def finish(self) -> list[LessonStreamOperation]:
         operations: list[LessonStreamOperation] = []
         if self.pending:
             if not self.block_id:
-                operations.append(self._start(self.default_heading, "explanation"))
+                operations.append(self._start("", "explanation"))
             operations.append(LessonStreamOperation("delta", self.block_id, text=self.pending))
             self.pending = ""
         if self.block_id:

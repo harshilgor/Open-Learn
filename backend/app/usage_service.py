@@ -54,7 +54,12 @@ def _record_usage(row: dict) -> dict | None:
     cost = float(cost_raw) if isinstance(cost_raw, (int, float)) and not isinstance(cost_raw, bool) and cost_raw >= 0 else 0.0
     has_cost = isinstance(cost_raw, (int, float)) and not isinstance(cost_raw, bool) and cost_raw >= 0
     exact = usage_source == "exact" and total > 0
-    if not exact:
+    if metrics.get("modelInvoked") is False:
+        total = prompt = completion = 0
+        usage_source = "estimated"
+        cost = 0.0
+        has_cost = False
+    elif not exact:
         estimated = _safe_int(metrics.get("estimatedOutputTokens"))
         if estimated <= 0:
             estimated = _safe_int(metrics.get("outputCharacters")) // 4
