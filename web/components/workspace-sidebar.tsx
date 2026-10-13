@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from 'react';
-import { ArrowUpRight, FolderClosed, FolderPlus, Plus, LayoutDashboard, SquarePen } from 'lucide-react';
+import { ChevronRight, FolderClosed, FolderPlus, Plus, LayoutDashboard, SquarePen } from 'lucide-react';
 import { Button } from './ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
 import { ChatHistory } from './chat-history';
@@ -41,7 +41,7 @@ export function WorkspaceSidebar({ tab, onTabChange, collapseControl, courses, a
       <button type="button" className={`course-link ${activeCourseId === null ? 'active' : ''}`} aria-pressed={activeCourseId === null} onClick={() => onCourseSelect(null)}><FolderClosed size={16} /><span>All courses</span></button>
       {courses.map(course => <div className="sidebar-course-row" key={course.id}>
         <button type="button" className={`course-link ${activeCourseId === course.id ? 'active' : ''}`} aria-pressed={activeCourseId === course.id} onClick={() => onCourseSelect(course.id)} title={course.name}><FolderClosed size={16} /><span className="truncate">{course.name}</span>{course.roadmapProgress > 0 ? <span className="course-progress" role="img" aria-label={`${Math.round(course.roadmapProgress)}% course progress`} style={{ '--progress': `${Math.min(100, course.roadmapProgress)}%` } as CSSProperties} /> : null}</button>
-        <button type="button" className="sidebar-course-open" aria-label={`Open ${course.name} course`} title="Open course" onClick={() => onCourseOpen(course.id)}><ArrowUpRight size={14} /></button>
+        <button type="button" className="sidebar-course-open" aria-label={`Open ${course.name} course`} title="Open course" onClick={() => onCourseOpen(course.id)}><ChevronRight size={14} /></button>
       </div>)}
     </div>
     <div id="sidebar-body-home" role="tabpanel" aria-labelledby="sidebar-tab-home" hidden={tab !== 'home'}>

@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import "@fontsource-variable/inter";
 import "./globals.css";
+import "./design-system.css";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AccountAccess, AccountWorkspace } from '@/components/account-access';
 import { AppInstall } from "@/components/app-install";
+import { SourcePassageDialog } from "@/components/source-passage-dialog";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://open-learn-eta.vercel.app"),
@@ -43,10 +46,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="antialiased" suppressHydrationWarning>
-        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+        <ThemeProvider attribute="class" defaultTheme="light" enableSystem disableTransitionOnChange>
           <AccountWorkspace>{children}</AccountWorkspace>
           <AccountAccess />
           <AppInstall />
+          <SourcePassageDialog />
           <Toaster />
         </ThemeProvider>
       </body>

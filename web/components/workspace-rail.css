@@ -11,7 +11,7 @@
 .chat-history-flyout{width:360px;max-width:calc(100vw - 96px);max-height:min(680px,85dvh);overflow-y:auto;padding:16px;border-radius:18px}
 .chat-history-flyout h2{font-weight:600;font-size:16px}.history-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.history-heading button{padding:8px;border-radius:8px;background:var(--muted)}
 .mobile-history-trigger{display:none}.mobile-history-sheet{max-height:85dvh}.mobile-history-body{overflow-y:auto;padding:0 16px 24px}.history-scope{font-size:13px;padding:10px 0;text-decoration:underline}
-.notes-view>.notes-navigation-host{width:260px;flex:0 0 260px;overflow:auto;border-right:1px solid var(--border)}
+.notes-view>.notes-navigation-host{width:280px;flex:0 0 280px;overflow:auto;border-right:1px solid var(--border);background:var(--sidebar)}
 .notes-view:not([hidden]){display:flex!important;min-height:0}.notes-view>.notes-navigation-host+*{flex:1;min-width:0}
 @media(max-width:1023px){.workspace-rail{display:none}.mobile-history-trigger{display:grid;place-items:center;min-width:44px;min-height:44px}.notes-navigation-host{display:none}.chat-history-flyout{max-width:calc(100vw - 32px)}}
 
@@ -26,3 +26,10 @@
 .workspace-rail .rail-buddy .buddy-avatar{width:52px;height:52px;border:0;border-radius:0;background:transparent}
 .workspace-rail .rail-history-toggle{border:0;background:transparent;box-shadow:none;right:0;bottom:-2px}
 .workspace-rail .rail-history-toggle:hover{background:transparent;color:var(--ring)}
+
+/* Current destination and selected Buddy: one quiet, consistent marker. */
+.workspace-rail>button{color:var(--muted-foreground)}
+.workspace-rail>button:hover{color:var(--foreground)}
+.workspace-rail>button[aria-current=page]{background:var(--brand-soft);color:var(--brand)}
+.workspace-rail button[aria-pressed=true]{outline:none}
+.workspace-rail .rail-buddy>button:not(.rail-history-toggle)[aria-pressed=true]::before{left:-12px;top:14px;width:4px;height:24px;border-radius:0 4px 4px 0;background:var(--brand)}

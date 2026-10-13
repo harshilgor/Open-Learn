@@ -11,11 +11,11 @@
 .canvasPicker{margin-top:10px}.canvasPicker summary{cursor:pointer;font-size:13px}.canvasSources{display:grid;gap:8px;max-height:320px;overflow:auto;margin:8px 0}.canvasSources article{display:grid;gap:4px;min-width:0;padding:9px;border:1px solid var(--border);border-radius:8px;background:var(--background)}.canvasSources strong{font-size:12px;overflow-wrap:anywhere}.canvasSources article p{display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0;font-size:11px;line-height:1.5;color:var(--muted-foreground)}
 .stage{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}.stage[data-reference-open=true]{grid-template-columns:minmax(0,1fr) minmax(220px,38%)}.stageMain{min-width:0}.referencePane{position:sticky;top:0;min-width:0;max-height:calc(100vh - 220px);overflow:auto;border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--card)}.referencePane header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:0 0 10px}.referencePane header h3{margin:4px 0;font-size:14px}.referencePane header button{font-size:20px;line-height:1;color:var(--muted-foreground)}.referencePane header small{font-size:10px}.referenceText{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;font-size:13px;margin:10px 0}.referencePane>small{margin:10px 0}.referencePane>button{margin-top:8px}.referencePdf{display:block;width:100%;height:min(68vh,760px);min-height:320px;border:1px solid var(--border);border-radius:8px;background:white}.openPdf{display:inline-block;margin-top:8px;font-size:12px;text-decoration:underline}
 .output{border:1px solid var(--border);border-radius:14px;padding:14px;margin:12px 0}.source{display:block;text-align:left;width:100%;border-bottom:1px solid var(--border);padding:10px 0}.source strong{font-size:14px}.card{padding:12px 0;border-bottom:1px solid var(--border)}.card button{display:block;color:var(--primary);font-size:12px;margin-top:8px}.workspace details{font-size:13px;padding:12px;background:var(--muted);border-radius:10px}.workspace summary{cursor:pointer}.workspace footer{display:flex;align-items:center;gap:8px;margin-top:20px}.empty{padding:30px;font-size:14px;color:var(--muted-foreground)}
-.classLaunch{width:min(100%,760px);min-height:100%;margin:0 auto;padding:clamp(24px,5vw,56px);display:flex;flex-direction:column;justify-content:center;color:var(--foreground)}
+.classLaunch{width:min(100%,760px);min-height:100%;margin:0 auto;padding:24px 20px 36px;display:flex;flex-direction:column;justify-content:flex-start;color:var(--foreground)}
 .launchIntro{max-width:510px;margin-bottom:30px}
-.launchEyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--muted-foreground);font-size:10px;font-weight:650;letter-spacing:.14em}
+.launchEyebrow{display:inline-flex;align-items:center;gap:8px;color:var(--muted-foreground);font-size:12px;font-weight:600;letter-spacing:.06em}
 .launchEyebrow svg{color:var(--primary)}
-.launchIntro h1{max-width:470px;margin:14px 0 8px;font-size:clamp(24px,2.5vw,30px);font-weight:600;line-height:1.15;letter-spacing:-.03em}
+.launchIntro h1{max-width:470px;margin:10px 0 6px;font-size:22px;font-weight:600;line-height:1.15;letter-spacing:-.03em}
 .launchIntro p{max-width:390px;margin:0;color:var(--muted-foreground);font-size:14px;line-height:1.65}
 .launchForm{display:grid;gap:9px;max-width:490px}
 .launchForm>label{display:flex;align-items:center;justify-content:space-between;margin-top:6px;color:var(--foreground);font-size:12px;font-weight:600}
@@ -27,7 +27,7 @@
 .launchError{margin:0;color:var(--destructive);font-size:11px}
 .launchAction{display:flex;width:100%;height:44px;justify-content:center;gap:9px;margin-top:8px;border-radius:9px;font-weight:600}
 .launchAction svg:last-child{margin-left:auto}
-.launchPrivacy{display:flex;align-items:center;gap:8px;margin:3px 0 0!important;color:var(--muted-foreground);font-size:11px!important;line-height:1.5!important}
+.launchPrivacy{display:flex;align-items:center;gap:8px;margin:3px 0 0!important;color:var(--muted-foreground);font-size:12px!important;line-height:1.5!important}
 .launchPrivacy span{width:7px;height:7px;flex:none;border-radius:50%;background:var(--primary)}
 .recentClasses{max-width:490px;margin-top:34px;padding-top:19px;border-top:1px solid var(--border)}
 .recentHeading{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;color:var(--muted-foreground)}

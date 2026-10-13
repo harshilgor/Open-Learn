@@ -12,15 +12,18 @@ function wallValue(value: string | null | undefined, zone: string, day: string, 
   return `${dateKey(date, zone)}T${new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date)}`;
 }
 
-export function CalendarEventForm({ event, day, zone, calendars, courses, onClose, onSaved }: { event?: CalendarEvent; day: string; zone: string; calendars: StudentCalendar[]; courses: CourseSummary[]; onClose: () => void; onSaved: (operation: CalendarOperation) => void }) {
+/** One hour after a slot start, capped at the end of the day. */
+const endOf = (time: string) => { const hour = Number(time.slice(0, 2)); return hour >= 23 ? '23:59' : `${String(hour + 1).padStart(2, '0')}:${time.slice(3, 5)}`; };
+
+export function CalendarEventForm({ event, day, time, zone, calendars, courses, onClose, onSaved }: { event?: CalendarEvent; day: string; time?: string; zone: string; calendars: StudentCalendar[]; courses: CourseSummary[]; onClose: () => void; onSaved: (operation: CalendarOperation) => void }) {
   const [title, setTitle] = useState(event?.title || '');
   const [type, setType] = useState(event?.type || 'study');
   const [mode, setMode] = useState(event?.temporal.mode || 'timed');
   const [timezone, setTimezone] = useState(event?.temporal.timezone || zone);
   const [calendarId, setCalendarId] = useState(event?.calendarId || calendars.find(c => c.canEdit)?.id || '');
   const [courseId, setCourseId] = useState(event?.courseId || '');
-  const [start, setStart] = useState(wallValue(event?.temporal.start || event?.temporal.dueAt, timezone, day));
-  const [end, setEnd] = useState(wallValue(event?.temporal.end, timezone, day, '09:30'));
+  const [start, setStart] = useState(wallValue(event?.temporal.start || event?.temporal.dueAt, timezone, day, time || '09:00'));
+  const [end, setEnd] = useState(wallValue(event?.temporal.end, timezone, day, time ? endOf(time) : '09:30'));
   const [startDate, setStartDate] = useState(event?.temporal.startDate || event?.temporal.dueDate || day);
   const [endDate, setEndDate] = useState(event?.temporal.endDate || new Date(Date.parse(`${day}T12:00:00Z`) + 86400000).toISOString().slice(0, 10));
   const [description, setDescription] = useState(event?.description || '');

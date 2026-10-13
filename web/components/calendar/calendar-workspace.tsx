@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { CalendarDays, ChevronLeft, ChevronRight, Plus, Repeat2, Settings2 } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, Globe2, Plus, Repeat2, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { useCalendar } from '@/hooks/use-calendar';
@@ -12,19 +12,27 @@ import { CalendarRoutines } from './calendar-routines';
 import { CalendarEventForm } from './calendar-event-form';
 import styles from './calendar.module.css';
 import { CalendarSources } from './calendar-sources';
-import { CalendarTimeline } from './calendar-timeline';
+import { CalendarTimeline, eventCategory } from './calendar-timeline';
 import { occursOnDate, shiftMonth } from '@/lib/calendar-layout';
 
 type View = 'week' | 'month' | 'day' | 'agenda';
 const addDay = (day: string, amount: number) => new Date(Date.parse(`${day}T12:00:00Z`) + amount * 86400000).toISOString().slice(0, 10);
 const labelDay = (day: string, options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(undefined, { ...options, timeZone: 'UTC' }).format(new Date(`${day}T12:00:00Z`));
+const VIEWS: Array<{ value: View; label: string }> = [{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }, { value: 'agenda', label: 'Agenda' }];
+/** Title for the visible range: "October 2026", "Oct 12 – 18, 2026" or "Tuesday, October 13". */
+function rangeTitle(view: View, first: string, last: string, day: string) {
+  if (view === 'month') return labelDay(day, { month: 'long', year: 'numeric' });
+  if (view === 'day') return labelDay(day, { weekday: 'long', month: 'long', day: 'numeric' });
+  const format = new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+  return format.formatRange(new Date(`${first}T12:00:00Z`), new Date(`${last}T12:00:00Z`));
+}
 
 export function CalendarWorkspace({ courses, onCourse, onStudy }: { courses: CourseSummary[]; onCourse: (id: string) => void; onStudy: (event: CalendarEvent) => void }) {
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [day, setDay] = useState(() => dateKey(new Date(), zone));
   const [view, setView] = useState<View>('week');
   const [selected, setSelected] = useState<CalendarEvent | null>(null);
-  const [form, setForm] = useState<{ day: string; event?: CalendarEvent } | null>(null);
+  const [form, setForm] = useState<{ day: string; time?: string; event?: CalendarEvent } | null>(null);
   const [tab, setTab] = useState<'calendar' | 'routines'>('calendar');
   const [filters, setFilters] = useState<string[] | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -85,24 +93,32 @@ export function CalendarWorkspace({ courses, onCourse, onStudy }: { courses: Cou
     catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Could not cancel event.'); }
     finally { setBusy(false); }
   }
-  const eventButton = (event: CalendarEvent, compact = false) => <button key={event.id} type="button" className={`${styles.event} ${compact ? styles.compactEvent : ''}`} onClick={() => { setSelected(event); setCancelScope(event.recurrence ? 'occurrence' : 'series'); }} style={{ borderLeftColor: data.calendars.find(c => c.id === event.calendarId)?.color || 'var(--primary)' }}><span>{eventTime(event, zone)}{event.recurrence ? <Repeat2 size={12}/> : null}</span><strong>{event.title}</strong>{!compact ? <small>{courses.find(c => c.id === event.courseId)?.name || event.type}</small> : null}</button>;
+  const eventButton = (event: CalendarEvent, compact = false) => <button key={event.id} type="button" className={`${styles.event} ${compact ? styles.compactEvent : ''}`} data-category={eventCategory(event)} onClick={() => { setSelected(event); setCancelScope(event.recurrence ? 'occurrence' : 'series'); }} title={compact ? `${event.title} · ${eventTime(event, zone)}` : undefined}>{compact ? <><strong>{event.title}</strong><span>{eventTime(event, zone)}</span></> : <><span className={styles.eventTime}>{eventTime(event, zone)}{event.recurrence ? <Repeat2 size={12} aria-label="Repeats"/> : null}</span><span className={styles.eventBody}><strong>{event.title}</strong><small>{courses.find(c => c.id === event.courseId)?.name || event.type[0].toUpperCase() + event.type.slice(1)}</small></span></>}</button>;
+  const title = rangeTitle(view, days[0], days[days.length - 1], day);
 
   return <section className={styles.workspace} aria-label="Student calendar">
-    <header className={styles.toolbar}><div><span className={styles.eyebrow}>YOUR TIME, IN ONE PLACE</span><h1>{labelDay(day, { month: 'long', year: 'numeric' })}</h1></div><div className={styles.controls}>
-      <Button variant="outline" size="sm" onClick={() => updateDate(today)}>Today</Button>
-      <Button variant="ghost" size="icon" aria-label="Previous dates" onClick={() => updateDate(view === 'month' ? shiftMonth(day,-1) : addDay(day,-length))}><ChevronLeft size={18}/></Button>
-      <Button variant="ghost" size="icon" aria-label="Next dates" onClick={() => updateDate(view === 'month' ? shiftMonth(day,1) : addDay(day,length))}><ChevronRight size={18}/></Button>
-      <label><span className="sr-only">Calendar view</span><select value={view} onChange={e => updateDate(day, e.target.value as View)}>{(['day', 'week', 'month', 'agenda'] as View[]).map(v => <option key={v} value={v}>{v[0].toUpperCase() + v.slice(1)}</option>)}</select></label>
-      <Button variant="ghost" size="icon" aria-label="Calendar filters and Buddy permissions" onClick={() => setFilterOpen(!filterOpen)}><Settings2 size={18}/></Button>
-      <Button size="sm" onClick={() => setForm({ day })}><Plus size={16}/>Add event</Button>
-    </div></header>
-    <div className={styles.subnav}><button aria-pressed={tab === 'calendar'} onClick={() => setTab('calendar')}><CalendarDays size={15}/>Calendar</button><button aria-pressed={tab === 'routines'} onClick={() => setTab('routines')}><Repeat2 size={15}/>Routines</button><span>{zone}</span></div>
+    <header className={styles.toolbar}>
+      <div className={styles.toolbarNav}>
+        <Button variant="outline" size="sm" onClick={() => updateDate(today)}>Today</Button>
+        <div className={styles.stepper}>
+          <Button variant="ghost" size="icon-sm" aria-label="Previous dates" onClick={() => updateDate(view === 'month' ? shiftMonth(day,-1) : addDay(day,-length))}><ChevronLeft size={18}/></Button>
+          <Button variant="ghost" size="icon-sm" aria-label="Next dates" onClick={() => updateDate(view === 'month' ? shiftMonth(day,1) : addDay(day,length))}><ChevronRight size={18}/></Button>
+        </div>
+        <h1 aria-live="polite">{title}</h1>
+      </div>
+      <div className={styles.controls}>
+        <div className={styles.segmented} role="radiogroup" aria-label="Calendar view">{VIEWS.map(option => <button key={option.value} type="button" role="radio" aria-checked={view === option.value} onClick={() => updateDate(day, option.value)}>{option.label}</button>)}</div>
+        <Button variant="ghost" size="icon-sm" aria-label="Calendar filters and Buddy permissions" aria-expanded={filterOpen} title="Filters and permissions" onClick={() => setFilterOpen(!filterOpen)}><Settings2 size={17}/></Button>
+        <Button size="sm" aria-label="Add event" onClick={() => setForm({ day })}><Plus size={16}/><span className={styles.addLabel}>Add event</span></Button>
+      </div>
+    </header>
+    <div className={styles.subnav} role="tablist" aria-label="Calendar sections"><button type="button" role="tab" aria-selected={tab === 'calendar'} onClick={() => setTab('calendar')}><CalendarDays size={15}/>Calendar</button><button type="button" role="tab" aria-selected={tab === 'routines'} onClick={() => setTab('routines')}><Repeat2 size={15}/>Routines</button><span title="Display timezone"><Globe2 size={13}/>{zone}</span></div>
     {filterOpen ? <div className={styles.filters}><label>Display timezone<input value={zone} onChange={e => { try { new Intl.DateTimeFormat(undefined, { timeZone: e.target.value }); setZone(e.target.value); } catch { setNotice('Choose a valid IANA timezone.'); } }}/></label><label>Course<select value={courseFilter} onChange={e => setCourseFilter(e.target.value)}><option value="">All courses</option>{courses.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>{data.calendars.map(calendar => <div key={calendar.id} className={styles.permissionRow}><label className={styles.checkbox}><input type="checkbox" checked={filters === null || filters.includes(calendar.id)} onChange={e => setFilters(e.target.checked ? [...new Set([...(filters || data.calendars.map(c=>c.id)), calendar.id])] : (filters || data.calendars.map(c=>c.id)).filter(id => id !== calendar.id))}/>{calendar.title}</label><label>Buddy access<select value={`${calendar.permission.read}:${calendar.permission.edit}`} onChange={async e => { setBusy(true); try { const [read, edit] = e.target.value.split(':'); await calendarApi.permission(calendar, read as 'none' | 'busy_only' | 'details', edit as 'ask' | 'allow'); data.refresh(); } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Permission could not save.'); } finally { setBusy(false); } }} disabled={busy}><option value="none:ask">No access</option><option value="busy_only:ask">Busy/free only</option><option value="details:ask">Read details; ask before editing</option><option value="details:allow">Allow ordinary edits</option></select></label></div>)}<CalendarSources calendars={data.calendars} onChanged={data.refresh}/></div> : null}
     {data.error ? <div role="alert" className={styles.error}>{data.error}<button onClick={data.refresh}>Retry</button>{data.updatedAt ? <small>Last refreshed {new Date(data.updatedAt * 1000).toLocaleTimeString()}</small> : null}</div> : null}
     {notice ? <div role="status" className={styles.notice}>{notice}{operation?.undoUntil && operation.undoUntil > (data.updatedAt || 0) ? <button disabled={busy} onClick={async () => { setBusy(true); try { await calendarApi.undo(operation.id, crypto.randomUUID()); setNotice('Change undone.'); setOperation(null); window.dispatchEvent(new Event(CALENDAR_CHANGED)); data.refresh(); } catch (cause) { setNotice(cause instanceof Error ? cause.message : 'Undo failed.'); } finally { setBusy(false); } }}>Undo</button> : null}<button aria-label="Dismiss calendar notice" onClick={() => setNotice('')}>×</button></div> : null}
     {tab === 'routines' ? <CalendarRoutines calendars={data.calendars} courses={courses} zone={zone} onStart={(courseId,title)=>onStudy({id:courseId,calendarId:data.calendars[0]?.id||'',title,type:'study',temporal:{mode:'deadline',timezone:zone,dueDate:day},courseId,busy:false,revision:1})}/> : <div className={view === 'week' ? styles.calendarContent : styles.calendarScroll}>
       <div className={styles.calendarScroll}>
-      {data.loading ? <div role="status" className={styles.empty}>Loading your schedule…</div> : view === 'agenda' ? <div className={styles.agenda}>{days.map(date => <section key={date}><header><strong>{labelDay(date, { weekday: 'long', month: 'short', day: 'numeric' })}</strong><button aria-label={`Add event on ${date}`} onClick={() => setForm({ day: date })}><Plus size={16}/></button></header>{events.filter(e => occursOnDate(e, date, zone)).map(e => eventButton(e))}{!events.some(e => occursOnDate(e, date, zone)) && !data.error ? <p className={styles.free}>Nothing scheduled.</p> : null}</section>)}</div> : view === 'month' ? <div className={styles.month}>{days.map(date => <div key={date} className={`${styles.monthDay} ${date === today ? styles.today : ''}`}><button className={styles.dateButton} onClick={() => updateDate(date, 'agenda')}>{labelDay(date, { weekday: 'short', day: 'numeric' })}</button>{events.filter(e => occursOnDate(e, date, zone)).slice(0, 3).map(e => eventButton(e, true))}{events.filter(e => occursOnDate(e, date, zone)).length > 3 ? <button onClick={() => updateDate(date, 'agenda')}>More events</button> : null}</div>)}</div> : <CalendarTimeline days={days} events={events} zone={zone} calendars={data.calendars} onSelect={event=>{setSelected(event);setCancelScope(event.recurrence?'occurrence':'series');}} onAdd={date=>setForm({day:date})} onDay={date=>updateDate(date,'agenda')}/>}
+      {data.loading ? <div role="status" className={styles.empty}>Loading your schedule…</div> : view === 'agenda' ? <div className={styles.agenda}>{days.map(date => <section key={date} className={date === today ? styles.agendaToday : ''}><header><div className={styles.agendaDate}><strong>{labelDay(date, { day: 'numeric' })}</strong><span>{labelDay(date, { weekday: 'long' })}<small>{labelDay(date, { month: 'long' })}{date === today ? ' · Today' : ''}</small></span></div><button type="button" aria-label={`Add event on ${date}`} onClick={() => setForm({ day: date })}><Plus size={16}/></button></header>{events.filter(e => occursOnDate(e, date, zone)).map(e => eventButton(e))}{!events.some(e => occursOnDate(e, date, zone)) && !data.error ? <p className={styles.free}>Nothing scheduled.</p> : null}</section>)}</div> : view === 'month' ? <div className={styles.monthWrap}><div className={styles.monthWeekdays} aria-hidden="true">{days.slice(0, 7).map(date => <span key={date}>{labelDay(date, { weekday: 'short' })}</span>)}</div><div className={styles.month}>{days.map(date => { const dayEvents = events.filter(e => occursOnDate(e, date, zone)); return <div key={date} className={`${styles.monthDay} ${date === today ? styles.today : ''} ${date.slice(0, 7) !== day.slice(0, 7) ? styles.outsideMonth : ''}`}><button type="button" className={styles.dateButton} aria-current={date === today ? 'date' : undefined} aria-label={labelDay(date, { weekday: 'long', month: 'long', day: 'numeric' })} onClick={() => updateDate(date, 'day')}>{labelDay(date, { day: 'numeric' })}</button>{dayEvents.slice(0, 3).map(e => eventButton(e, true))}{dayEvents.length > 3 ? <button type="button" className={styles.moreEvents} onClick={() => updateDate(date, 'day')}>+{dayEvents.length - 3} more</button> : null}</div>; })}</div></div> : <CalendarTimeline days={days} events={events} zone={zone} calendars={data.calendars} onSelect={event=>{setSelected(event);setCancelScope(event.recurrence?'occurrence':'series');}} onAdd={(date,time)=>setForm({day:date,time})} onDay={date=>updateDate(date,'day')}/>}
       </div>
       {view === 'week' ? <aside className={styles.routineRail} aria-label="Study routines"><CalendarRoutines compact calendars={data.calendars} courses={courses} zone={zone} onStart={(courseId,title)=>onStudy({id:courseId,calendarId:data.calendars[0]?.id||'',title,type:'study',temporal:{mode:'deadline',timezone:zone,dueDate:day},courseId,busy:false,revision:1})}/></aside> : null}
     </div>}

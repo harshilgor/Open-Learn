@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { Bell, CalendarDays, BookOpen, ChevronDown, FileText, History, Home, Plus, RotateCcw, Search, Settings } from 'lucide-react';
+import { Bell, CalendarDays, BookOpen, ChevronDown, Download, FileText, History, Home, Plus, RotateCcw, Search, Settings } from 'lucide-react';
 import { BuddyAvatar, useBuddies } from './buddies';
 import { ChatHistory } from './chat-history';
 import { AccountMenuActions, AccountProfile } from './account-access';
@@ -15,17 +15,26 @@ type Props = {
   activeSessionId: string | null; refreshKey: number; courses: CourseSummary[];
   onSwitch: (id: string) => void; onOpen: (id: string | null) => void;
   onNavigate: (destination: string) => void;
+  /** Current destination, used to mark the matching rail button. */
+  current?: string;
 };
+
+/** Installing is offered only in a browser tab: not in the desktop app or an installed copy. */
+function canInstall() {
+  if (typeof window === 'undefined' || 'formaDesktop' in window) return false;
+  return !(typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches);
+}
 
 export function WorkspaceRail(props: Props) {
   const { snapshot, active, edit, error, refresh } = useBuddies();
   const [flyout, setFlyout] = useState<string | null>(null);
   const history = (buddyId?: string) => <ChatHistory activeSessionId={props.activeSessionId} refreshKey={props.refreshKey} courses={props.courses} fixedBuddyId={buddyId} onOpen={id => { props.onOpen(id); setFlyout(null); }} />;
   return <nav className="workspace-rail" aria-label="Main navigation">
-    <button title="Home" aria-label="Home" onClick={() => props.onNavigate('dashboard')}><Home size={21}/></button>
+    <button title="Home" aria-label="Home" aria-current={props.current === 'dashboard' ? 'page' : undefined} onClick={() => props.onNavigate('dashboard')}><Home size={21}/></button>
     <Popover open={flyout === 'search'} onOpenChange={open => setFlyout(open ? 'search' : null)}><PopoverTrigger asChild><button title="Search all chats" aria-label="Search all chats"><Search size={21}/></button></PopoverTrigger><PopoverContent side="right" align="start" sideOffset={14} className="chat-history-flyout" aria-label="Search all chats"><h2>All conversations</h2>{history()}</PopoverContent></Popover>
-    <button title="Courses" aria-label="Courses" onClick={() => props.onNavigate('courses')}><BookOpen size={21}/></button>
-    <button title="Calendar" aria-label="Calendar" onClick={() => props.onNavigate('calendar')}><CalendarDays size={21}/></button>
+    <button title="Courses" aria-label="Courses" aria-current={props.current === 'courses' || props.current === 'course' ? 'page' : undefined} onClick={() => props.onNavigate('courses')}><BookOpen size={21}/></button>
+    <button title="Notes" aria-label="Notes" aria-current={props.current === 'notes' ? 'page' : undefined} onClick={() => props.onNavigate('notes')}><FileText size={21}/></button>
+    <button title="Calendar" aria-label="Calendar" aria-current={props.current === 'calendar' ? 'page' : undefined} onClick={() => props.onNavigate('calendar')}><CalendarDays size={21}/></button>
     <div className="rail-buddies">
       {snapshot?.profiles.filter(buddy => !buddy.archived).map(buddy => {
         const count = Object.values(snapshot.chats).filter(id => id === buddy.id).length;
@@ -38,10 +47,10 @@ export function WorkspaceRail(props: Props) {
       {error ? <button title={error} aria-label="Retry loading buddies" onClick={() => void refresh()}><RotateCcw size={18}/></button> : null}
     </div>
     <DropdownMenu><DropdownMenuTrigger asChild><button className="rail-account" title="Account and navigation" aria-label="Account menu"><AccountProfile/></button></DropdownMenuTrigger><DropdownMenuContent side="right" align="end" sideOffset={12} className="min-w-52">
-      <DropdownMenuItem onSelect={() => props.onNavigate('notes')}><FileText size={17}/>Notes</DropdownMenuItem>
       <DropdownMenuItem onSelect={() => props.onNavigate('review')}><RotateCcw size={17}/>Review</DropdownMenuItem>
       <DropdownMenuItem onSelect={() => props.onNavigate('reminders')}><Bell size={17}/>Reminders</DropdownMenuItem>
       <DropdownMenuItem onSelect={() => props.onNavigate('settings')}><Settings size={17}/>Settings</DropdownMenuItem>
+      {canInstall() ? <DropdownMenuItem onSelect={() => window.dispatchEvent(new Event('openlearn:install'))}><Download size={17}/>Install app</DropdownMenuItem> : null}
       <AccountMenuActions/>
     </DropdownMenuContent></DropdownMenu>
   </nav>;

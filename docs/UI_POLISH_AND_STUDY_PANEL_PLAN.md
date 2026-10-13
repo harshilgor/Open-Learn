@@ -66,36 +66,36 @@ Current CSS: 597 distinct hex colours, 108 font sizes, 62 radii, 73 shadows, ~15
 
 ### 4.1 Remove and merge
 
-- [ ] **Remove the Sources tab** (`sourcesPanel` in `web/components/workspace-panel.tsx`).
-- [ ] **Citation popover:** clicking a citation in chat opens a popover with the exact passage, page number and "Open in file". Re-point `WORKSPACE_SOURCE_OPEN_EVENT` to it.
+- [x] **Remove the Sources tab** (`sourcesPanel` in `web/components/workspace-panel.tsx`).
+- [x] **Citation popover:** clicking a citation in chat opens a popover with the exact passage, page number and "Open in file". Re-point `WORKSPACE_SOURCE_OPEN_EVENT` to it.
 - [ ] Move uploaded files under each course's materials.
-- [ ] **Move Reminders** out of the panel to Calendar and the Dashboard.
-- [ ] **Merge Flashcards into Practice** (details in Phase 7). Re-point `WORKSPACE_FLASHCARDS_OPEN_EVENT` to Practice with the Flashcards view selected.
-- [ ] Update `WorkspaceTab`, `tabNames`, `validLayout` in `web/components/workspace-split.tsx`, and migrate stored layouts (`forma-workspace-panel-v1`) that reference removed tabs.
+- [x] **Move Reminders** out of the panel to Calendar and the Dashboard.
+- [x] **Merge Flashcards into Practice** (details in Phase 7). Re-point `WORKSPACE_FLASHCARDS_OPEN_EVENT` to Practice with the Flashcards view selected.
+- [x] Update `WorkspaceTab`, `tabNames`, `validLayout` in `web/components/workspace-split.tsx`, and migrate stored layouts (`forma-workspace-panel-v1`) that reference removed tabs.
 
 ### 4.2 Header and tabs
 
-- [ ] **Tool selector:** a fixed segmented control with icon + label: Notes · Canvas · Practice · Class. Tools are always present and are never opened or closed.
-- [ ] **Document tabs** in a second row, only for open notes; overflow menu after ~5. Fixes today's truncated tabs ("Reminde", "Rem") and the ▾ switcher overlapping them.
-- [ ] Remove the ▾ switcher and the ＋ launcher (they list the same items; the ＋ menu runs off-screen).
-- [ ] Keep three header controls — Expand, Pin, ⋯ (close, reset width, help) — at ≥28px with tooltips.
+- [x] **Tool selector:** a fixed segmented control with icon + label: Notes · Canvas · Practice · Class. Tools are always present and are never opened or closed.
+- [x] **Document tabs** in a second row, only for open notes (the row scrolls; an overflow menu after ~5 is still to do). Fixes today's truncated tabs ("Reminde", "Rem") and the ▾ switcher overlapping them.
+- [x] Remove the ▾ switcher and the ＋ launcher (they list the same items; the ＋ menu runs off-screen).
+- [x] Keep three header controls — Expand, Pin, ⋯ (close, reset width, help) — at ≥28px with tooltips.
 - [ ] **One open/close toggle** (the chat header button), shown as "on" while the panel is open. Remove the panel's second toggle.
 
 ### 4.3 One layout for every tool
 
-- [ ] Build a shared `PanelSection` component: icon · title · one-line description · optional primary action; content with 16px padding; optional sticky footer for the main action. Model it on the Reminders tab.
+- [x] Build a shared `PanelSection` component: icon · title · one-line description · optional primary action; content with 16px padding; optional sticky footer for the main action. Model it on the Reminders tab.
 - [ ] Apply it to Notes, Canvas, Practice and In-Class. Canvas and Flashcards are currently unstyled — fix those first.
-- [ ] Top-align In-Class (it is the only tool centred vertically and jumps when switching).
+- [x] Top-align In-Class (it is the only tool centred vertically and jumps when switching).
 - [ ] Notes empty state: remove the lone "hide list" icon when there are no notes; add "Start a note from this chat".
 
 ### 4.4 Layout and behaviour
 
-- [ ] **Visible resize handle:** grip on hover, 8px hit area, `col-resize` cursor, double-click resets width. (The handle exists in `workspace-split.tsx` but looks like a 1px border.)
-- [ ] Minimum width ~420px; remember width per tool.
-- [ ] **Below 1220px:** add a dimmed backdrop and edge shadow (or push the chat narrower) so the chat is not cut mid-word; fold "Return to conversation · Study workspace" into the panel header.
-- [ ] **Focus mode:** centre content at ~720px; turn the "Chat with Buddy" pill into a docked mini-chat.
+- [x] **Visible resize handle:** grip on hover, 8px hit area, `col-resize` cursor, double-click resets width. (The handle exists in `workspace-split.tsx` but looks like a 1px border.)
+- [ ] Minimum width ~420px; remember width per tool. *(Minimum width of 380px done; per-tool width not yet.)*
+- [x] **Below 1220px:** add a dimmed backdrop and edge shadow (or push the chat narrower) so the chat is not cut mid-word; fold "Return to conversation · Study workspace" into the panel header.
+- [ ] **Focus mode:** centre content at ~720px; turn the "Chat with Buddy" pill into a docked mini-chat. *(Centring done at 760px; docked mini-chat not yet.)*
 - [ ] Slightly different panel surface (`--sidebar` in light, `#141414` in dark) and a soft inner shadow on its left edge.
-- [ ] 200ms slide-and-fade open/close using the `motion` import already in `workspace-split.tsx`; respect reduced motion.
+- [x] 200ms slide-and-fade open/close using the `motion` import already in `workspace-split.tsx`; respect reduced motion.
 - [ ] **Context bar:** one line under the header, "Linked to: *‹chat title›*", with a switcher.
 - [ ] Badges: a dot on Canvas when a new visual arrives; a count on Practice when items are due.
 
@@ -158,17 +158,17 @@ Existing data: `GET /v1/quizzes` (status, origin), review sessions and the learn
 
 ### 7.1 Layout
 
-- [ ] **Continue:** unfinished quizzes and review sessions with progress ("3/8 answered") and Resume.
-- [ ] **Due today:** due flashcards + concepts due for review, time estimate, one "Start mixed review" button.
+- [x] **Continue:** unfinished quizzes and review sessions with progress ("3/8 answered") and Resume.
+- [ ] **Due today:** due flashcards + concepts due for review, time estimate, one "Start mixed review" button. *(Counts with links done; mixed review needs the backend session.)*
 - [ ] **From your classes:** quizzes and decks grouped by class/lecture and course, with status (not started / % done / done).
 - [ ] **Weak spots:** concepts with repeated misses → "Practice this".
-- [ ] **History:** completed quizzes with scores (collapsed).
-- [ ] **New:** one create flow with a Quiz | Flashcards toggle, source picker (this chat · a note · a class) and optional focus. Remove the duplicate "Make flashcards" buttons.
-- [ ] Practising runs in the panel; Expand switches to focus mode.
+- [x] **History:** completed quizzes with scores (collapsed).
+- [x] **New:** one create flow with a Quiz | Flashcards toggle, source picker (this chat · a note · a class) and optional focus. Remove the duplicate "Make flashcards" buttons.
+- [x] Practising runs in the panel; Expand switches to focus mode.
 
 ### 7.2 Backend
 
-- [ ] First version: aggregate the three existing endpoints on the client.
+- [x] First version: aggregate the three existing endpoints on the client.
 - [ ] Add `class_id` (lecture/class session) and `course_id` to quiz and flashcard-deck records when created from a class — migration plus writers in the quiz and flashcard services. Needed for "From your classes".
 - [ ] Expose unfinished state (current question index, answered count) on quiz listings if not already present.
 - [ ] Mixed review session that interleaves due flashcards and due concepts.
