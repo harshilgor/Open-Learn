@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { SettingsPage } from '@/components/settings-page';
 vi.mock('next-themes',()=>({useTheme:()=>({theme:'dark',setTheme:vi.fn()})}));
 vi.mock('@/components/account-settings',()=>({AccountSettings:({section}:{section:string})=><p>{section} controls</p>}));
+vi.mock('@/components/learner-memory-settings',()=>({LearnerMemorySettings:()=> <p>Remembered facts</p>}));
 vi.mock('@/components/site-connections',()=>({SiteConnections:()=> <p>Connections</p>}));
 vi.mock('@/components/usage-settings',()=>({UsageSettings:()=> <p>Usage activity</p>}));
 vi.mock('@/components/provider-settings',()=>({ProviderSettings:()=> <p>Service status</p>}));
@@ -35,4 +36,10 @@ it('preserves old recording links within Learning',async()=>{
  await render('audio');
  expect(container.querySelector('h1')?.textContent).toBe('Learning');
  expect(container.textContent).toContain('Recording defaults');
+});
+it('gives memory its own section, separate from privacy',async()=>{
+ await render('memory');
+ expect(Array.from(container.querySelectorAll('nav button')).map(button=>button.textContent)).toContain('Memory');
+ expect(container.querySelector('h1')?.textContent).toBe('What Open Learn remembers about you');
+ expect(container.textContent).toContain('Remembered facts');
 });

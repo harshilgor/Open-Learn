@@ -52,6 +52,31 @@ def rank_remembered(conn, owner, rows, course_id):
     return sorted(rows, key=key)
 
 
+def compiler_preferences(conn, owner, course_id):
+    """Active preference and constraint facts for the context compiler (Phase F3).
+
+    Allowed in every purpose, assessment included (§2 rule 5). Ordered by the
+    §10 precedence among memory facts: course-scoped before global, then
+    learner-stated or confirmed before inferred, then most recently stated.
+    """
+    from . import store
+
+    rows = conn.execute(text(f"""SELECT id,kind,statement,course_id,origin,learned_at,confirmed_at FROM memory_facts
+        WHERE owner_id=:owner AND status='active' AND kind IN ('preference','constraint') AND {store.PROMPT_ELIGIBLE}
+          AND (course_id IS NULL OR course_id=:course)"""),
+        {"owner": owner, "course": course_id or "", "false": False, "true": True}).mappings().all()
+
+    def rank(row):
+        scoped = course_id is not None and row["course_id"] == course_id
+        newest = max(row["learned_at"], row["confirmed_at"] or 0.0)
+        return (not scoped, -policy.ORIGIN_RANK.get(row["origin"], 0), -newest, row["id"])
+
+    return [{"id": row["id"], "kind": row["kind"], "source": "memory_fact",
+             "value": {"statement": row["statement"].strip()[:policy.PREFERENCE_MAX_CHARS]},
+             "scope": row["course_id"], "explicit": row["origin"] in {"user_stated", "user_confirmed"}}
+            for row in sorted(rows, key=rank)[:policy.COMPILER_MAX_REMEMBERED]]
+
+
 def _moment(value):
     """Parse an academic date fact into an aware UTC datetime, if possible."""
     if not isinstance(value, dict) or value.get("kind") not in {"instant", "date_only", "timezone_unknown"}:

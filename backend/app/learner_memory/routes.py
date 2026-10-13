@@ -116,6 +116,9 @@ def build_learner_memory_router(store_provider):
         owner = current_principal().owner_id
         with store_provider().transaction() as conn:
             assert_owner_active(conn, owner)
+            current = store.get_fact(conn, owner, fact_id)
+            if current and current["status"] != "shadow":
+                store.retire_preference_sources(conn, owner, current)
             restored = store.undo_fact(conn, owner, fact_id, window_seconds=86400 if undo else -1)
             if restored is None:
                 fail("memory_not_found", "This memory is unavailable.", 404)
