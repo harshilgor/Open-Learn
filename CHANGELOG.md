@@ -6,6 +6,10 @@ All notable changes are recorded here. This project follows [Keep a Changelog](h
 
 ### Added
 
+- Learner memory Phase F2: a new Settings → Memory page, "What Open Learn remembers about you".
+  - Memories are grouped by type, with a course filter. Each shows "You said this on {date} in {chat}" (linking back to the chat) and the learner's own words, with Edit, Forget (asks first), History and, for unconfirmed or faded memories, Confirm.
+  - Also on the page: a "Needs your review" section for conflicting memories ("Keep this one"), the core profile ("What the tutor always knows"), "Recently updated", session summaries with delete, the "Pause learning new memories" switch, a per-memory switch for personal topics, "Add a memory", and "Forget everything" (shows what will be deleted first).
+  - The source revision tools moved from Privacy & data to "Advanced: sources" on this page. "View" on the "Saved to memory" chip now opens this page.
 - Learner memory Phase F1 (write APIs; used by the memory page in F2):
   - `PATCH /v1/memory/facts/{id}`: an edit creates a new learner-confirmed fact that supersedes the old one (statements stay immutable). It is guarded by `expectedRevision`, and `DELETE …?undo=true` restores the original.
   - `POST /v1/memory/facts/{id}/confirm`: confirms a memory (365-day stability; inferred becomes `user_confirmed`). Confirming one side of a `needs_review` conflict resolves it.

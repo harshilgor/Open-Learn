@@ -164,7 +164,7 @@ function LearningWorkspaceContent({
   const [dialog,setDialog]=useState<'topic'|'setup'|null>(null);
  const [sources,setSources]=useState(false);
  const [branchId,setBranchId]=useState<string|null>(null);
- useEffect(()=>{const open=()=>{setSettingsCategory('data');setView('settings');setBranchId(null);};window.addEventListener(MEMORY_SETTINGS_OPEN_EVENT,open);return()=>window.removeEventListener(MEMORY_SETTINGS_OPEN_EVENT,open);},[]);
+ useEffect(()=>{const open=()=>{setSettingsCategory('memory');setView('settings');setBranchId(null);};window.addEventListener(MEMORY_SETTINGS_OPEN_EVENT,open);return()=>window.removeEventListener(MEMORY_SETTINGS_OPEN_EVENT,open);},[]);
  const [zoom,setZoom]=useState(1);
  const [outline,setOutline]=useState(false);
  const [localAction,setLocalAction]=useState('');
