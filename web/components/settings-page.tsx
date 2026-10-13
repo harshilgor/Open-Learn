@@ -62,7 +62,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
   const [platform, setPlatform] = useState('Browser');
   const [preferences, setPreferences] = useState<SettingsPreferences>(DEFAULT_SETTINGS);
   const { theme, setTheme } = useTheme();
-  const selectedTheme = theme ?? 'system';
+  const selectedTheme = theme ?? 'light';
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setDesktop(hasDesktopPreferences());
