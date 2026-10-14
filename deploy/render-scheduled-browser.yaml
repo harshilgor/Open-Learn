@@ -18,6 +18,8 @@ services:
       - fromGroup: openlearn-cloud-workers
       - key: OPENLEARN_PROCESS_ROLE
         value: browser
+      - key: OPENLEARN_CLOUD_WORKER_STANDBY
+        value: 'true'
       - key: OPENLEARN_WORKER_MODE
         value: external
       - key: OPENLEARN_NOTIFICATIONS_WORKER_MODE
@@ -46,6 +48,8 @@ services:
       - fromGroup: openlearn-cloud-workers
       - key: OPENLEARN_PROCESS_ROLE
         value: notifications
+      - key: OPENLEARN_CLOUD_WORKER_STANDBY
+        value: 'true'
       - key: OPENLEARN_WORKER_MODE
         value: external
       - key: OPENLEARN_DB_POOL_SIZE
