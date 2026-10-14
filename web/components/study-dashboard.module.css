@@ -8,6 +8,17 @@
 .dashboard button:focus-visible{outline:2px solid var(--ring);outline-offset:4px}
 .study{display:flex;align-items:center;gap:8px;flex-shrink:0;min-height:40px;padding:0 16px;border:1px solid var(--primary);border-radius:var(--radius-control);font-size:14px;font-weight:600;background:var(--primary);color:var(--primary-foreground);box-shadow:var(--shadow-sm)}
 .study:hover{background:color-mix(in srgb,var(--primary) 88%,var(--background))}
+.nextUp{display:grid;grid-template-columns:48px minmax(0,1fr) auto;align-items:center;gap:var(--space-2) var(--space-5);margin-bottom:var(--space-5);padding:var(--space-5);border:1px solid color-mix(in srgb,var(--brand) 28%,var(--border));border-radius:var(--radius-panel);background:linear-gradient(135deg,color-mix(in srgb,var(--brand-soft) 70%,var(--card)),var(--card) 70%);box-shadow:var(--shadow-md)}
+.nextUp[aria-busy="true"]{grid-template-columns:minmax(0,1fr);box-shadow:var(--shadow-sm)}
+.nextIcon{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:var(--brand);color:var(--brand-contrast)}
+.nextBody{min-width:0;display:grid;gap:4px}
+.nextBody h2{margin:2px 0 0;font-size:20px;font-weight:650;line-height:1.25;letter-spacing:-.015em;overflow-wrap:anywhere}
+.nextBody p{margin:0;font-size:var(--type-ui);line-height:1.55;color:var(--muted-foreground)}
+.nextBody .nextMeta{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:4px;font-size:var(--type-meta);font-weight:500;color:var(--foreground)}
+.nextMeta span{display:inline-flex;align-items:center;gap:5px}
+.nextMeta svg{color:var(--brand)}
+.nextAction{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 18px;border-radius:var(--radius-control);font-size:14px;font-weight:600;white-space:nowrap;background:var(--primary);color:var(--primary-foreground);box-shadow:var(--shadow-sm)}
+.nextAction:hover{background:color-mix(in srgb,var(--primary) 88%,var(--background))}
 .overview{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-bottom:32px}
 .review,.reminders{display:grid;grid-template-columns:40px 1fr;align-content:start;gap:4px 14px;padding:22px;border:1px solid var(--border);border-radius:var(--radius-panel);background:var(--card);box-shadow:var(--shadow-sm)}
 
@@ -45,5 +56,5 @@
 .schedule :global(.buddy-home){max-width:none;margin:0;padding:0}
 .schedule :global(.buddy-home)>h2{display:none}
 .schedule :global(.buddy-home)>p{margin-top:12px;font-size:12px;color:var(--muted-foreground)}
-@media(max-width:700px){.dashboard{padding:24px 18px 34px}.header{align-items:flex-start;flex-direction:column;gap:14px}.header h1{font-size:28px}.overview,.courseGrid{grid-template-columns:1fr}.review,.reminders{padding:20px}.overview{gap:12px}}
+@media(max-width:700px){.dashboard{padding:24px 16px 34px}.nextUp{grid-template-columns:40px minmax(0,1fr);padding:20px}.nextIcon{width:40px;height:40px;border-radius:12px}.nextAction{grid-column:1/-1;justify-content:center;white-space:normal}.header{align-items:flex-start;flex-direction:column;gap:14px}.header h1{font-size:28px}.overview,.courseGrid{grid-template-columns:1fr}.review,.reminders{padding:20px}.overview{gap:12px}}
 @media(prefers-reduced-motion:reduce){.dashboard button{transition:none}}

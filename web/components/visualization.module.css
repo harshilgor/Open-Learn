@@ -40,3 +40,11 @@
 .noteVisuals{max-height:300px;overflow:auto;border-top:1px solid var(--border);padding:10px 14px;background:var(--background);font-size:12px}.noteVisuals>strong{display:block;margin-bottom:6px}.noteVisuals details{padding:5px 0}.noteVisuals summary{cursor:pointer;color:var(--muted-foreground)}.noteVisuals .card{margin:8px 0}
 @media(max-width:600px){.card{padding:13px}.chart{height:250px}.diagramScroll svg{max-height:360px}.timeline li{grid-template-columns:62px 1fr;gap:8px;padding-left:13px}.parameterGrid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.card *{animation:none!important;transition:none!important}}
+.noteVisual{margin:1.2em 0;padding:10px 12px 12px;border:1px solid var(--border);border-radius:var(--radius-card,14px);background:var(--card);cursor:default;user-select:none}
+.noteVisual figcaption{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:var(--type-caption,13px)}
+.noteVisual figcaption span{color:var(--brand,var(--muted-foreground));font-size:var(--type-meta,12px);font-weight:600}
+.noteVisual figcaption strong{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.noteVisual figcaption button{flex:none;border:1px solid var(--border);border-radius:999px;padding:3px 10px;background:transparent;color:var(--foreground);font-size:var(--type-meta,12px);cursor:pointer}
+.noteVisual figcaption button:hover{background:var(--muted)}
+.noteVisual>p{margin:0;color:var(--muted-foreground);font-size:var(--type-caption,13px)}
+.noteVisual .card{margin:0;border:0;padding:0;box-shadow:none}

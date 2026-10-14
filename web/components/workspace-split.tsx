@@ -8,6 +8,7 @@ import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_PANEL_S
 import styles from './workspace-split.module.css';
 import { DeferredWorkspace } from './deferred-workspace';
 import {WORKSPACE_FLASHCARDS_OPEN_EVENT} from '@/lib/workspace-events';
+import { START_CLASS_EVENT } from '@/lib/class-events';
 import {WORKSPACE_CANVAS_EVENT} from '@/lib/workspace-events';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import type {FlashcardView} from '@/lib/flashcards-client';
@@ -107,6 +108,10 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     window.addEventListener('openlearn:workspace-dirty',dirty);
     return()=>{for(const type of events)window.removeEventListener(type,incoming,true);window.removeEventListener('openlearn:workspace-dirty',dirty);};
   },[]);
+  const panelHidden=useRef(hidePanel);
+  useEffect(()=>{panelHidden.current=hidePanel;},[hidePanel]);
+  // "Start class" opens the class tool when the panel is on screen; elsewhere the caller's own flow runs.
+  useEffect(()=>{const start=(event:Event)=>{if(panelHidden.current)return;event.preventDefault();setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(START_CLASS_EVENT,start);return()=>window.removeEventListener(START_CLASS_EVENT,start);},[]);
   useEffect(()=>{const focus=(event:Event)=>setLayout(current=>({...current,collapsed:false,focused:!!(event as CustomEvent).detail}));window.addEventListener('openlearn:workspace-focus',focus);return()=>window.removeEventListener('openlearn:workspace-focus',focus);},[]);
   useEffect(()=>{
     const open=(event:Event)=>{const detail=(event as CustomEvent<FlashcardView>).detail;if(!detail)return;setFlashcardLaunch(detail);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('practice')?current.tabs:[...current.tabs,'practice'],activeTab:'practice',practiceView:'flashcards'}));const url=new URL(window.location.href);url.searchParams.set('flashcards',detail.deckId||'library');if(detail.reviewSessionId)url.searchParams.set('flashcardReview',detail.reviewSessionId);else url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};

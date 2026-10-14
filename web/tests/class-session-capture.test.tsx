@@ -1,0 +1,41 @@
+import {act} from 'react';
+import {createRoot,type Root} from 'react-dom/client';
+import {afterEach,beforeEach,expect,it,vi} from 'vitest';
+import {InClassWorkspace} from '@/components/in-class-workspace';
+import {classApi,type ClassSnapshot} from '@/lib/in-class';
+import {resetClassMarkerCache} from '@/lib/class-markers';
+
+const capture=vi.hoisted(()=>({phase:'recording',recordingId:'recording-one',elapsedMs:75_400,mark:vi.fn(),pause:vi.fn(async()=>undefined),resume:vi.fn(async()=>undefined),stop:vi.fn(async()=>undefined)}));
+vi.mock('@/lib/lecture-capture',()=>({lectureCapture:capture,LECTURE_CAPTURE_EVENT:'test-capture'}));
+vi.mock('@/lib/in-class',async importOriginal=>{const actual=await importOriginal<typeof import('@/lib/in-class')>();return {...actual,classApi:{...actual.classApi,snapshot:vi.fn(),events:vi.fn(),stream:vi.fn(),materials:vi.fn(),materialIntakes:vi.fn(),resourceConnectors:vi.fn(),resourcePreferences:vi.fn()}};});
+vi.mock('@/lib/api',async importOriginal=>{const actual=await importOriginal<typeof import('@/lib/api')>();return {...actual,learningApi:{...actual.learningApi,listCourses:vi.fn(async()=>[{id:'course-one',name:'Biology'}])}};});
+vi.mock('@/components/buddies',()=>({useBuddies:()=>({snapshot:null}),BuddyAvatar:()=>null}));
+vi.mock('@/components/rich-content',()=>({RichContent:({body}:{body:string})=><p>{body}</p>}));
+const fixture=()=>({session:{id:'class-one',sessionId:'chat-one',revision:1,recordingId:'recording-one',noteId:'note-one',buddyId:'b',courseId:'course-one',title:'Biology lecture',processing:'live',cancelled:false,partial:false},recording:{captureComplete:false,recordingStatus:'recording',stages:{},preferences:{keepAudio:true},markersMs:[],chunks:{missing:[],transcribed:0,serverConfirmed:0,failed:0}},outputs:[],transcript:[],liveTranscript:[],cursor:1,hasMore:false,events:[]} as unknown as ClassSnapshot);
+let root:Root,container:HTMLDivElement;
+beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();localStorage.clear();resetClassMarkerCache();capture.phase='recording';
+ vi.mocked(classApi.snapshot).mockResolvedValue(fixture());vi.mocked(classApi.stream).mockImplementation((_id,_cursor,_event,signal)=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve(),{once:true})));
+ vi.mocked(classApi.materials).mockResolvedValue({materials:[]});vi.mocked(classApi.materialIntakes).mockResolvedValue({intakes:[]});vi.mocked(classApi.resourceConnectors).mockResolvedValue({items:[],externalWritesEnabled:false});vi.mocked(classApi.resourcePreferences).mockRejectedValue(new Error('not needed'));
+ container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
+afterEach(()=>{act(()=>root.unmount());container.remove();vi.clearAllMocks();vi.useRealTimers();});
+const button=(label:string)=>[...container.querySelectorAll('button')].find(item=>item.getAttribute('aria-label')===label||item.textContent?.trim()===label)!;
+
+it('drives the capture on this device from the sticky session bar',async()=>{
+ await act(async()=>root.render(<InClassWorkspace classId="class-one"/>));
+ const live=container.querySelector('[aria-label="Live class session"]')!;
+ expect(live.textContent).toContain('Recording · 1:15');expect(live.textContent).toContain('Biology');
+ capture.elapsedMs=80_100;await act(async()=>{await vi.advanceTimersByTimeAsync(600);});
+ expect(live.textContent).toContain('1:20');
+ act(()=>button('Mark moment').click());
+ expect(capture.mark).toHaveBeenCalledTimes(1);
+ expect(JSON.parse(localStorage.getItem('openlearn.class-markers:recording-one')!)[0]).toMatchObject({kind:'moment',atMs:80100});
+ expect(live.textContent).toContain('Moment marked at 1:20.');
+ act(()=>button('Pause recording').click());expect(capture.pause).toHaveBeenCalled();
+ capture.phase='paused';await act(async()=>window.dispatchEvent(new CustomEvent('test-capture')));
+ expect(live.textContent).toContain('Paused');
+ act(()=>button('Resume recording').click());expect(capture.resume).toHaveBeenCalled();
+ act(()=>button('Stop and save recording').click());expect(capture.stop).toHaveBeenCalled();
+ capture.phase='saved';await act(async()=>window.dispatchEvent(new CustomEvent('test-capture')));
+ expect(container.querySelector('[aria-labelledby="class-summary-title"]')).not.toBeNull();
+ expect(container.querySelector('[aria-labelledby="class-summary-title"]')!.textContent).toContain('Notes are being prepared');
+});

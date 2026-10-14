@@ -1,0 +1,140 @@
+.slashMenu {
+  position: absolute;
+  z-index: 25;
+  display: grid;
+  width: min(280px, calc(100% - 16px));
+  max-height: 300px;
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+  animation: ol-fade-up 120ms ease-out;
+}
+.slashMenu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--popover-foreground);
+  text-align: left;
+  cursor: pointer;
+}
+.slashMenu button[aria-selected="true"] { background: var(--muted); }
+.slashMenu button > span:last-child { display: grid; min-width: 0; }
+.slashMenu strong { font-size: var(--type-ui); font-weight: 550; }
+.slashMenu small { color: var(--muted-foreground); font-size: var(--type-meta); }
+.slashIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+.slashEmpty { margin: 0; padding: 10px; color: var(--muted-foreground); font-size: var(--type-caption); }
+
+.templates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: min(100%, calc(var(--reading-width, 680px) + 64px));
+  margin: 0 auto;
+  padding: 0 clamp(18px, 3vw, 32px) 16px;
+  color: var(--muted-foreground);
+  font-size: var(--type-caption);
+}
+.templates > span { margin-right: 2px; }
+.templates button {
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--type-caption);
+  cursor: pointer;
+}
+.templates button:hover { border-color: var(--ring); background: var(--brand-soft); }
+.templates small { flex-basis: 100%; margin-top: 2px; font-size: var(--type-meta); }
+.templates kbd, .switcherFoot kbd {
+  display: inline-block;
+  min-width: 18px;
+  margin: 0 1px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  text-align: center;
+}
+
+.switcher { gap: 0; max-width: 520px; padding: 0; overflow: hidden; }
+.switcherInput {
+  width: 100%;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--type-body);
+}
+.switcherList { display: grid; max-height: min(360px, 50dvh); overflow: auto; padding: 6px; }
+.switcherList button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+.switcherList button[aria-selected="true"] { background: var(--muted); }
+.switcherList strong { overflow: hidden; font-size: var(--type-ui); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.switcherList small { color: var(--muted-foreground); font-size: var(--type-meta); white-space: nowrap; }
+.switcherIcon { color: var(--muted-foreground); }
+.switcherFoot { margin: 0; padding: 8px 14px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: var(--type-meta); }
+
+.connections {
+  display: grid;
+  gap: 18px;
+  width: min(100%, calc(var(--reading-width, 680px) + 64px));
+  margin: 8px auto 0;
+  padding: 18px clamp(18px, 3vw, 32px) 40px;
+  border-top: 1px solid var(--border);
+}
+.connectionsBlock { display: grid; gap: 8px; }
+.connectionsBlock h3 { margin: 0; color: var(--muted-foreground); font-size: var(--type-meta); font-weight: 600; letter-spacing: .02em; text-transform: uppercase; }
+.studyActions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.connectionsBlock ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.connectionsBlock li button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+.connectionsBlock li button:hover { background: var(--muted); }
+.connectionsBlock li button > span { display: inline-flex; color: var(--muted-foreground); }
+.connectionsBlock li strong { min-width: 0; overflow: hidden; font-size: var(--type-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.connectionsBlock li small { margin-left: auto; flex: none; color: var(--muted-foreground); font-size: var(--type-meta); }

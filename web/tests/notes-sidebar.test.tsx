@@ -15,7 +15,7 @@ const buddyFixture = vi.hoisted(() => ({ snapshot: { chats: { s1: 'buddy', s2: '
 vi.mock('@/components/buddies', () => ({ useBuddies: () => buddyFixture }));
 vi.mock('@/components/study-note-bar', () => ({ StudyNoteBar: () => null }));
 vi.mock('@/components/study-note-panel', () => ({ NoteProposalList: () => null }));
-vi.mock('@/components/visualization-reference', () => ({ NoteVisualReferences: () => null }));
+vi.mock('@/components/visualization-reference', () => ({ InlineNoteVisual: () => null, NOTE_VISUAL_LANGUAGES: ['visualization-ref', 'visual-artifact'], noteVisualMarkdown: () => null }));
 vi.mock('@/components/lecture-notes-view', () => ({ LectureNotesView: () => null }));
 vi.mock('@/components/quiz-workspace', () => ({ QuizWorkspace: () => null, LessonPractice: () => null }));
 vi.mock('@/components/compact-tutor-chat', () => ({ CompactTutorChat: ({ context }: {context: {excerpt:string}}) => <aside aria-label="Note discussion">{context.excerpt}</aside> }));
@@ -76,7 +76,7 @@ describe('unified sidebar and notes',()=>{
     act(()=>root.render(<Harness/>));await settle();
     const list=container.querySelector('#sidebar-body-notes')!;
     expect(list.textContent).toContain('Folders');expect(list.textContent).toContain('Generated');expect(list.textContent).toContain('Your notes');expect(list.textContent).toContain('Velocity describes motion.');
-    act(()=>container.querySelector<HTMLButtonElement>('[title="Motion"]')!.click());await settle();click('Discuss this note');await settle();
+    act(()=>container.querySelector<HTMLButtonElement>('[title="Motion"]')!.click());await settle();click('Ask Buddy');await settle();
     expect(container.querySelector('[aria-label="Note discussion"]')?.textContent).toContain('Velocity describes motion.');
     expect(container.querySelector('[aria-current="page"]')).not.toBeNull();
   });

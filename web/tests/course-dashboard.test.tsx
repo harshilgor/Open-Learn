@@ -46,3 +46,21 @@ it('shows conversations across buddies in recency order and supports explicit fi
   act(()=>{const select=container.querySelector('select')!;select.value='';select.dispatchEvent(new Event('change',{bubbles:true}));});
   expect(titles()).toEqual(['Momentum','Forces']);
 });
+it('offers a course header with Start class and Ask Buddy, and a section nav',async()=>{
+  const onStartClass=vi.fn(),onNewSession=vi.fn(),started:unknown[]=[];
+  const listener=(event:Event)=>{started.push((event as CustomEvent).detail);event.preventDefault();};
+  window.addEventListener('openlearn:start-class',listener);
+  await act(async()=>root.render(<CourseHome courseId="physics" onOpenSession={mocks.open} onNewSession={onNewSession} onOpenNote={vi.fn()} onQuizSession={vi.fn()} onUpdated={vi.fn()} onDeleted={vi.fn()} onLaunchTask={async()=>''} onLaunchReady={vi.fn()} onStartClass={onStartClass}/>));
+  await settle();
+  expect(container.textContent).toContain('2 chats · 0 notes');
+  const sections=[...container.querySelectorAll('nav[aria-label="Course sections"] button')].map(item=>item.textContent);
+  expect(sections).toEqual(['Overview','Materials','Classes','Notes','Practice','Study plan']);
+  act(()=>button('Start class').click());
+  expect(started).toEqual([{courseId:'physics'}]);expect(onStartClass).not.toHaveBeenCalled();
+  window.removeEventListener('openlearn:start-class',listener);
+  act(()=>button('Start class').click());expect(onStartClass).toHaveBeenCalledOnce();
+  act(()=>button('Ask Ada').click());expect(onNewSession).toHaveBeenCalledOnce();
+  act(()=>button('Practice').click());
+  expect(button('Practice').getAttribute('aria-current')).toBe('page');
+  expect(container.textContent).toContain('No saved quizzes yet');expect(container.textContent).toContain('Flashcards');
+});

@@ -21,6 +21,13 @@
 .segmented button{min-height:30px;padding:0 12px;border-radius:8px;font-size:13px;font-weight:500;color:var(--muted-foreground)}
 .segmented button:hover{color:var(--foreground)}
 .segmented button[aria-checked=true]{background:var(--card);color:var(--foreground);box-shadow:var(--shadow-sm)}
+/* Natural-language quick add */
+.quickAdd{display:flex;align-items:center;gap:8px;flex:0 1 300px;min-width:200px;height:32px;margin-left:auto;padding:0 10px;border:1px solid var(--input);border-radius:var(--radius-control);background:var(--card);color:var(--muted-foreground);transition:border-color .15s,box-shadow .15s}
+.quickAdd:hover{border-color:color-mix(in srgb,var(--foreground) 22%,var(--input))}
+.quickAdd:focus-within{border-color:var(--focus-border);box-shadow:0 0 0 3px var(--focus-ring)}
+.quickAdd>svg{flex:none}
+.quickAdd input{flex:1;min-width:0;height:100%;padding:0;border:0;border-radius:0;background:none;color:var(--foreground);font-size:var(--type-caption);text-overflow:ellipsis}
+.quickAdd input:focus-visible{outline:none;box-shadow:none}
 .eyebrow{display:block;font-size:var(--type-meta);font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted-foreground)}
 
 .subnav{display:flex;align-items:center;gap:20px;border-bottom:1px solid var(--border)}
@@ -88,6 +95,18 @@
 .timelineEventNarrow>strong{font-size:12px}
 .timelineEventNarrow.timelineEventCompact>span{display:none}
 
+/* Drag to create / drag to move */
+.dayTrack{-webkit-user-select:none;user-select:none}
+.timelineEvent[data-movable]{cursor:grab}
+.timelineEvent[data-dragging]{opacity:.4;box-shadow:none}
+.timeline[data-dragging=create],.timeline[data-dragging=create] *{cursor:ns-resize}
+.timeline[data-dragging=move],.timeline[data-dragging=move] *{cursor:grabbing}
+.dragPreview{position:absolute;left:2px;right:3px;z-index:5;display:flex;flex-direction:column;gap:2px;padding:4px 8px;overflow:hidden;border-radius:8px;pointer-events:none;font-size:var(--type-meta);line-height:1.25;font-variant-numeric:tabular-nums}
+.dragPreview[data-kind=create]{background:color-mix(in srgb,var(--brand) 16%,transparent);border:1px solid color-mix(in srgb,var(--brand) 60%,transparent);color:var(--foreground);font-weight:600}
+.dragPreview[data-kind=move]{background:var(--event-soft);border-left:3px solid var(--event-color);color:var(--foreground);box-shadow:var(--shadow-md)}
+.dragPreview>strong{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dragPreview[data-kind=move]>span{color:var(--muted-foreground)}
+
 /* ---------- Agenda ---------- */
 .agenda{max-width:820px;margin:0 auto;padding:4px 0 40px}
 .agenda section{display:grid;grid-template-columns:150px minmax(0,1fr);column-gap:20px;align-items:start;padding:16px 0;border-bottom:1px solid var(--border)}
@@ -128,6 +147,25 @@
 .moreEvents:hover{background:var(--muted);color:var(--foreground)}
 
 .empty{padding:60px;text-align:center;color:var(--muted-foreground);font-size:14px}
+
+/* ---------- Mini month navigator (week/day rail, wide screens only) ---------- */
+.miniMonth{padding:0 0 14px;margin:0 0 6px;border-bottom:1px solid var(--border)}
+.miniMonth>header{display:flex;align-items:center;gap:2px;margin-bottom:6px}
+.miniMonth h2{flex:1;margin:0;font-size:var(--type-ui);font-weight:600;letter-spacing:-.01em}
+.miniMonth>header>button{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;color:var(--muted-foreground)}
+.miniMonth>header>button:hover{background:var(--muted);color:var(--foreground)}
+.miniMonth table{width:100%;border-collapse:separate;border-spacing:0 2px;table-layout:fixed}
+.miniMonth th{padding:2px 0 4px;font-size:11px;font-weight:600;color:var(--muted-foreground);text-align:center}
+.miniMonth td{padding:0;text-align:center}
+.miniMonth td[data-in-range]{background:var(--brand-soft)}
+.miniMonth td[data-range-start]{border-top-left-radius:999px;border-bottom-left-radius:999px}
+.miniMonth td[data-range-end]{border-top-right-radius:999px;border-bottom-right-radius:999px}
+.miniMonth td button{display:inline-grid;place-items:center;width:30px;height:30px;max-width:100%;border-radius:999px;font-size:var(--type-meta);font-weight:500;color:var(--foreground);font-variant-numeric:tabular-nums}
+.miniMonth td button:hover{background:var(--muted)}
+.miniMonth td[data-in-range] button{color:var(--brand);font-weight:600}
+.miniMonth td[data-in-range] button:hover{background:color-mix(in srgb,var(--brand) 14%,transparent)}
+.miniMonth td button[data-outside]{color:var(--muted-foreground);font-weight:400}
+.miniMonth td button[aria-current=date]{background:var(--brand);color:var(--brand-contrast);font-weight:600}
 
 /* ---------- Routines ---------- */
 .routineRail{min-width:0;min-height:0;overflow:auto;border-left:1px solid var(--border);padding:14px 0 16px 18px}
@@ -208,6 +246,13 @@
 .deadlines small{color:var(--muted-foreground);font-size:12px;font-variant-numeric:tabular-nums}
 
 /* ---------- Responsive ---------- */
+@media(max-width:1099.98px){
+  .miniMonth{display:none}
+  /* The day view's rail only holds the mini month, so the timeline takes the full width. */
+  .calendarContent[data-view=day]{display:block;overflow:auto}
+  .calendarContent[data-view=day]>.calendarScroll{height:100%}
+  .calendarContent[data-view=day]>.routineRail{display:none}
+}
 @media(max-width:1100px){
   .calendarContent{grid-template-columns:minmax(0,1fr) 240px}
   .routineRail{padding-left:14px}
@@ -227,6 +272,7 @@
   .segmented button{flex:1;padding:0 6px}
   .controls{flex-wrap:nowrap}
   .addLabel{display:none}
+  .quickAdd{flex:1 1 100%;margin-left:0}
   .timeline{--gutter-width:52px}
   .gutterTrack>span{right:6px;font-size:11px}
   .agenda section{grid-template-columns:1fr;row-gap:10px}

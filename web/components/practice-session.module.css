@@ -1,0 +1,19 @@
+/* Shared chrome for quiz and flashcard sessions: slim progress and keyboard hints. */
+.progress { display: grid; gap: 6px; margin: 0 0 var(--space-4); min-width: 0; }
+.progressMeta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; min-width: 0; font-size: var(--type-caption); color: var(--muted-foreground); }
+.progressMeta > :not(.progressLabel) { min-width: 0; overflow-wrap: anywhere; }
+.progressLabel { font-size: var(--type-meta); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.progressTrack { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.progressTrack > span { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
+.progressTrack[data-animate] > span { transition: width 0.24s ease-out; }
+
+.keyHint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: var(--space-2) 0 0; font-size: var(--type-meta); color: var(--muted-foreground); }
+.keyHint > span { display: inline-flex; align-items: center; gap: 4px; }
+.keyHintSep { margin-right: 2px; opacity: 0.6; }
+.kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; background: var(--card); color: var(--foreground); font: 600 11px/1 var(--font-mono, ui-monospace, monospace); }
+.kbdInline { margin-right: 6px; color: var(--muted-foreground); background: transparent; }
+
+/* Touch-first devices have no keys to press; keep the hint and chips out of the way. */
+@media (hover: none), (pointer: coarse), (max-width: 600px) {
+  .keyHint, .kbdInline { display: none; }
+}

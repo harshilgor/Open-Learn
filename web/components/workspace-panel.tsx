@@ -4,15 +4,19 @@ import { reportVoiceFocus } from "@/lib/voice/client";
 import { memo, useCallback, useEffect, useRef, useState, type Dispatch, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
-import { Bold, BookOpen, CheckSquare2, Download, FileText, FolderClosed, FolderPlus, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, Mic, MoreHorizontal, PanelLeft, PanelLeftClose, PanelRightClose, Plus, Quote, Search, Send, Sparkles, X } from 'lucide-react';
+import { Bold, BookOpen, CheckSquare2, Download, FileText, FolderClosed, FolderPlus, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, Mic, MoreHorizontal, PanelLeft, PanelLeftClose, PanelRightClose, Plus, Quote, Search, Sparkles, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { readingRemarkPlugins, readingRehypePlugins } from '@/lib/markdown-rendering';
 import { normalizeMathMarkdown } from '@/lib/normalize-math-markdown';
 import 'katex/dist/katex.min.css';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { AudioLines, ChevronLeft, History, Layers, ListChecks, Maximize2, Minimize2, Pin, Shapes } from 'lucide-react';
+import { AudioLines, Check, ChevronLeft, Copy, FolderInput, History, Layers, ListChecks, Maximize2, MessagesSquare, Minimize2, Pin, PinOff, Shapes, Trash2, Undo2, Wand2 } from 'lucide-react';
+import { DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu';
+import { NoteConnections, NoteQuickSwitcher, NoteTemplatePicker, SlashMenu, type NoteConnection } from './note-editor-extras';
+import { NOTE_FILTERS, markdownShortcut, matchSlashCommands, matchesNoteFilter, noteWordCount, relativeTime, slashQuery, type NoteFilter, type SlashCommandId } from '@/lib/note-editing';
 import { PracticeOverview } from './practice-overview';
+import { CanvasTool } from './canvas-tool';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,12 +39,11 @@ import { ACCOUNT_CHANGED } from '@/lib/account-session';
 import type { WorkspaceQuizOpen } from '@/lib/workspace-events';
 import styles from './workspace-panel.module.css';
 import type {FlashcardView} from '@/lib/flashcards-client';
-import { parseVisualArtifact as parseVisualization } from '@/lib/generated-visual';
-import { WORKSPACE_NOTE_IMPROVE_EVENT, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
+import { WORKSPACE_ASK_EVENT, WORKSPACE_NOTE_IMPROVE_EVENT, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
 import { mentionWorkspaceNoteExcerpt, openWorkspaceFlashcards, type WorkspaceNoteSeed } from '@/lib/workspace-events';
 import { StudyNoteBar } from './study-note-bar';
 import { NoteProposalList } from './study-note-panel';
-import { NoteVisualReferences } from './visualization-reference';
+import { InlineNoteVisual, NOTE_VISUAL_LANGUAGES } from './visualization-reference';
 import { richNoteToMarkdown } from '@/lib/rich-note-markdown';
 import { prepareNoteImage } from '@/lib/note-images';
 import { defaultUrlTransform } from 'react-markdown';
@@ -49,7 +52,6 @@ import type { NotesCommand } from './workspace-sidebar';
 import { noteDisplayTitle } from '@/lib/note-list';
 import type { TutorChatContext } from './compact-tutor-chat';
 import { openSideChat } from '@/lib/workspace-side-chat-events';
-import {PassageSelection} from './passage-selection';
 import { WORKSPACE_PASSAGE_MENTION_EVENT } from '@/lib/workspace-events';
 
 function WorkspaceFeatureLoading() {
@@ -64,7 +66,6 @@ const LessonPractice = dynamic(() => import('./quiz-workspace').then(module => m
 const FlashcardWorkspace = dynamic(() => import('./flashcard-workspace').then(module => module.FlashcardWorkspace), { loading: WorkspaceFeatureLoading });
 const MakeFlashcards = dynamic(() => import('./flashcard-create').then(module => module.MakeFlashcards), { loading: WorkspaceFeatureLoading });
 const InClassWorkspace = dynamic(() => import('./in-class-workspace').then(module => module.InClassWorkspace), { loading: WorkspaceFeatureLoading });
-const Visualization = dynamic(() => import('./visualization').then(module => module.Visualization), { loading: WorkspaceFeatureLoading });
 const LectureNotesView = dynamic(() => import('./lecture-notes-view').then(module => module.LectureNotesView), { loading: WorkspaceFeatureLoading });
 const CompactTutorChat = dynamic(() => import('./compact-tutor-chat').then(module => module.CompactTutorChat), { loading: WorkspaceFeatureLoading });
 
@@ -101,6 +102,21 @@ function blankDraft(): NoteDraft {
   return { id: null, title: 'Untitled note', body: '', revision: null, frontmatter: {} };
 }
 
+type HastNode = { tagName?: string; value?: string; properties?: { className?: unknown }; children?: HastNode[] };
+/** A fenced visual reference (```visualization-ref / ```visual-artifact) inside a rendered note. */
+function visualFence(node: unknown): { language: string; source: string } | null {
+  const code = (node as HastNode | undefined)?.children?.find(child => child.tagName === 'code');
+  const classes = Array.isArray(code?.properties?.className) ? code.properties.className.join(' ') : '';
+  const language = classes.match(/language-([\w-]+)/)?.[1] || '';
+  if (!code || !(NOTE_VISUAL_LANGUAGES as readonly string[]).includes(language)) return null;
+  return { language, source: (code.children || []).map(child => child.value || '').join('').trim() };
+}
+/** Visuals render inline as atomic blocks; other code blocks stay plain. */
+function NotePre({ node, children }: { node?: unknown; children?: ReactNode }) {
+  const visual = visualFence(node);
+  return visual ? <InlineNoteVisual {...visual}/> : <pre>{children}</pre>;
+}
+
 const RichNoteBody = memo(function RichNoteBody({ initialBody, editorRef, onChange, onImages }: {
   initialBody: string;
   editorRef: React.RefObject<HTMLElement | null>;
@@ -119,6 +135,7 @@ const RichNoteBody = memo(function RichNoteBody({ initialBody, editorRef, onChan
   }} onDragOver={event => { if (event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { event.preventDefault(); const files=Array.from(event.dataTransfer.files); if(files.length)onImagesRef.current(files); }} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&['b','i'].includes(event.key.toLowerCase())){event.preventDefault();document.execCommand(event.key.toLowerCase()==='b'?'bold':'italic');onChangeRef.current(richNoteToMarkdown(event.currentTarget));}}}>
     {initialBody.trim() ? <ReactMarkdown urlTransform={url => /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url) ? url : defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{
       a: ({ href, children }) => <a href={href} onClick={event => event.preventDefault()}>{children}</a>,
+      pre: NotePre,
       img: ({ alt, src }) => <img alt={alt || 'Note image'} src={src} loading="lazy" />,
       input: ({ checked, type }) => <input type={type} defaultChecked={checked} aria-label="Mark checklist item complete" contentEditable={false} onChange={event => {
         const editor = event.currentTarget.closest<HTMLElement>('[contenteditable="true"]');
@@ -228,9 +245,12 @@ type NoteEditorProps = {
   quizToOpen?: WorkspaceQuizOpen | null; fullPage?: boolean; onRecordClass?: (folder: string | null) => void; onUseInChat?: () => void;
   listHost?: HTMLElement | null; courses?: CourseSummary[]; courseFilter?: string | null; onCourseFilter?: (id: string | null) => void;
   listWhenIdle?: boolean; command?: NotesCommand | null; onNoteSelected?: (id: string | null) => void; onDiscuss?: (context: TutorChatContext) => void; onTitleChange?:(title:string)=>void; startEmpty?:boolean; recoveryKey?:string; onOpenNote?:(id:string)=>void;
+  /** Markdown to append to the open note (or a new note), e.g. a visual added from Canvas. */
+  insertRequest?: NoteInsert | null; onInsertConsumed?: (id: string) => void;
 };
+export type NoteInsert = { id: string; markdown: string; title: string };
 
-function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss,onTitleChange, startEmpty=false, recoveryKey='', onOpenNote }: NoteEditorProps) {
+function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss,onTitleChange, startEmpty=false, recoveryKey='', onOpenNote, insertRequest = null, onInsertConsumed }: NoteEditorProps) {
   const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
   const [courseNames, setCourseNames] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<NoteDraft | null>(startEmpty ? blankDraft : null);
@@ -238,6 +258,11 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
+  const [noteFilter, setNoteFilter] = useState<NoteFilter>('all');
+  const [slash, setSlash] = useState<{ query: string; x: number; y: number; index: number } | null>(null);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+  const consumedInserts = useRef(new Set<string>());
   const imageInput = useRef<HTMLInputElement>(null);
   const imageSelection = useRef<Range|null>(null);
   useEffect(()=>{onTitleChange?.(draft?.title||'Notes');},[draft?.title,onTitleChange]);
@@ -290,6 +315,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<WorkspaceNoteSummary | null>(null);
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
+  // start is the excerpt's offset in the saved Markdown, or -1 when it can't be located exactly.
   const [selectedExcerpt, setSelectedExcerpt] = useState<{ text: string; start: number; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [listCollapsed, setListCollapsed] = useState(false);
@@ -566,7 +592,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   function applyFormat(format: string) {
     richBody.current?.focus();
     const commands: Record<string, [string, string?]> = {
-      heading: ['formatBlock', 'h2'], bold: ['bold'], italic: ['italic'], bullet: ['insertUnorderedList'], numbered: ['insertOrderedList'], quote: ['formatBlock', 'blockquote'],
+      heading: ['formatBlock', 'h2'], subheading: ['formatBlock', 'h3'], bold: ['bold'], italic: ['italic'], bullet: ['insertUnorderedList'], numbered: ['insertOrderedList'], quote: ['formatBlock', 'blockquote'],
     };
     if (format === 'link') {
       const address = window.prompt('Link URL');
@@ -575,6 +601,112 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     else if (commands[format]) document.execCommand(commands[format][0], false, commands[format][1]);
     if (richBody.current) setDraft(current => current ? { ...current, body: richNoteToMarkdown(richBody.current!) } : current);
   }
+
+  const syncBody = () => { if (richBody.current) setDraft(current => current ? { ...current, body: richNoteToMarkdown(richBody.current!) } : current); };
+
+  /** The block holding a collapsed caret, and the text typed before the caret in that block. */
+  function caretBlock(): { block: HTMLElement; before: string; rect: DOMRect } | null {
+    const editor = richBody.current, selection = window.getSelection();
+    if (!editor || !selection?.rangeCount || !selection.isCollapsed) return null;
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.startContainer)) return null;
+    let node: Node | null = range.startContainer;
+    while (node && node !== editor && !(node instanceof HTMLElement && /^(P|DIV|LI|H[1-6]|BLOCKQUOTE)$/.test(node.tagName))) node = node.parentNode;
+    const block = node instanceof HTMLElement ? node : editor;
+    const prefix = document.createRange(); prefix.selectNodeContents(block); prefix.setEnd(range.startContainer, range.startOffset);
+    const rect = range.getBoundingClientRect?.();
+    return { block, before: prefix.toString(), rect: rect && (rect.width || rect.height || rect.left) ? rect : block.getBoundingClientRect() };
+  }
+
+  /** Remove the characters just typed before the caret (a "/query" or a Markdown marker). */
+  function deleteBeforeCaret(count: number) {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || count <= 0) return;
+    const range = selection.getRangeAt(0);
+    if (range.startContainer.nodeType !== Node.TEXT_NODE || range.startOffset < count) return;
+    const remove = document.createRange(); remove.setStart(range.startContainer, range.startOffset - count); remove.setEnd(range.startContainer, range.startOffset);
+    selection.removeAllRanges(); selection.addRange(remove);
+    if (!document.execCommand('delete')) remove.deleteContents();
+  }
+
+  function updateSlash() {
+    const caret = caretBlock();
+    const query = caret ? slashQuery(caret.before) : null;
+    const wrap = bodyWrap.current?.getBoundingClientRect();
+    if (query === null || !caret || !wrap) { setSlash(current => current ? null : current); return; }
+    const x = Math.max(8, Math.min(caret.rect.left - wrap.left, wrap.width - 288)), y = caret.rect.bottom - wrap.top + 6;
+    setSlash(current => ({ query, x, y, index: current && current.query === query ? current.index : 0 }));
+  }
+
+  function runSlash(id: SlashCommandId) {
+    deleteBeforeCaret((slash?.query.length ?? 0) + 1);
+    setSlash(null);
+    if (id === 'divider') { document.execCommand('insertHTML', false, '<hr><p><br></p>'); syncBody(); return; }
+    if (id === 'image') { const selection = window.getSelection(); imageSelection.current = selection?.rangeCount ? selection.getRangeAt(0).cloneRange() : null; syncBody(); imageInput.current?.click(); return; }
+    if (id === 'visual' || id === 'quiz') {
+      syncBody();
+      if (!richBody.current || !richNoteToMarkdown(richBody.current).trim()) { setError(id === 'visual' ? 'Write a little first, then ask Buddy for a visual of it.' : 'Write a little first, then ask Buddy to quiz you on it.'); return; }
+      setPendingAsk(id === 'visual' ? 'Make a visual that explains this note' : 'Quiz me on this note');
+      return;
+    }
+    applyFormat(id);
+  }
+
+  function editorKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (reading || !richBody.current?.contains(event.target as Node)) return;
+    if (slash) {
+      const commands = matchSlashCommands(slash.query);
+      if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && commands.length) { event.preventDefault(); setSlash({ ...slash, index: (slash.index + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length }); return; }
+      if ((event.key === 'Enter' || event.key === 'Tab') && commands.length) { event.preventDefault(); runSlash(commands[Math.min(slash.index, commands.length - 1)].id); return; }
+      if (event.key === 'Escape') { event.preventDefault(); setSlash(null); return; }
+    }
+    if (event.key === ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const caret = caretBlock();
+      if (!caret || !(caret.block === richBody.current || /^(P|DIV)$/.test(caret.block.tagName))) return;
+      const shortcut = markdownShortcut(caret.before);
+      if (!shortcut) return;
+      event.preventDefault();
+      deleteBeforeCaret(caret.before.length);
+      applyFormat(shortcut);
+    }
+  }
+
+  // A visual or quiz request waits until the note is saved, so Buddy reads the current revision.
+  useEffect(() => {
+    if (!pendingAsk || !draft?.id || !draft.revision || dirty || saving) return;
+    const timer = window.setTimeout(() => {
+      setPendingAsk(null);
+      if (draft.body.length > 6000) { setError('This note is long. Select the part you want, then choose Visualize or Explain.'); return; }
+      mentionWorkspaceNoteExcerpt({ noteId: draft.id!, title: draft.title, revision: draft.revision!, startOffset: 0, endOffset: draft.body.length, excerpt: draft.body, prompt: pendingAsk, submit: true });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [pendingAsk, draft, dirty, saving]);
+
+  async function setNoteFrontmatter(note: Pick<WorkspaceNoteSummary, 'id'>, patch: Record<string, unknown>, failure: string) {
+    setOpenMenu(null);
+    if (dirty && draft?.id === note.id) { setError('Save this note first.'); return; }
+    try {
+      const full = await learningApi.getWorkspaceNote(note.id);
+      const updated = await learningApi.updateWorkspaceNote(note.id, { title: full.title, body: full.body, frontmatter: { ...full.frontmatter, ...patch }, expectedRevision: full.revision });
+      if (draft?.id === note.id) { setDraft(toDraft(updated)); setSavedDraft(toDraft(updated)); }
+      await loadNotes(query, true);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : failure); }
+  }
+  const togglePinned = (note: Pick<WorkspaceNoteSummary, 'id' | 'frontmatter'>) => void setNoteFrontmatter(note, { pinned: note.frontmatter?.pinned !== true }, 'Could not pin the note.');
+
+  // Canvas "Add to note": append to the open note, or start a new one around the visual.
+  useEffect(() => {
+    if (!insertRequest || consumedInserts.current.has(insertRequest.id)) return;
+    consumedInserts.current.add(insertRequest.id);
+    const timer = window.setTimeout(() => {
+      onInsertConsumed?.(insertRequest.id);
+      if (draftRef.current) setDraft(current => current ? { ...current, body: `${current.body.trim()}${current.body.trim() ? '\n\n' : ''}${insertRequest.markdown}\n` } : current);
+      else { setDraft({ ...blankDraft(), title: insertRequest.title, body: `${insertRequest.markdown}\n` }); setSavedDraft(null); }
+      setReading(false);
+      setEditorEpoch(value => value + 1);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [insertRequest, onInsertConsumed]);
 
   async function insertImages(files: File[]) {
     const editor = richBody.current;
@@ -617,19 +749,28 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   function inspectSelection() {
     const selection = window.getSelection();
     const text = selection?.toString().trim() || '';
-    if (!selection || !richBody.current?.contains(selection.anchorNode) || !text || text.length > 6000 || !draft?.id || !draft.revision || dirty) { setSelectedExcerpt(null); return; }
-    const start = draft.body.indexOf(text);
-    if (start < 0 || draft.body.indexOf(text, start + 1) >= 0) { setSelectedExcerpt(null); return; }
+    if (!selection || selection.isCollapsed || !richBody.current?.contains(selection.anchorNode) || !text || text.length > 6000 || !draft) { setSelectedExcerpt(null); return; }
+    // Note-anchored actions need the exact saved offsets; otherwise the passage is sent as plain text.
+    const found = draft.id && draft.revision && !dirty ? draft.body.indexOf(text) : -1;
+    const start = found >= 0 && draft.body.indexOf(text, found + 1) < 0 ? found : -1;
     const range = selection.getRangeAt(0).getBoundingClientRect();
     const wrap = bodyWrap.current?.getBoundingClientRect();
     if (!wrap) return;
-    setSelectedExcerpt({ text, start, x: Math.max(8, Math.min(range.left - wrap.left, wrap.width - 310)), y: Math.max(8, range.top - wrap.top - 42) });
+    setSelectedExcerpt({ text, start, x: Math.max(8, Math.min(range.left - wrap.left, wrap.width - Math.min(440, wrap.width - 16) - 8)), y: Math.max(8, range.top - wrap.top - 46) });
+    if (start < 0 || !draft.id) return;
     reportVoiceFocus({quiz_id:null,presentation_id:null,lesson_id:null,visualization_id:null,note_id:draft.id,expected_revision:draft.revision,selection_start:start,selection_end:start+text.length,selected_text:null,source_span_id:null});
   }
 
   function mentionExcerpt(action = '') {
-    if (!draft?.id || !draft.revision || !selectedExcerpt) return;
+    if (!draft || !selectedExcerpt) return;
     const { text, start } = selectedExcerpt;
+    if (start < 0 || !draft.id || !draft.revision) {
+      window.dispatchEvent(new CustomEvent(WORKSPACE_PASSAGE_MENTION_EVENT, { detail: { title: draft.title, excerpt: text, submit: action === 'Explain this' } }));
+      if (action && action !== 'Explain this') window.dispatchEvent(new CustomEvent(WORKSPACE_ASK_EVENT, { detail: `${action}.` }));
+      setSelectedExcerpt(null);
+      document.querySelector<HTMLTextAreaElement>('[id="chat-message"]')?.focus();
+      return;
+    }
     if (action === 'Suggest improvements') { window.dispatchEvent(new CustomEvent(WORKSPACE_NOTE_IMPROVE_EVENT, {detail: {noteId: draft.id, title: draft.title, revision: draft.revision, startOffset: start, endOffset: start + text.length, excerpt: text}})); setWorkspacePanelCollapsed(true); setSelectedExcerpt(null); return; }
     mentionWorkspaceNoteExcerpt({ noteId: draft.id, title: draft.title, revision: draft.revision, startOffset: start, endOffset: start + text.length, excerpt: text, prompt: action ? `${action}:\n\n${text}` : undefined, submit:action==='Explain this' });
     setSelectedExcerpt(null);
@@ -702,6 +843,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   // On small screens the notes destination is list-first: the list fills the view until a note is open.
   const idleList = listWhenIdle && !fullPage && !draft;
   const listHidden = listCollapsed && !idleList;
+  const courseLabel = (note: { frontmatter: Record<string, unknown> }) => typeof note.frontmatter.course_id === 'string' ? courseNames[note.frontmatter.course_id] || 'Course' : '';
   const noteList = (
     <div className={styles.noteList}>
       <div className={styles.noteListTop}>
@@ -717,22 +859,29 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
         {courses?.map(course => <button type="button" key={course.id} className={courseFilter === course.id && !activeFolder ? styles.folderActive : ''} onClick={() => { setActiveFolder(null); onCourseFilter?.(course.id); }}><FolderClosed size={15} /><span>{course.name}</span></button>)}
         {folders.map(folder => <button type="button" className={activeFolder === folder ? styles.folderActive : ''} key={`folder:${folder}`} onClick={() => setActiveFolder(folder)}><FolderClosed size={15} />{folder}{!notesCursor ? <small>{notes.filter(note => note.frontmatter?.note_folder === folder).length}</small> : null}</button>)}
       </div> : null}
+      <div className={styles.noteFilters} role="radiogroup" aria-label="Show notes">
+        {NOTE_FILTERS.map(filter => <button key={filter.id} type="button" role="radio" aria-checked={noteFilter === filter.id} onClick={() => setNoteFilter(filter.id)}>{filter.label}</button>)}
+      </div>
       <div ref={noteItemsRef} className={styles.noteItems} aria-live="polite">
         {loading && notes.length === 0 ? <p className={styles.muted}>Loading notes…</p> : null}
         {!loading && notes.length === 0 ? <div className={styles.emptyList}><FileText size={18} /><span>{query ? 'No matching notes.' : 'No notes yet.'}</span></div> : null}
         {(() => {
-          const visible = notes.filter(note => (!fullPage || !courseFilter || note.frontmatter.course_id === courseFilter) && (!activeFolder || note.frontmatter.note_folder === activeFolder));
-          const lessons = visible.filter(note => note.noteType === 'lesson');
-          const mine = visible.filter(note => note.noteType !== 'lesson');
+          const visible = notes.filter(note => (!fullPage || !courseFilter || note.frontmatter.course_id === courseFilter) && (!activeFolder || note.frontmatter.note_folder === activeFolder) && matchesNoteFilter(note, noteFilter));
+          const pinned = visible.filter(note => note.frontmatter.pinned === true);
+          const rest = visible.filter(note => note.frontmatter.pinned !== true);
+          const lessons = rest.filter(note => note.noteType === 'lesson');
+          const mine = rest.filter(note => note.noteType !== 'lesson');
           const row = (note: typeof notes[number]) => (
             <div key={note.id} className={`${styles.noteRow} ${draft?.id === note.id ? styles.selected : ''}`}>
-              <button type="button" className={styles.noteItem} onClick={() => void openNote(note.id)} aria-current={draft?.id === note.id ? 'page' : undefined} title={note.title}><span className={styles.noteTitle}><span aria-hidden="true">{note.noteType === 'lesson' ? <Sparkles size={15} /> : note.noteType === 'recording' ? <Mic size={15} /> : <FileText size={15} />}</span><strong>{noteDisplayTitle(note, notes)}</strong></span>{note.preview ? <span className={styles.noteExcerpt}>{note.preview}</span> : null}<small>{note.noteType === 'recording' ? 'Class recording · ' : ''}Edited {new Date(note.updatedAt).toLocaleDateString()}{typeof note.frontmatter.course_id === 'string' ? <span className={styles.noteCourse}>{courseNames[note.frontmatter.course_id] || 'Course'}</span> : null}</small></button>
+              <button type="button" className={styles.noteItem} onClick={() => void openNote(note.id)} aria-current={draft?.id === note.id ? 'page' : undefined} title={note.title}><span className={styles.noteTitle}><span aria-hidden="true">{note.noteType === 'lesson' ? <Sparkles size={15} /> : note.noteType === 'recording' ? <Mic size={15} /> : <FileText size={15} />}</span><strong>{noteDisplayTitle(note, notes)}</strong></span>{note.preview ? <span className={styles.noteExcerpt}>{note.preview}</span> : null}<small><span>{note.noteType === 'recording' ? 'Class · ' : ''}{relativeTime(note.updatedAt)}</span>{courseLabel(note) ? <span className={styles.noteCourse}>{courseLabel(note)}</span> : null}</small></button>
               <button type="button" className={styles.noteMenuButton} aria-label={`More options for ${note.title}`} aria-expanded={openMenu === note.id} onClick={() => setOpenMenu(openMenu === note.id ? null : note.id)}><MoreHorizontal size={17} /></button>
-              {openMenu === note.id ? <div className={styles.noteMenu} role="menu"><span>Move to folder</span><button type="button" role="menuitem" onClick={() => void moveNote(note, null)}>No folder</button>{folders.map(folder => <button type="button" role="menuitem" key={folder} onClick={() => void moveNote(note, folder)}>{folder}</button>)}<button type="button" role="menuitem" className={styles.deleteAction} onClick={() => { setDeleting(note); setOpenMenu(null); }}>Delete note</button></div> : null}
+              {openMenu === note.id ? <div className={styles.noteMenu} role="menu"><button type="button" role="menuitem" onClick={() => togglePinned(note)}>{note.frontmatter.pinned === true ? 'Unpin' : 'Pin to top'}</button><span>Move to folder</span><button type="button" role="menuitem" onClick={() => void moveNote(note, null)}>No folder</button>{folders.map(folder => <button type="button" role="menuitem" key={folder} onClick={() => void moveNote(note, folder)}>{folder}</button>)}<button type="button" role="menuitem" className={styles.deleteAction} onClick={() => { setDeleting(note); setOpenMenu(null); }}>Delete note</button></div> : null}
             </div>
           );
           return <>
-            {visible.length === 0 && notes.length > 0 ? <p className={styles.muted}>No notes in this folder yet.</p> : null}
+            {visible.length === 0 && notes.length > 0 ? <p className={styles.muted}>{noteFilter !== 'all' ? 'No notes of this kind yet.' : 'No notes in this folder yet.'}</p> : null}
+            {pinned.length > 0 ? <h2 className={styles.groupLabel}><span className={styles.groupHeading}><Pin size={13} />Pinned</span><span className={styles.groupCount}>{pinned.length}</span></h2> : null}
+            {pinned.map(row)}
             {mine.length > 0 ? <h2 className={styles.groupLabel}><span>Your notes</span><span className={styles.groupCount}>{mine.length}</span></h2> : null}
             {mine.map(row)}
             {lessons.length > 0 ? <h2 className={`${styles.groupLabel} ${styles.generatedGroup}`}><span className={styles.groupHeading}><Sparkles size={14} />Generated</span><span className={styles.groupCount}>{lessons.length}</span></h2> : null}
@@ -744,53 +893,114 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     </div>
   );
 
-  return <section className={`${styles.notes} ${fullPage ? styles.notesHome + " " + styles.unifiedNotes : ""} ${!fullPage && listHidden ? styles.listCollapsed : ""} ${idleList ? styles.idleList : ""}`} aria-label="Notes workspace">
+  const words = draft ? noteWordCount(draft.body) : 0;
+  const saveState = !draft ? '' : saving || (dirty && !error) ? 'Saving…' : error && dirty ? 'Not saved' : draft.id ? 'Saved' : 'Draft';
+  const draftCourse = draft && typeof draft.frontmatter.course_id === 'string' ? draft.frontmatter.course_id : null;
+  const draftSummary = draft?.id ? notes.find(note => note.id === draft.id) : undefined;
+  const draftAsSummary = (): WorkspaceNoteSummary | null => draft?.id ? draftSummary || { id: draft.id, title: draft.title, preview: '', noteType: 'manual', frontmatter: draft.frontmatter, revision: draft.revision!, relativePath: '', updatedAt: new Date().toISOString() } : null;
+  const pinnedNote = draft?.frontmatter.pinned === true;
+  const canStudy = Boolean(draft?.id && draft.revision && !dirty);
+  const sessionIds = draft && Array.isArray(draft.frontmatter.session_ids) ? (draft.frontmatter.session_ids as unknown[]).filter((id): id is string => typeof id === 'string') : [];
+  const explanations = draft ? [...new Set(Array.from(draft.body.matchAll(/\[Original explanation\]\((\/s\/[A-Za-z0-9_%.-]+(?:#[A-Za-z0-9_%.-]+)?)\)/g), match => match[1]))] : [];
+  const connections: NoteConnection[] = [
+    ...(draftCourse && courseNames[draftCourse] ? [{ id: 'course', label: courseNames[draftCourse], detail: 'Course', icon: <FolderClosed size={15}/>, onSelect: () => { if (fullPage && onCourseFilter) onCourseFilter(draftCourse); else window.location.assign(`/courses/${encodeURIComponent(draftCourse)}`); } }] : []),
+    ...sessionIds.slice(0, 3).map((id, index) => ({ id: `chat:${id}`, label: index ? `Conversation ${index + 1}` : 'Original conversation', detail: 'Chat', icon: <MessagesSquare size={15}/>, onSelect: () => openChatSession(id) })),
+    ...explanations.slice(0, 4).map((href, index) => ({ id: `explanation:${href}`, label: `Original explanation ${index + 1}`, detail: 'Lesson', icon: <BookOpen size={15}/>, onSelect: () => window.location.assign(href) })),
+  ];
+  const related: NoteConnection[] = draftCourse ? notes.filter(note => note.id !== draft?.id && note.frontmatter.course_id === draftCourse).slice(0, 3).map(note => ({ id: note.id, label: noteDisplayTitle(note, notes), detail: relativeTime(note.updatedAt), icon: <FileText size={15}/>, onSelect: () => openNote(note.id) })) : [];
+  const applyTemplate = (template: { title: string; body: string }) => {
+    setDraft(current => current ? { ...current, title: current.title.trim() && current.title !== 'Untitled note' ? current.title : template.title, body: template.body } : current);
+    setEditorEpoch(value => value + 1);
+    window.setTimeout(() => richBody.current?.focus(), 0);
+  };
+  const pickImage = () => { const selection = window.getSelection(); imageSelection.current = selection?.rangeCount && richBody.current?.contains(selection.anchorNode) ? selection.getRangeAt(0).cloneRange() : null; imageInput.current?.click(); };
+  const showVersions = () => { if (draft?.id) void learningApi.getWorkspaceNoteVersions(draft.id).then(result => setVersions(result.versions)).catch(cause => setError(String(cause))); };
+
+  return <section className={`${styles.notes} ${fullPage ? styles.notesHome + " " + styles.unifiedNotes : ""} ${!fullPage && listHidden ? styles.listCollapsed : ""} ${idleList ? styles.idleList : ""}`} aria-label="Notes workspace" onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'p') { event.preventDefault(); setSwitcherOpen(true); } }}>
     {fullPage ? (listHost ? createPortal(noteList, listHost) : null) : noteList}
     <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`}>
       {draft || listHidden ? <div className={styles.editorTop}>
         {listHidden ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
-        {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" onClick={()=>{if(onOpenNote)window.dispatchEvent(new CustomEvent('openlearn:new-note-tab'));else startBlank();}}><Plus size={16}/></Button> : null}
-        {draft ? <input ref={titleInput} value={draft.title} onChange={event => setDraft(current => current ? { ...current, title: event.target.value } : current)} aria-label="Note title" placeholder="Note title" /> : null}
-        {draft&&unresolvedRecoveredDraft?<DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" className={styles.draftIndicator} aria-label="Unsaved local draft available" title="An unsaved draft of this note is on this device"><History size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><p className="px-2 py-1.5 text-xs text-muted-foreground">An unsaved draft of this note is on this device.</p><DropdownMenuItem onSelect={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}><History size={15}/>Restore local draft</DropdownMenuItem><DropdownMenuItem onSelect={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}><X size={15}/>Discard local copy</DropdownMenuItem></DropdownMenuContent></DropdownMenu>:null}{draft?<><Button type="button" size="icon-xs" variant="ghost" aria-label="Find in note" onClick={()=>{setReading(false);setFindOpen(value=>!value);}}><Search size={16}/></Button><Button type="button" size="icon-xs" variant="ghost" aria-label={reading?'Edit note':'Reading mode'} aria-pressed={reading} onClick={()=>setReading(value=>!value)}><BookOpen size={16}/></Button></>:null}{draft?.id && !fullPage ? <DropdownMenu><DropdownMenuTrigger asChild><Button size="icon-xs" variant="ghost" aria-label="Note history and actions"><MoreHorizontal size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent><DropdownMenuItem onSelect={()=>void learningApi.getWorkspaceNoteVersions(draft.id!).then(result=>setVersions(result.versions)).catch(cause=>setError(String(cause)))}>Version history</DropdownMenuItem><DropdownMenuItem disabled={dirty||saving} onSelect={()=>void undoLastSave()}>Undo last save</DropdownMenuItem><DropdownMenuItem onSelect={discussNote}>Discuss in side chat</DropdownMenuItem><DropdownMenuItem onSelect={exportNote}>Export Markdown</DropdownMenuItem></DropdownMenuContent></DropdownMenu> : null}
-        {draft && fullPage ? <div className={styles.editorActions}>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label="Discuss this note" title="Discuss this note" onClick={discussNote}><Send size={16} /></Button>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label="Record a class" title="Record a class" onClick={() => onRecordClass?.(activeFolder)}><Mic size={16} /></Button>
-          <button type="button" className={styles.editorMenuTrigger} aria-label="More note actions" aria-expanded={openMenu === 'editor'} onClick={() => setOpenMenu(openMenu === 'editor' ? null : 'editor')}><MoreHorizontal size={18} /></button>
-          {openMenu === 'editor' ? <div className={styles.editorMenu} role="menu">
-            <button type="button" role="menuitem" onClick={() => { setOpenMenu(null); titleInput.current?.focus(); titleInput.current?.select(); }}>Rename</button>
-            <button type="button" role="menuitem" onClick={()=>{setOpenMenu(null);if(draft.id)void learningApi.getWorkspaceNoteVersions(draft.id).then(result=>setVersions(result.versions)).catch(cause=>setError(String(cause)));}}>Version history</button><button type="button" role="menuitem" onClick={exportNote}><Download size={15} />Export Markdown</button>
-            {draft.id ? <>
-              <span>Move to folder</span>
-              {courses?.map(course => <button type="button" role="menuitem" key={course.id} onClick={() => { const note = notes.find(item => item.id === draft.id); if (note) void moveNote(note, null, course.id); }}>{course.name}</button>)}
-              <button type="button" role="menuitem" onClick={() => { const note = notes.find(item => item.id === draft.id); if (note) void moveNote(note, null); }}>No folder</button>
-              {folders.map(folder => <button type="button" role="menuitem" key={folder} onClick={() => { const note = notes.find(item => item.id === draft.id); if (note) void moveNote(note, folder); }}>{folder}</button>)}
-              <button type="button" role="menuitem" className={styles.deleteAction} onClick={() => { const note = notes.find(item => item.id === draft.id); if (note) setDeleting(note); setOpenMenu(null); }}>Delete note</button>
-            </> : null}
-          </div> : null}
-        </div> : null}
+        {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" title="New note" onClick={()=>{if(onOpenNote)window.dispatchEvent(new CustomEvent('openlearn:new-note-tab'));else startBlank();}}><Plus size={16}/></Button> : null}
+        <span className={styles.editorSpacer} />
+        {draft ? <span className={styles.saveState} data-state={saveState === 'Saved' ? 'saved' : saveState === 'Not saved' ? 'error' : 'pending'} role="status">{saveState === 'Saved' ? <Check size={14} aria-hidden="true"/> : null}{saveState}</span> : null}
+        {draft&&unresolvedRecoveredDraft?<DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" className={styles.draftIndicator} aria-label="Unsaved local draft available" title="An unsaved draft of this note is on this device"><History size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><p className="px-2 py-1.5 text-xs text-muted-foreground">An unsaved draft of this note is on this device.</p><DropdownMenuItem onSelect={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}><History size={15}/>Restore local draft</DropdownMenuItem><DropdownMenuItem onSelect={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}><X size={15}/>Discard local copy</DropdownMenuItem></DropdownMenuContent></DropdownMenu>:null}
+        {draft ? <Button type="button" size="sm" variant="ghost" className={styles.askBuddy} onClick={discussNote} title="Discuss this note with Buddy"><Sparkles size={15} aria-hidden="true"/>Ask Buddy</Button> : null}
+        {draft && fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Record a class" title="Record a class" onClick={() => onRecordClass?.(activeFolder)}><Mic size={16} /></Button> : null}
+        {draft ? <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label="More note actions" title="More"><MoreHorizontal size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuItem onSelect={() => { setReading(false); setFindOpen(true); }}><Search size={15}/>Find in note</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setReading(value => !value)}><BookOpen size={15}/>{reading ? 'Edit note' : 'Reading mode'}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setSwitcherOpen(true)}><FileText size={15}/>Go to note…<DropdownMenuShortcut>Ctrl P</DropdownMenuShortcut></DropdownMenuItem>
+          <DropdownMenuItem disabled={reading || imageBusy} onSelect={pickImage}><ImagePlus size={15}/>Insert image</DropdownMenuItem>
+          {draft.id ? <>
+            <DropdownMenuSeparator/>
+            <DropdownMenuItem onSelect={() => togglePinned({ id: draft.id!, frontmatter: draft.frontmatter })}>{pinnedNote ? <PinOff size={15}/> : <Pin size={15}/>}{pinnedNote ? 'Unpin' : 'Pin to top'}</DropdownMenuItem>
+            <DropdownMenuSub><DropdownMenuSubTrigger><FolderInput size={15}/>Move to</DropdownMenuSubTrigger><DropdownMenuSubContent className="max-h-72 w-52 overflow-auto">
+              {Object.entries(courseNames).map(([id, name]) => <DropdownMenuItem key={id} onSelect={() => { const note = draftAsSummary(); if (note) void moveNote(note, null, id); }}>{draftCourse === id ? <Check size={15}/> : <FolderClosed size={15}/>}<span className="truncate">{name}</span></DropdownMenuItem>)}
+              {Object.keys(courseNames).length ? <DropdownMenuSeparator/> : null}
+              {folders.map(folder => <DropdownMenuItem key={folder} onSelect={() => { const note = draftAsSummary(); if (note) void moveNote(note, folder); }}><FolderClosed size={15}/><span className="truncate">{folder}</span></DropdownMenuItem>)}
+              <DropdownMenuItem onSelect={() => { const note = draftAsSummary(); if (note) void moveNote(note, null); }}>No folder</DropdownMenuItem>
+            </DropdownMenuSubContent></DropdownMenuSub>
+            <DropdownMenuItem onSelect={showVersions}><History size={15}/>Version history</DropdownMenuItem>
+            <DropdownMenuItem disabled={dirty || saving} onSelect={() => void undoLastSave()}><Undo2 size={15}/>Undo last save</DropdownMenuItem>
+            <DropdownMenuItem onSelect={exportNote}><Download size={15}/>Export Markdown</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => { void navigator.clipboard?.writeText(draft.body).catch(() => undefined); }}><Copy size={15}/>Copy as Markdown</DropdownMenuItem>
+            <DropdownMenuSeparator/>
+            <DropdownMenuItem variant="destructive" onSelect={() => { const note = draftAsSummary(); if (note) setDeleting(note); }}><Trash2 size={15}/>Delete note</DropdownMenuItem>
+          </> : null}
+        </DropdownMenuContent></DropdownMenu> : null}
       </div> : null}
-      {findOpen?<form className={styles.noteFind} onSubmit={event=>{event.preventDefault();findInNote();}}><Search size={14}/><input autoFocus aria-label="Find text in note" placeholder="Find in this note…" value={findText} onChange={event=>setFindText(event.target.value)}/><button type="submit">Find</button><button type="button" aria-label="Close find" onClick={()=>setFindOpen(false)}><X size={14}/></button></form>:null}
+      {findOpen?<form className={styles.noteFind} onSubmit={event=>{event.preventDefault();findInNote();}}><Search size={14}/><input autoFocus aria-label="Find text in note" placeholder="Find in this note…" value={findText} onChange={event=>setFindText(event.target.value)} onKeyDown={event=>{if(event.key==='Escape')setFindOpen(false);}}/><button type="submit">Find</button><button type="button" aria-label="Close find" onClick={()=>setFindOpen(false)}><X size={14}/></button></form>:null}
       {versions ? <section aria-label="Note version history" className={styles.recovery}><strong>Version history</strong><Button size="sm" variant="ghost" onClick={()=>setVersions(null)}>Close history</Button>{versions.length ? versions.map(version=><button key={version.id} onClick={()=>confirmBefore(()=>{setDraft(current=>current?{...current,title:version.title,body:version.body}:current);setEditorEpoch(value=>value+1);setVersions(null);setError('Earlier version loaded as a draft. Save to restore it.');})}>Restore revision {version.noteRevision} · {new Date(version.savedAt).toLocaleString()}</button>):<p>No previous saved versions yet.</p>}</section> : null}
       {!draft ? (
         <div className={`ol-empty ${styles.quietEmpty}`}><FileText aria-hidden="true" />{notes.length ? <><h2>Pick up where you left off</h2><p>Choose a note from the list, or start a new one.</p></> : <><h2>Your notes</h2><p>Start writing, or save something from your conversation.</p></>}<div className="ol-page-actions"><Button size="sm" onClick={() => { setDraft(blankDraft()); setSavedDraft(null); setEditorEpoch(value=>value+1); }}><Plus size={15} />New note</Button></div></div>
       ) : <>
-        <StudyNoteBar draft={draft} onChanged={(revision, frontmatter) => { const apply = (current: NoteDraft | null): NoteDraft | null => current && current.id ? { ...current, revision, frontmatter } : current; setDraft(apply); setSavedDraft(apply); }} />
-        {(() => { const sessionIds = Array.isArray(draft.frontmatter?.session_ids) ? draft.frontmatter.session_ids as string[] : []; const sid = sessionIds[0]; const noteId = draft.id; return noteId && draft.frontmatter?.study_note === true && typeof sid === 'string' ? <NoteProposalList sessionId={sid} refreshKey={0} onChanged={() => void loadNote(noteId)} /> : null; })()}
-        {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void loadNote(draft.id); }} /> : null}
-        {typeof draft.frontmatter?.lecture_recording_id === 'string' && draft.id ? <LectureNotesView recordingId={draft.frontmatter.lecture_recording_id} /> : null}
-        {!reading ? <div className={styles.formatBar} data-note-toolbar role="toolbar" aria-label="Note formatting"><div className={styles.formatTools}>{noteTools.map(({ format, label, icon: Icon }) => <button key={format} type="button" title={label} aria-label={label} onMouseDown={event => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={16} /></button>)}<button type="button" aria-label="Attach image" title="Attach image" disabled={imageBusy} onMouseDown={event=>event.preventDefault()} onClick={()=>{const selection=window.getSelection();imageSelection.current=selection?.rangeCount?selection.getRangeAt(0).cloneRange():null;imageInput.current?.click();}}><ImagePlus size={16}/></button></div><span>{imageBusy?'Adding image…':''}</span></div> : null}
-        <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden multiple onChange={event=>{void insertImages(Array.from(event.target.files||[]));event.target.value='';}}/><div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={inspectSelection}><div className={styles.writingSurface} hidden={reading}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onImages={files=>void insertImages(files)} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} /></div>{reading?<article className={styles.notePreview}><ReactMarkdown urlTransform={url=>/^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url)?url:defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml>{draft.body}</ReactMarkdown></article>:null}{selectedExcerpt && !reading ? <div role="toolbar" aria-label="Selected passage" className={styles.excerptFloat} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onKeyDown={event=>{if(event.key==='Escape')setSelectedExcerpt(null);}}><button type="button" onClick={()=>mentionExcerpt()}>Add to chat</button><button type="button" onClick={()=>mentionExcerpt('Explain this')}>Explain</button><button type="button" onClick={()=>{if(!draft.id||!draft.revision)return;openSideChat({id:crypto.randomUUID(),title:draft.title,excerpt:selectedExcerpt.text,note:{noteId:draft.id,expectedRevision:draft.revision,startOffset:selectedExcerpt.start,endOffset:selectedExcerpt.start+selectedExcerpt.text.length}});setSelectedExcerpt(null);}}>Ask in side chat</button></div> : null}</div>
-
-        {Array.isArray(draft.frontmatter.session_ids) && typeof draft.frontmatter.session_ids[0] === 'string' ? <Button variant="ghost" size="sm" onClick={() => openChatSession((draft.frontmatter.session_ids as string[])[0])}>Back to original conversation</Button> : null}
-        <div className="study-actions" aria-label="Original explanations">{[...new Set(Array.from(draft.body.matchAll(/\[Original explanation\]\((\/s\/[A-Za-z0-9_%.-]+(?:#[A-Za-z0-9_%.-]+)?)\)/g), match => match[1]))].map((href, index) => <a key={href} href={href}>Original explanation {index + 1}</a>)}</div>
-        <NoteVisualReferences body={draft.body}/>
-        {draft.id && draft.frontmatter?.study_note === true && Array.isArray(draft.frontmatter?.session_ids) && typeof draft.frontmatter.session_ids[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={draft.frontmatter.session_ids[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
-        {draft.id && draft.revision && !dirty ? <details className={styles.studyMenu}><summary>Study this note</summary><button type="button" onClick={discussNote}>Ask Buddy about this note</button><button type="button" disabled={draft.body.length>6000} onClick={()=>mentionWorkspaceNoteExcerpt({noteId:draft.id!,title:draft.title,revision:draft.revision!,startOffset:0,endOffset:draft.body.length,excerpt:draft.body,prompt:'Quiz me on this note',submit:true})}>Quiz me</button><MakeFlashcards sessionId={Array.isArray(draft.frontmatter.session_ids)?draft.frontmatter.session_ids[0] as string:undefined} courseId={typeof draft.frontmatter.course_id==='string'?draft.frontmatter.course_id:undefined} sourceRefs={[{kind:draft.frontmatter.study_note?'lesson':'note',id:draft.id,revision:draft.revision}]} origin="learn"/></details> : null}
-        <div className={styles.status} role="status"><span>{draft.body.replace(/!\[[^\]]*\]\(data:[^)]+\)/g,'').trim().split(/\s+/).filter(Boolean).length} words</span><span>{saving ? 'Saving…' : error && dirty ? 'Changes not saved' : dirty ? 'Saving changes…' : draft.id ? 'Saved' : 'Start typing to create this note'}</span></div>
+        {!reading ? <div className={styles.formatBar} data-note-toolbar role="toolbar" aria-label="Note formatting"><div className={styles.formatTools}>{noteTools.map(({ format, label, icon: Icon }) => <button key={format} type="button" title={label} aria-label={label} onMouseDown={event => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={16} /></button>)}<button type="button" aria-label="Attach image" title="Attach image" disabled={imageBusy} onMouseDown={event=>event.preventDefault()} onClick={pickImage}><ImagePlus size={16}/></button></div><span>{imageBusy?'Adding image…':<>Type <kbd>/</kbd> for blocks</>}</span></div> : null}
+        <div className={styles.docScroll}>
+          <header className={styles.docHead}>
+            <input ref={titleInput} className={styles.docTitle} value={draft.title} onChange={event => setDraft(current => current ? { ...current, title: event.target.value } : current)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); richBody.current?.focus(); } }} aria-label="Note title" placeholder="Untitled" />
+            <p className={styles.docMeta}>
+              {draftCourse && courseNames[draftCourse] ? <span className={styles.docCourse}>{courseNames[draftCourse]}</span> : null}
+              {draft.frontmatter.study_note === true ? <span>Lesson</span> : null}
+              {pinnedNote ? <span className={styles.docPinned}><Pin size={12} aria-hidden="true"/>Pinned</span> : null}
+              <span>{draftSummary ? `Edited ${relativeTime(draftSummary.updatedAt)}` : draft.id ? 'Saved' : 'New note'}</span>
+              <span>{words} {words === 1 ? 'word' : 'words'}</span>
+            </p>
+          </header>
+          <StudyNoteBar draft={draft} onChanged={(revision, frontmatter) => { const apply = (current: NoteDraft | null): NoteDraft | null => current && current.id ? { ...current, revision, frontmatter } : current; setDraft(apply); setSavedDraft(apply); }} />
+          {(() => { const sid = sessionIds[0]; const noteId = draft.id; return noteId && draft.frontmatter?.study_note === true && typeof sid === 'string' ? <NoteProposalList sessionId={sid} refreshKey={0} onChanged={() => void loadNote(noteId)} /> : null; })()}
+          {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void loadNote(draft.id); }} /> : null}
+          {typeof draft.frontmatter?.lecture_recording_id === 'string' && draft.id ? <LectureNotesView recordingId={draft.frontmatter.lecture_recording_id} /> : null}
+          <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden multiple onChange={event=>{void insertImages(Array.from(event.target.files||[]));event.target.value='';}}/>
+          <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={() => { inspectSelection(); updateSlash(); }} onKeyDown={editorKeyDown} onInput={updateSlash} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSlash(null); }}>
+            <div className={styles.writingSurface} hidden={reading}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onImages={files=>void insertImages(files)} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} /></div>
+            {reading?<article className={styles.notePreview}><ReactMarkdown urlTransform={url=>/^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url)?url:defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{ pre: NotePre }}>{draft.body}</ReactMarkdown></article>:null}
+            {slash && !reading ? <SlashMenu commands={matchSlashCommands(slash.query)} index={slash.index} x={slash.x} y={slash.y} onHover={index => setSlash(current => current ? { ...current, index } : current)} onPick={runSlash}/> : null}
+            {selectedExcerpt && !reading ? <div role="toolbar" aria-label="Selected passage" className={styles.selectionBar} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onKeyDown={event=>{if(event.key==='Escape')setSelectedExcerpt(null);}}>
+              <button type="button" aria-label="Bold" title="Bold (Ctrl+B)" onClick={() => applyFormat('bold')}><Bold size={15}/></button>
+              <button type="button" aria-label="Italic" title="Italic (Ctrl+I)" onClick={() => applyFormat('italic')}><Italic size={15}/></button>
+              <button type="button" aria-label="Heading" title="Heading" onClick={() => applyFormat('heading')}><Heading2 size={15}/></button>
+              <button type="button" aria-label="Link" title="Link" onClick={() => applyFormat('link')}><Link2 size={15}/></button>
+              <span className={styles.selectionDivider} aria-hidden="true"/>
+              <button type="button" onClick={()=>mentionExcerpt('Explain this')}><Sparkles size={14} aria-hidden="true"/>Explain</button>
+              <button type="button" onClick={()=>mentionExcerpt('Make a visual that explains this')}><Wand2 size={14} aria-hidden="true"/>Visualize</button>
+              <button type="button" onClick={()=>mentionExcerpt()}>Add to chat</button>
+              <button type="button" aria-label="Ask in side chat" title="Ask in side chat" onClick={()=>{const start=selectedExcerpt.start;openSideChat({id:crypto.randomUUID(),title:draft.title,excerpt:selectedExcerpt.text,...(start>=0&&draft.id&&draft.revision?{note:{noteId:draft.id,expectedRevision:draft.revision,startOffset:start,endOffset:start+selectedExcerpt.text.length}}:{})});setSelectedExcerpt(null);}}><MessagesSquare size={15}/></button>
+            </div> : null}
+          </div>
+          {!draft.id && !draft.body.trim() && !reading ? <NoteTemplatePicker onPick={applyTemplate}/> : null}
+          {draft.id && draft.frontmatter?.study_note === true && typeof sessionIds[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={sessionIds[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
+          {draft.id && draft.body.trim() ? <NoteConnections links={connections} related={related} actions={canStudy ? <>
+            <Button type="button" size="sm" variant="outline" onClick={() => setPendingAsk('Quiz me on this note')}><ListChecks size={15}/>Quiz me</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setPendingAsk('Make a visual that explains this note')}><Shapes size={15}/>Visualize</Button>
+            <MakeFlashcards sessionId={sessionIds[0]} courseId={draftCourse || undefined} sourceRefs={[{kind:draft.frontmatter.study_note?'lesson':'note',id:draft.id,revision:draft.revision!}]} origin="learn"/>
+          </> : <p className={styles.muted}>Saving… study tools appear once this note is saved.</p>}/> : null}
+        </div>
       </>}
-      {error ? <p role="alert" className={styles.error}>{error}{dirty ? <Button size="sm" variant="ghost" onClick={()=>void save()}>Retry save</Button> : <Button size="sm" variant="ghost" onClick={()=>void loadNotes(query)}>Retry</Button>}</p> : null}
+      {error ? <p role="alert" className={styles.error}>{error}{dirty ? <Button size="sm" variant="ghost" onClick={()=>void save()}>Retry save</Button> : <Button size="sm" variant="ghost" onClick={()=>{setError('');void loadNotes(query);}}>Dismiss</Button>}</p> : null}
       {listRefreshError ? <p role="status" className={styles.recovery}>{listRefreshError}<Button size="sm" variant="ghost" onClick={()=>void loadNotes(query, true)}>Refresh</Button></p> : null}
     </div>
+    <NoteQuickSwitcher open={switcherOpen} onOpenChange={setSwitcherOpen} notes={notes} courseNames={courseNames} onOpen={id => void openNote(id)}/>
     <AlertDialog open={Boolean(pendingAction)} onOpenChange={open => { if (!open) { setPendingAction(null); onCloseRequestHandled(); } }}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
@@ -843,13 +1053,13 @@ export function NotesWorkspace({ compact = false, onRecordClass, noteToOpen = nu
   </div>;
 }
 
-function WorkspaceNoteDocument({item,active,closeRequest,onClosed,onCloseHandled,onChanged,onDirty,onOpen}: {item:{key:string;noteId:string|null;title:string};active:boolean;closeRequest:boolean;onClosed:()=>void;onCloseHandled:()=>void;onChanged:(key:string,id:string|null|undefined,title?:string)=>void;onDirty:(key:string,dirty:boolean)=>void;onOpen:(id:string)=>void}) {
+function WorkspaceNoteDocument({item,active,closeRequest,onClosed,onCloseHandled,onChanged,onDirty,onOpen,insertRequest,onInsertConsumed}: {item:{key:string;noteId:string|null;title:string};active:boolean;closeRequest:boolean;onClosed:()=>void;onCloseHandled:()=>void;onChanged:(key:string,id:string|null|undefined,title?:string)=>void;onDirty:(key:string,dirty:boolean)=>void;onOpen:(id:string)=>void;insertRequest:NoteInsert|null;onInsertConsumed:(id:string)=>void}) {
   const [handled,setHandled]=useState(false);
   const selected=useCallback((id:string|null)=>onChanged(item.key,id),[item.key,onChanged]);
   const title=useCallback((value:string)=>onChanged(item.key,undefined,value),[item.key,onChanged]);
   const dirty=useCallback((value:boolean)=>onDirty(item.key,value),[item.key,onDirty]);
   const consumed=useCallback(()=>setHandled(true),[]);
-  return <div hidden={!active} className={styles.preservedTab}><NoteEditor recoveryKey={item.key} startEmpty={!item.noteId} closeRequest={closeRequest} onClose={onClosed} onCloseRequestHandled={onCloseHandled} onDirtyChange={dirty} seed={null} onSeedConsumed={()=>{}} noteToOpen={handled?null:item.noteId} onNoteOpenConsumed={consumed} onNoteSelected={selected} onTitleChange={title} onOpenNote={onOpen}/></div>;
+  return <div hidden={!active} className={styles.preservedTab}><NoteEditor recoveryKey={item.key} startEmpty={!item.noteId} closeRequest={closeRequest} onClose={onClosed} onCloseRequestHandled={onCloseHandled} onDirtyChange={dirty} seed={null} onSeedConsumed={()=>{}} noteToOpen={handled?null:item.noteId} onNoteOpenConsumed={consumed} onNoteSelected={selected} onTitleChange={title} onOpenNote={onOpen} insertRequest={insertRequest} onInsertConsumed={onInsertConsumed}/></div>;
 }
 
 /** The four study tools. Earlier layouts also had quiz, flashcards, sources and reminders tabs. */
@@ -877,6 +1087,8 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
   onNoteOpenConsumed: (noteId: string) => void;
 }) {
   const [noteTitle,setNoteTitle]=useState('Notes');
+  const [noteInsert,setNoteInsert]=useState<NoteInsert|null>(null);
+  const insertConsumed=useCallback((id:string)=>setNoteInsert(current=>current?.id===id?null:current),[]);
   const [pickerQuery,setPickerQuery]=useState('');
   const [pickerNotes,setPickerNotes]=useState<WorkspaceNoteSummary[]>([]);
   const [notesDirty, setNotesDirty] = useState(false);
@@ -911,7 +1123,6 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
     const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
     tabs[next]?.focus(); tabs[next]?.click();
   };
-  const visual = parseVisualization(canvasValue);
   return <aside className={`${styles.panel} ${layout.collapsed ? styles.collapsed : ''} ${layout.focused ? styles.focused : ''}`} aria-label="Study panel">
     <header className={styles.header}>
       <div className={styles.toolSwitch} role="tablist" aria-label="Study tools" onKeyDown={moveTab}>
@@ -935,13 +1146,15 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
       </DropdownMenuContent></DropdownMenu>
     </div> : null}
     <div className={styles.content}>
-      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'||!!layout.activeNoteKey} className={styles.preservedTab}><NoteEditor listWhenIdle onOpenNote={openDocument} onNoteSelected={rememberNote} onTitleChange={setNoteTitle} closeRequest={false} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => undefined} onClose={() => undefined} /></div> : null}
-      {layout.noteTabs?.map(item=><WorkspaceNoteDocument key={item.key} item={item} active={active==='notes'&&layout.activeNoteKey===item.key} closeRequest={closingNote===item.key} onClosed={()=>closeDocument(item.key)} onCloseHandled={()=>setClosingNote(null)} onChanged={updateDocument} onDirty={documentDirty} onOpen={openDocument}/>)}
+      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'||!!layout.activeNoteKey} className={styles.preservedTab}><NoteEditor insertRequest={layout.activeNoteKey ? null : noteInsert} onInsertConsumed={insertConsumed} listWhenIdle onOpenNote={openDocument} onNoteSelected={rememberNote} onTitleChange={setNoteTitle} closeRequest={false} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => undefined} onClose={() => undefined} /></div> : null}
+      {layout.noteTabs?.map(item=><WorkspaceNoteDocument key={item.key} item={item} active={active==='notes'&&layout.activeNoteKey===item.key} closeRequest={closingNote===item.key} onClosed={()=>closeDocument(item.key)} onCloseHandled={()=>setClosingNote(null)} onChanged={updateDocument} onDirty={documentDirty} onOpen={openDocument} insertRequest={layout.activeNoteKey===item.key ? noteInsert : null} onInsertConsumed={insertConsumed}/>)}
       {layout.tabs.includes('practice') ? <div hidden={active !== 'practice'} className={styles.preservedTab}><PracticeTool sessionId={quizSessionId} conceptId={quizConceptId} view={layout.practiceView || 'home'} onView={setPracticeView} quizToOpen={quizToOpen} flashcardLaunch={flashcardLaunch}/></div> : null}
       {layout.tabs.includes('canvas') ? <div hidden={active!=='canvas'} className={styles.preservedTab}><div className={styles.toolPage}>
-        <ToolHeader icon={Shapes} title="Canvas" description="Diagrams and interactive visuals from your conversation." />
-        {visual ? <PassageSelection title="Diagram" itemContext={JSON.stringify(canvasValue)}><Visualization value={canvasValue} lessonId={visual.sourceLessonId}/></PassageSelection>
-          : <div className="ol-card ol-empty"><Shapes aria-hidden="true"/><h3>Nothing on the canvas yet</h3><p>Ask Buddy to draw, graph or simulate something, for example “show me how a pendulum swings”. Open any visual from the chat to keep it here.</p></div>}
+        <CanvasTool value={canvasValue} header={actions => <ToolHeader icon={Shapes} title="Canvas" description="Diagrams and interactive visuals from your conversation." action={actions}/>} onAddToNote={(markdown, title) => {
+          // Notes stays mounted, so the open note (or a new one) receives the visual even before the switch.
+          setNoteInsert({ id: crypto.randomUUID(), markdown, title });
+          onLayoutChange(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
+        }}/>
       </div></div> : null}
       {layout.tabs.includes('class') ? <div hidden={active!=='class'} className={`${styles.preservedTab} ${styles.classTool}`}><InClassWorkspace classId={classId||null}/></div> : null}
     </div>

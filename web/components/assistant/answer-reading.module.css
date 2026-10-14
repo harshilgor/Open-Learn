@@ -1,0 +1,87 @@
+/* Readability affordances for assistant answers: citation chips and collapsible sections. */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: min(100%, 22ch);
+  margin: 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px 1px 6px;
+  background: var(--brand-soft);
+  color: var(--accent-foreground);
+  font: inherit;
+  font-size: var(--type-meta);
+  font-weight: 550;
+  line-height: 1.5;
+  vertical-align: 0.08em;
+  white-space: nowrap;
+  text-decoration: none;
+}
+button.chip { cursor: pointer; transition: background-color .15s, border-color .15s; }
+button.chip:hover { border-color: var(--brand); background: var(--accent); }
+button.chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.chip[data-static="true"] { background: var(--muted); color: var(--muted-foreground); }
+.chipIcon { flex: none; color: var(--brand); }
+.chip[data-static="true"] .chipIcon { color: var(--muted-foreground); }
+.chipTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chipPage { flex: none; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.chipTitle + .chipPage::before { content: "·"; margin-right: var(--space-1); }
+
+.citationList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.citationList .chip { margin: 0; max-width: 100%; }
+
+/* Collapsible long-answer sections. */
+.sectionControls {
+  display: flex;
+  justify-content: flex-end;
+  margin: calc(var(--space-2) * -1) 0 var(--space-2);
+}
+.sectionControls button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--type-meta);
+  font-weight: 550;
+  cursor: pointer;
+}
+.sectionControls button:hover { background: var(--muted); color: var(--foreground); }
+.sectionControls button:focus-visible,
+.sectionToggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+.sectionToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 2px 4px 2px 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sectionToggle:hover .sectionChevron { color: var(--brand); }
+.sectionChevron { flex: none; color: var(--muted-foreground); transition: transform .18s ease; }
+.sectionToggle[aria-expanded="true"] .sectionChevron { transform: rotate(90deg); }
+section.collapsedSection { margin-block: var(--space-2) !important; }
+section.collapsedSection h2 { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sectionChevron,
+  button.chip { transition: none; }
+}

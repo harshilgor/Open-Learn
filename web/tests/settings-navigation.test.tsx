@@ -43,3 +43,31 @@ it('gives memory its own section, separate from privacy',async()=>{
  expect(container.querySelector('h1')?.textContent).toBe('What Open Learn remembers about you');
  expect(container.textContent).toContain('Remembered facts');
 });
+function type(value:string){
+ const input=container.querySelector('input[aria-label="Search settings"]') as HTMLInputElement;
+ act(()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));});
+}
+const navLabels=()=>Array.from(container.querySelectorAll('#settings-search-results button')).map(button=>button.textContent);
+it('describes each section and filters categories and setting labels from the search box',async()=>{
+ await render('general');
+ expect(container.querySelector('h1 + p')?.textContent).toContain('Theme, accent, density');
+ type('priv');
+ expect(navLabels()).toEqual(['Privacy & data']);
+ type('text size');
+ expect(navLabels()).toEqual(['AppearanceText size']);
+ type('quiz difficulty');
+ expect(navLabels()).toEqual(['LearningQuiz defaults · Difficulty']);
+ type('zzz');
+ expect(container.textContent).toContain('No settings match “zzz”');
+ act(()=>Array.from(container.querySelectorAll('button')).find(button=>button.textContent==='Clear search')!.click());
+ expect(navLabels()).toContain('Usage');expect(navLabels()).toContain('Memory');
+});
+it('opens the first match on Enter',async()=>{
+ const onCategoryChange=vi.fn();
+ (globalThis as typeof globalThis & {IS_REACT_ACT_ENVIRONMENT:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
+ container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);
+ await act(async()=>root.render(<SettingsPage category="general" onCategoryChange={onCategoryChange} onBack={vi.fn()}/>));
+ type('memory');
+ act(()=>{(container.querySelector('input[aria-label="Search settings"]') as HTMLInputElement).dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));});
+ expect(onCategoryChange).toHaveBeenCalledWith('memory');
+});
