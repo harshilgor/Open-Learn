@@ -11,13 +11,14 @@ import { normalizeMathMarkdown } from '@/lib/normalize-math-markdown';
 import 'katex/dist/katex.min.css';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
-import { AudioLines, Check, ChevronLeft, Copy, FolderInput, History, Layers, ListChecks, Maximize2, MessagesSquare, Minimize2, Pin, PinOff, Shapes, Trash2, Undo2, Wand2 } from 'lucide-react';
+import { AudioLines, Upload, Check, ChevronLeft, Copy, FolderInput, History, Layers, ListChecks, Maximize2, MessagesSquare, Minimize2, Pin, PinOff, Shapes, Trash2, Undo2, Wand2 } from 'lucide-react';
 import { DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from '@/components/ui/dropdown-menu';
 import { NoteConnections, NoteQuickSwitcher, NoteTemplatePicker, SlashMenu, type NoteConnection } from './note-editor-extras';
 import { NOTE_FILTERS, markdownShortcut, matchSlashCommands, matchesNoteFilter, noteWordCount, relativeTime, slashQuery, type NoteFilter, type SlashCommandId } from '@/lib/note-editing';
 import { PracticeOverview } from './practice-overview';
 import { CanvasTool } from './canvas-tool';
-import { NoteRecordingBar, recordingSupported, useNoteRecorder, type NoteRecording } from './note-recorder';
+import { NoteRecordingBar, formatElapsed, recordingFromFile, recordingSupported, useNoteRecorder, type NoteRecording } from './note-recorder';
+import { RECORDING_SEEK_EVENT, currentRecordingEvent, recordingTitle, seekRecording, timestampMs, type RecordingSeek } from '@/lib/note-recording';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,7 +42,7 @@ import type { WorkspaceQuizOpen } from '@/lib/workspace-events';
 import styles from './workspace-panel.module.css';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import { WORKSPACE_ASK_EVENT, WORKSPACE_NOTE_IMPROVE_EVENT, setWorkspacePanelCollapsed, openChatSession, requestWorkspaceQuiz } from '@/lib/workspace-events';
-import { mentionWorkspaceNoteExcerpt, openWorkspaceFlashcards, type WorkspaceNoteSeed } from '@/lib/workspace-events';
+import { mentionWorkspaceNoteExcerpt, openWorkspaceFlashcards, openWorkspaceQuiz, type WorkspaceNoteSeed } from '@/lib/workspace-events';
 import { StudyNoteBar } from './study-note-bar';
 import { NoteProposalList } from './study-note-panel';
 import { InlineNoteVisual, NOTE_VISUAL_LANGUAGES } from './visualization-reference';
@@ -112,6 +113,12 @@ function visualFence(node: unknown): { language: string; source: string } | null
   if (!code || !(NOTE_VISUAL_LANGUAGES as readonly string[]).includes(language)) return null;
   return { language, source: (code.children || []).map(child => child.value || '').join('').trim() };
 }
+/** A transcript timestamp ("**[03:12]**") stays bold text but plays the note's recording from there. */
+function NoteStrong({ children }: { children?: ReactNode }) {
+  const ms = typeof children === 'string' ? timestampMs(children) : null;
+  return ms === null ? <strong>{children}</strong> : <strong className={styles.timestamp} data-seek-ms={ms} title="Play the recording from here">{children}</strong>;
+}
+
 /** Visuals render inline as atomic blocks; other code blocks stay plain. */
 function NotePre({ node, children }: { node?: unknown; children?: ReactNode }) {
   const visual = visualFence(node);
@@ -137,6 +144,7 @@ const RichNoteBody = memo(function RichNoteBody({ initialBody, editorRef, onChan
     {initialBody.trim() ? <ReactMarkdown urlTransform={url => /^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url) ? url : defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{
       a: ({ href, children }) => <a href={href} onClick={event => event.preventDefault()}>{children}</a>,
       pre: NotePre,
+      strong: NoteStrong,
       img: ({ alt, src }) => <img alt={alt || 'Note image'} src={src} loading="lazy" />,
       input: ({ checked, type }) => <input type={type} defaultChecked={checked} aria-label="Mark checklist item complete" contentEditable={false} onChange={event => {
         const editor = event.currentTarget.closest<HTMLElement>('[contenteditable="true"]');
@@ -146,7 +154,29 @@ const RichNoteBody = memo(function RichNoteBody({ initialBody, editorRef, onChan
   </article>;
 }, () => true);
 
-function RecordingPlayer({ recordingId, noteId, duration, markersMs = [], onReady }: { recordingId: string; noteId: string; duration?: number; markersMs?: number[]; onReady: () => void }) {
+function RecordingPlayer({ recordingId, noteId, duration, markersMs = [], onReady, title, courseId, revision, transcriptReady }: { recordingId: string; noteId: string; duration?: number; markersMs?: number[]; onReady: () => void; title: string; courseId?: string; revision?: number | null; transcriptReady: boolean }) {
+  const audio = useRef<HTMLAudioElement>(null);
+  const [quizBusy, setQuizBusy] = useState(false), [quizError, setQuizError] = useState('');
+  // Timestamps and key moments anywhere in this note play the recording from that point.
+  useEffect(() => {
+    const seek = (event: Event) => {
+      const detail = (event as CustomEvent<RecordingSeek>).detail;
+      if (detail?.noteId !== noteId || !audio.current) return;
+      audio.current.currentTime = detail.ms / 1000;
+      void audio.current.play().catch(() => undefined);
+    };
+    window.addEventListener(RECORDING_SEEK_EVENT, seek);
+    return () => window.removeEventListener(RECORDING_SEEK_EVENT, seek);
+  }, [noteId]);
+  /** The quiz agent writes questions from this note's transcript and notes. */
+  async function quizMe() {
+    setQuizBusy(true); setQuizError('');
+    try {
+      const session = await learningApi.createSession({ topic: title.slice(0, 200), goal: `Practice ${title}`.slice(0, 1000), courseId: courseId || undefined });
+      openWorkspaceQuiz({ sessionId: session.id, origin: 'ask', lessonNoteId: noteId, requestedTopic: title.slice(0, 200) });
+    } catch (cause) { setQuizError(cause instanceof Error ? cause.message : 'The quiz could not be started.'); }
+    finally { setQuizBusy(false); }
+  }
   const [url, setUrl] = useState<string | null>(null), [status, setStatus] = useState('queued'), [processingError, setProcessingError] = useState(''), [retrying, setRetrying] = useState(false);
   const readyNotified = useRef(false);
   useEffect(() => {
@@ -175,7 +205,15 @@ function RecordingPlayer({ recordingId, noteId, duration, markersMs = [], onRead
   }, [noteId, onReady, status]);
   async function retry() { setRetrying(true); setProcessingError(''); readyNotified.current = false; try { if (status === 'awaiting_upload') { const audio = await getClassRecording(recordingId); if (!audio) throw new Error('The saved audio is unavailable on this device.'); const result = await learningApi.uploadClassRecording(noteId, audio, duration || 0, markersMs); await saveClassRecording(result.id, audio); if (result.id !== recordingId) await deleteClassRecording(recordingId); setStatus(result.status); } else { const result = await learningApi.retryClassRecording(noteId); setStatus(result.status); } } catch (cause) { setProcessingError(cause instanceof Error ? cause.message : 'Could not retry processing.'); } finally { setRetrying(false); } }
   const statusLabel = status === 'completed' ? 'Transcript and study guide ready' : status === 'processing' ? 'Transcribing and creating study guide…' : status === 'queued' ? 'Waiting to process…' : status === 'failed' ? 'Processing needs attention' : status === 'awaiting_upload' ? 'Recording saved locally; upload pending' : 'Processing status unavailable';
-  return <section className={styles.recordingPlayer}><div><Mic size={17} /><strong>Recording</strong><small>{duration ? `${Math.ceil(duration / 60000)} min` : ''}</small></div>{url ? <audio controls preload="metadata" src={url} aria-label="Class recording" /> : <p>Recording unavailable on this device.</p>}<p>{statusLabel}</p>{processingError ? <p role="alert">{processingError}</p> : null}{status === 'failed' || status === 'awaiting_upload' ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>{retrying ? 'Retrying…' : status === 'awaiting_upload' ? 'Upload recording' : 'Retry processing'}</Button> : null}</section>;
+  return <section className={styles.recordingPlayer}><div><Mic size={17} /><strong>Recording</strong><small>{duration ? `${Math.ceil(duration / 60000)} min` : ''}</small></div>{url ? <audio ref={audio} controls preload="metadata" src={url} aria-label="Recording" /> : <p>Recording unavailable on this device.</p>}
+    {markersMs.length ? <div className={styles.keyMoments} aria-label="Key moments"><span>Key moments</span>{markersMs.slice(0, 40).map((ms, index) => <button key={`${ms}:${index}`} type="button" disabled={!url} title="Play from this moment" onClick={() => seekRecording({ noteId, ms })}>{formatElapsed(ms)}</button>)}</div> : null}
+    <p>{statusLabel}</p>{processingError ? <p role="alert">{processingError}</p> : null}{status === 'failed' || status === 'awaiting_upload' ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>{retrying ? 'Retrying…' : status === 'awaiting_upload' ? 'Upload recording' : 'Retry processing'}</Button> : null}
+    {transcriptReady && revision ? <div className={styles.recordingNext}>
+      <Button type="button" size="sm" variant="outline" disabled={quizBusy} onClick={() => void quizMe()}><ListChecks size={15}/>{quizBusy ? 'Starting quiz…' : 'Quiz me on this lecture'}</Button>
+      <MakeFlashcards courseId={courseId} sourceRefs={[{ kind: 'note', id: noteId, revision }]} origin="learn" label="Make flashcards"/>
+    </div> : null}
+    {quizError ? <p role="alert">{quizError}</p> : null}
+  </section>;
 }
 
 /** Shared heading for every study tool: icon, title, one line of context, optional action. */
@@ -271,6 +309,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   const consumedInserts = useRef(new Set<string>());
   const imageInput = useRef<HTMLInputElement>(null);
+  const audioInput = useRef<HTMLInputElement>(null);
   const imageSelection = useRef<Range|null>(null);
   useEffect(()=>{onTitleChange?.(draft?.title||'Notes');},[draft?.title,onTitleChange]);
   const [savedDraft, setSavedDraft] = useState<NoteDraft | null>(null);
@@ -612,6 +651,22 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     } finally { setUploadingRecording(false); }
   }
   publishRecordingRef.current = publishRecording;
+
+  /** Start recording; an untitled note is named and filed after the class on the calendar right now. */
+  function startRecording() {
+    void recorder.start();
+    const current = draftRef.current;
+    if (!current || (current.title.trim() && current.title.trim() !== 'Untitled note')) return;
+    void currentRecordingEvent().then(event => {
+      if (!event) return;
+      setDraft(value => value && (value.id === current.id) && (!value.title.trim() || value.title.trim() === 'Untitled note') ? { ...value, title: recordingTitle(event), frontmatter: { ...value.frontmatter, ...(event.courseId && typeof value.frontmatter.course_id !== 'string' ? { course_id: event.courseId } : {}) } } : value);
+    }).catch(() => undefined);
+  }
+
+  async function uploadAudioFile(file: File) {
+    try { await publishRecording(await recordingFromFile(file)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'This audio file could not be added.'); }
+  }
 
   function downloadRecording(recording: NoteRecording) {
     const url = URL.createObjectURL(recording.blob);
@@ -990,12 +1045,13 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
         {draft ? <span className={styles.saveState} data-state={saveState === 'Saved' ? 'saved' : saveState === 'Not saved' ? 'error' : 'pending'} role="status">{saveState === 'Saved' ? <Check size={14} aria-hidden="true"/> : null}{saveState}</span> : null}
         {draft&&unresolvedRecoveredDraft?<DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" className={styles.draftIndicator} aria-label="Unsaved local draft available" title="An unsaved draft of this note is on this device"><History size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><p className="px-2 py-1.5 text-xs text-muted-foreground">An unsaved draft of this note is on this device.</p><DropdownMenuItem onSelect={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}><History size={15}/>Restore local draft</DropdownMenuItem><DropdownMenuItem onSelect={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}><X size={15}/>Discard local copy</DropdownMenuItem></DropdownMenuContent></DropdownMenu>:null}
         {draft ? <Button type="button" size="sm" variant="ghost" className={styles.askBuddy} onClick={discussNote} title="Discuss this note with Buddy"><Sparkles size={15} aria-hidden="true"/>Ask Buddy</Button> : null}
-        {draft && !recorder.active && canRecord ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Record audio into this note" title="Record · notes are written into this note when you stop" disabled={uploadingRecording} onClick={() => void recorder.start()}><Mic size={16} /></Button> : null}
+        {draft && !recorder.active && canRecord ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Record audio into this note" title="Record · notes are written into this note when you stop" disabled={uploadingRecording} onClick={startRecording}><Mic size={16} /></Button> : null}
         {draft ? <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label="More note actions" title="More"><MoreHorizontal size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onSelect={() => { setReading(false); setFindOpen(true); }}><Search size={15}/>Find in note</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setReading(value => !value)}><BookOpen size={15}/>{reading ? 'Edit note' : 'Reading mode'}</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setSwitcherOpen(true)}><FileText size={15}/>Go to note…<DropdownMenuShortcut>Ctrl P</DropdownMenuShortcut></DropdownMenuItem>
           <DropdownMenuItem disabled={reading || imageBusy} onSelect={pickImage}><ImagePlus size={15}/>Insert image</DropdownMenuItem>
+          <DropdownMenuItem disabled={recorder.active || uploadingRecording} onSelect={() => audioInput.current?.click()}><Upload size={15}/>Upload a recording</DropdownMenuItem>
           {fullPage && onRecordClass ? <DropdownMenuItem onSelect={() => onRecordClass(activeFolder)}><AudioLines size={15}/>Start an In-Class session</DropdownMenuItem> : null}
           {draft.id ? <>
             <DropdownMenuSeparator/>
@@ -1041,12 +1097,13 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
           </header>
           <StudyNoteBar draft={draft} onChanged={(revision, frontmatter) => { const apply = (current: NoteDraft | null): NoteDraft | null => current && current.id ? { ...current, revision, frontmatter } : current; setDraft(apply); setSavedDraft(apply); }} />
           {(() => { const sid = sessionIds[0]; const noteId = draft.id; return noteId && draft.frontmatter?.study_note === true && typeof sid === 'string' ? <NoteProposalList sessionId={sid} refreshKey={0} onChanged={() => void loadNote(noteId)} /> : null; })()}
-          {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void recordingReady(draft.id); }} /> : null}
+          {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer title={draft.title} courseId={draftCourse || undefined} revision={dirty ? null : draft.revision} transcriptReady={draft.body.includes('## Transcript')} recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void recordingReady(draft.id); }} /> : null}
           {typeof draft.frontmatter?.lecture_recording_id === 'string' && draft.id ? <LectureNotesView recordingId={draft.frontmatter.lecture_recording_id} /> : null}
           <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden multiple onChange={event=>{void insertImages(Array.from(event.target.files||[]));event.target.value='';}}/>
-          <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={() => { inspectSelection(); updateSlash(); }} onKeyDown={editorKeyDown} onInput={updateSlash} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSlash(null); }}>
+          <input ref={audioInput} type="file" accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg,.aac,.flac" hidden aria-label="Upload a recording" onChange={event=>{const file=event.target.files?.[0];event.target.value='';if(file)void uploadAudioFile(file);}}/>
+          <div ref={bodyWrap} className={styles.bodyWrap} onClick={event => { const stamp = (event.target as HTMLElement).closest<HTMLElement>('[data-seek-ms]'); if (stamp && draft.id && window.getSelection()?.isCollapsed) seekRecording({ noteId: draft.id, ms: Number(stamp.dataset.seekMs) }); }} onMouseUp={inspectSelection} onKeyUp={() => { inspectSelection(); updateSlash(); }} onKeyDown={editorKeyDown} onInput={updateSlash} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSlash(null); }}>
             <div className={styles.writingSurface} hidden={reading}><RichNoteBody key={editorEpoch} initialBody={draft.body} editorRef={richBody} onImages={files=>void insertImages(files)} onChange={body => { setSelectedExcerpt(null); setDraft(current => current ? { ...current, body } : current); }} /></div>
-            {reading?<article className={styles.notePreview}><ReactMarkdown urlTransform={url=>/^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url)?url:defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{ pre: NotePre }}>{draft.body}</ReactMarkdown></article>:null}
+            {reading?<article className={styles.notePreview}><ReactMarkdown urlTransform={url=>/^data:image\/(?:webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(url)?url:defaultUrlTransform(url)} remarkPlugins={readingRemarkPlugins as never} rehypePlugins={readingRehypePlugins as never} skipHtml components={{ pre: NotePre, strong: NoteStrong }}>{draft.body}</ReactMarkdown></article>:null}
             {slash && !reading ? <SlashMenu commands={matchSlashCommands(slash.query)} index={slash.index} x={slash.x} y={slash.y} onHover={index => setSlash(current => current ? { ...current, index } : current)} onPick={runSlash}/> : null}
             {selectedExcerpt && !reading ? <div role="toolbar" aria-label="Selected passage" className={styles.selectionBar} style={{ left: selectedExcerpt.x, top: selectedExcerpt.y }} onMouseDown={event => event.preventDefault()} onKeyDown={event=>{if(event.key==='Escape')setSelectedExcerpt(null);}}>
               <button type="button" aria-label="Bold" title="Bold (Ctrl+B)" onClick={() => applyFormat('bold')}><Bold size={15}/></button>
@@ -1060,7 +1117,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
               <button type="button" aria-label="Ask in side chat" title="Ask in side chat" onClick={()=>{const start=selectedExcerpt.start;openSideChat({id:crypto.randomUUID(),title:draft.title,excerpt:selectedExcerpt.text,...(start>=0&&draft.id&&draft.revision?{note:{noteId:draft.id,expectedRevision:draft.revision,startOffset:start,endOffset:start+selectedExcerpt.text.length}}:{})});setSelectedExcerpt(null);}}><MessagesSquare size={15}/></button>
             </div> : null}
           </div>
-          {!draft.id && !draft.body.trim() && !reading && !recorder.active ? <NoteTemplatePicker onPick={applyTemplate} onRecord={canRecord ? () => void recorder.start() : undefined}/> : null}
+          {!draft.id && !draft.body.trim() && !reading && !recorder.active ? <NoteTemplatePicker onPick={applyTemplate} onRecord={canRecord ? startRecording : undefined} onUpload={() => audioInput.current?.click()}/> : null}
           {draft.id && draft.frontmatter?.study_note === true && typeof sessionIds[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={sessionIds[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
           {draft.id && draft.body.trim() ? <NoteConnections links={connections} related={related} actions={canStudy ? <>
             <Button type="button" size="sm" variant="outline" onClick={() => setPendingAsk('Quiz me on this note')}><ListChecks size={15}/>Quiz me</Button>

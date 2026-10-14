@@ -921,3 +921,12 @@
 .docScroll .notePreview { width: min(100%, calc(var(--reading-width) + 64px)); max-width: none; margin-inline: auto; padding-inline: clamp(18px, 3vw, 32px); }
 .docScroll .recordingPlayer { width: min(calc(100% - 28px), calc(var(--reading-width) + 64px - 2 * clamp(18px, 3vw, 32px))); margin: 8px auto 4px; }
 .docScroll .recordingPlayer button { justify-self: start; }
+
+/* Recording: key moments, follow-ups and tappable transcript timestamps. */
+.keyMoments { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.keyMoments > span { color: var(--muted-foreground); font-size: var(--type-meta); font-weight: 600; }
+.keyMoments button { padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--foreground); font-size: var(--type-meta); font-variant-numeric: tabular-nums; cursor: pointer; }
+.keyMoments button:hover:not(:disabled) { border-color: var(--brand); background: var(--brand-soft); }
+.recordingNext { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.notePreview strong.timestamp { margin-right: 2px; padding: 0 4px; border-radius: 5px; background: var(--brand-soft); color: var(--brand); font-size: .85em; font-variant-numeric: tabular-nums; cursor: pointer; }
+.notePreview strong.timestamp:hover { text-decoration: underline; }

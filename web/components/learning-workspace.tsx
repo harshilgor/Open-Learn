@@ -110,6 +110,14 @@ function LearningWorkspaceContent({
   const [view,setView]=useState<'home'|'maps'|'saved'|'topic'|'quiz'|'notes'|'review'|'settings'|'course'|'reminders'|'courses'|'dashboard'|'mobile-tool'|'calendar'>(initialView || initialSidebarTab);
  const [mobileToolLayout,setMobileToolLayout]=useState<WorkspacePanelLayout>({width:100,collapsed:false,tabs:['notes'],activeTab:'notes'});
  const [mobileTool,setMobileTool]=useState<Partial<Parameters<typeof WorkspacePanel>[0]>>({});
+ // On desktop, a quiz or flashcards opened from a full page (Notes, Dashboard, a course) appear in the
+ // study panel, which those pages hide; bring the chat view with its panel forward.
+ useEffect(() => {
+   if (mobile) return;
+   const show = () => setView(current => ['dashboard','notes','course','courses','calendar','reminders'].includes(current) ? 'home' : current);
+   window.addEventListener(WORKSPACE_QUIZ_OPEN_EVENT, show); window.addEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT, show);
+   return () => { window.removeEventListener(WORKSPACE_QUIZ_OPEN_EVENT, show); window.removeEventListener(WORKSPACE_FLASHCARDS_OPEN_EVENT, show); };
+ }, [mobile]);
  useEffect(() => {
    if (!mobile) return;
    const note = (event:Event) => { const id=(event as CustomEvent<string>).detail; if(id){setRecordedNoteId(id);setSidebarTab('notes');setView('notes');} };

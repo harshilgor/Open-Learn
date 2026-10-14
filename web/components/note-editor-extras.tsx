@@ -28,11 +28,12 @@ export function SlashMenu({ commands, index, x, y, onPick, onHover }: { commands
 }
 
 /** Shown under an empty new note: one click turns it into a structured page. */
-export function NoteTemplatePicker({ onPick, onRecord }: { onPick: (template: NoteTemplate) => void; onRecord?: () => void }) {
+export function NoteTemplatePicker({ onPick, onRecord, onUpload }: { onPick: (template: NoteTemplate) => void; onRecord?: () => void; onUpload?: () => void }) {
   return <div className={styles.templates} aria-label="Start from a template">
     <span>Start with</span>
     {NOTE_TEMPLATES.map(template => <button key={template.id} type="button" title={template.description} onClick={() => onPick(template)}>{template.label}</button>)}
     {onRecord ? <button type="button" className={styles.recordStart} title="Record audio; notes are written into this note when you stop" onClick={onRecord}><Mic size={13} aria-hidden="true"/>Record a lecture</button> : null}
+    {onUpload ? <button type="button" title="Turn an audio file (M4A, MP3, WAV, WebM) into notes" onClick={onUpload}>Upload a recording</button> : null}
     <small>or type <kbd>/</kbd> for blocks</small>
   </div>;
 }

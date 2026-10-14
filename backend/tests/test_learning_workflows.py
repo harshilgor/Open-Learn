@@ -614,3 +614,19 @@ def test_failed_provider_keeps_submitted_turn_and_allows_next_revision(env):
     assert journey["turns"][-1]["status"] == "failed"
     assert journey["turns"][-1]["generationId"] == generation_id
     assert journey["revision"] == 2
+
+
+def test_quiz_can_be_grounded_in_a_recorded_lecture_note(env):
+    client, store, _, session = env
+    from backend.app.workspace_note_service import WorkspaceNoteService
+    from backend.app.workspace_note_models import WorkspaceNoteCreate
+    notes = WorkspaceNoteService(store)
+    plain = notes.create("local", WorkspaceNoteCreate(title="Loose note", body="Conditional probability notes.", frontmatter={}))
+    recorded = notes.create("local", WorkspaceNoteCreate(title="Lecture", body="## Transcript\n\n**[~00:00]** Conditioning restricts the population.",
+        frontmatter={"class_recording_id": "rec_1", "class_recording_status": "completed"}))
+    rejected = command(client, '/quizzes', {"sessionId": session.id, "count": 2, "lessonNoteId": plain.id})
+    assert rejected["status"] == "failed", rejected
+    accepted = command(client, '/quizzes', {"sessionId": session.id, "count": 2, "lessonNoteId": recorded.id})
+    assert accepted["status"] == "completed", accepted
+    quiz = client.get(f"/v1/quizzes/{accepted['result']['quizId']}").json()
+    assert quiz["lessonNoteId"] == recorded.id
