@@ -16,8 +16,9 @@ def responsibility_enabled(owner=None):
     return owner in owners if owner is not None else bool(owners)
 
 
-def worker_mode():
-    mode = os.getenv('OPENLEARN_WORKER_MODE', 'external' if os.getenv('AI_TUTOR_ENV', 'development').lower() in {'production', 'deployed'} else 'embedded')
+def worker_mode(role=None):
+    override=os.getenv('OPENLEARN_'+role.upper()+'_WORKER_MODE') if role else None
+    mode = override or os.getenv('OPENLEARN_WORKER_MODE', 'external' if os.getenv('AI_TUTOR_ENV', 'development').lower() in {'production', 'deployed'} else 'embedded')
     if mode not in {'embedded', 'external'}: raise ValueError('Invalid OPENLEARN_WORKER_MODE')
     return mode
 

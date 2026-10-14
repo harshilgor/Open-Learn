@@ -1,4 +1,5 @@
 "use client";
+import { useScheduledMessages } from '@/lib/scheduled-messages';
 import { useVoice } from "./voice/voice-provider";
 import { VoiceHistory } from "./voice/voice-history";
 import { reportVoiceFocus, VOICE_FOCUS, VOICE_REFRESH, voiceApi } from "@/lib/voice/client";
@@ -211,15 +212,7 @@ export function LearnChat({
   const [error, setError] = useState('');
   const [retryingResponses, setRetryingResponses] = useState<Set<string>>(() => new Set());
   const [classActionReply,setClassActionReply]=useState('');
-  const [scheduledMessages,setScheduledMessages]=useState<{id:string;title:string;body:string;url:string}[]>([]);
-  useEffect(()=>{
-    if(!sessionId)return;
-    let live=true;
-    const load=()=>{if(document.visibilityState==='hidden')return;void request<{messages:{id:string;title:string;body:string;url:string}[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId)).then(result=>{if(live)setScheduledMessages(result.messages);}).catch(()=>{});};
-    load();const timer=window.setInterval(load,15000);
-    document.addEventListener('visibilitychange',load);
-    return()=>{live=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',load);};
-  },[sessionId]);
+  const scheduledMessages=useScheduledMessages(sessionId);
   const [selection, setSelection] = useState<SelectedPassage | null>(null);
   const [selectionPanel, setSelectionPanel] = useState<SelectionPanel | null>(null);
   const [selectionFollowup, setSelectionFollowup] = useState('');

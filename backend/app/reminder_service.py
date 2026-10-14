@@ -89,6 +89,9 @@ class ReminderService:
     def create(self,owner,command,key):
         if os.getenv('OPENLEARN_CHAT_REMINDERS')!='true':fail('capability_unavailable','Chat reminders are not enabled on this server.',503)
         if not key or len(key)>160:fail('invalid_input','Provide an Idempotency-Key.',422)
+        from .scheduled_browser import browser_actions
+        if browser_actions(command.actions) and os.getenv('OPENLEARN_SCHEDULED_BROWSER_ENABLED','false')!='true':
+            fail('capability_unavailable','Scheduled website checks are not enabled yet.',503)
         try:build_registry(self.store).validate(command.actions)
         except ValueError:fail('invalid_action','Check the scheduled action arguments.',422)
         if any(a.type=='buddy_message' for a in command.actions) and not command.sessionId:fail('session_required','Choose a conversation for the Buddy message.',422)
@@ -136,6 +139,8 @@ class ReminderService:
                 calendar=conn.execute(text("SELECT id FROM calendar_calendars WHERE id=:id AND owner_id=:owner AND status='active'"),{'id':command.calendarId,'owner':owner}).first()
                 if not calendar:fail('not_found','Calendar unavailable.',404)
             if command.buddyId:buddy_service.profile(conn,owner,command.buddyId)
+            from .scheduled_browser import validate_actions
+            validate_actions(conn, owner, command.actions, command.sessionId)
             for action in command.actions:
                 if action.args.get('sessionId'):
                     if not conn.execute(text('SELECT 1 FROM learning_sessions WHERE id=:id AND learner_id=:owner'),{'id':action.args['sessionId'],'owner':owner}).first():fail('not_found','Action conversation unavailable.',404)
@@ -174,8 +179,12 @@ class ReminderService:
             from .calendar.service import invalidate_calendar
             invalidate_calendar(owner)
             assert_owner_active(conn,owner)
+            conn.execute(text('UPDATE reminders SET payload=payload WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner})
             row=conn.execute(text('SELECT * FROM reminders WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Reminder unavailable.',404)
+            from .scheduled_browser import cancel_tasks
+            fires=conn.execute(text("SELECT id FROM reminders WHERE owner_id=:owner AND (id=:id OR policy_id=:policy) AND status='delivering'"),{'owner':owner,'id':identifier,'policy':row['policy_id'] or ''}).scalars().all()
+            cancel_tasks(conn,self.store,owner,fires)
             if row['kind']=='routine':
                 conn.execute(text('UPDATE reminder_policies SET active=false,revision=revision+1 WHERE id=:id AND owner_id=:owner'),{'id':row['policy_id'],'owner':owner})
                 conn.execute(text("UPDATE reminders SET status='cancelled' WHERE policy_id=:id AND owner_id=:owner AND status IN ('pending','delivering')"),{'id':row['policy_id'],'owner':owner})
@@ -241,13 +250,21 @@ class ReminderService:
             from .calendar.service import invalidate_calendar
             invalidate_calendar(owner)
             assert_owner_active(conn,owner)
+            conn.execute(text('UPDATE reminder_policies SET payload=payload WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner})
             row=conn.execute(text("SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner AND kind='routine'"),{'id':identifier,'owner':owner}).mappings().first()
             if not row:fail('not_found','Routine unavailable.',404)
             if row['revision']!=revision:fail('revision_conflict','Refresh this routine before changing it.',409)
-            data=json.loads(row['payload']);active=action=='resume' or action=='edit' and row['active']
+            data=json.loads(row['payload'])
+            if command:
+                from .scheduled_browser import validate_actions
+                validate_actions(conn,owner,command.actions,command.sessionId)
+            active=action=='resume' or action=='edit' and row['active']
             if command:
                 if command.courseId!=data.get('courseId') or command.sessionId!=data.get('sessionId'):fail('scope_denied','Create a new routine to change its conversation or course.',409)
                 data={**command.model_dump(),'fireCount':data.get('fireCount',0)}
+            from .scheduled_browser import cancel_tasks
+            fires=conn.execute(text("SELECT id FROM reminders WHERE owner_id=:owner AND policy_id=:policy AND status='delivering'"),{'owner':owner,'policy':identifier}).scalars().all()
+            cancel_tasks(conn,self.store,owner,fires)
             conn.execute(text('UPDATE reminder_policies SET active=:active,revision=revision+1,payload=:payload WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':owner,'active':active,'payload':encoded(data)})
             conn.execute(text("UPDATE reminders SET status='cancelled' WHERE policy_id=:id AND owner_id=:owner AND status IN ('pending','delivering')"),{'id':identifier,'owner':owner})
             if active:
@@ -275,8 +292,17 @@ class ReminderService:
                     policy=conn.execute(text('SELECT * FROM reminder_policies WHERE id=:id AND owner_id=:owner'),{'id':row['policy_id'],'owner':row['owner_id']}).mappings().first()
                     if not policy or not policy['active'] or policy['revision']!=row['policy_revision']:
                         conn.execute(text("UPDATE reminders SET status='cancelled' WHERE id=:id"),{'id':row['id']});continue
+                from .scheduled_browser import browser_actions
+                overlapping=False
+                if policy and browser_actions(payload.get('actions', [])):
+                    conn.execute(text('UPDATE reminder_policies SET payload=payload WHERE id=:id AND owner_id=:owner'), {'id':policy['id'],'owner':row['owner_id']})
+                    overlapping=bool(conn.execute(text("SELECT 1 FROM reminders WHERE owner_id=:owner AND policy_id=:policy AND status='delivering' AND id<>:id LIMIT 1"), {'owner':row['owner_id'],'policy':policy['id'],'id':row['id']}).first())
                 expired=now>row['due_at']+payload['catchupMinutes']*60 or payload.get('expiresAt') and now>payload['expiresAt']
-                status='expired' if expired else 'delivering'
+                status='expired' if expired or overlapping else 'delivering'
+                if overlapping:
+                    payload['skipReason']='previous_occurrence_active'
+                    conn.execute(text('UPDATE reminders SET payload=:payload WHERE id=:id'), {'id':row['id'],'payload':encoded(payload)})
+                    expired=True
                 claimed=conn.execute(text("UPDATE reminders SET status=:status,attempt_count=attempt_count+1 WHERE id=:id AND status='pending'"),{'status':status,'id':row['id']}).rowcount
                 if not claimed:continue
                 counts['expired' if expired else 'claimed']+=1
@@ -298,8 +324,10 @@ class ReminderService:
     def reconcile(self):
         # Durable completion bridge also catches completions during worker restarts.
         with self.store.engine.connect() as conn:
-            rows=conn.execute(text("SELECT a.fire_id,a.job_id,a.owner_id,r.status,r.payload FROM reminder_action_runs a JOIN assistant_runs r ON r.id=a.job_id AND r.owner_id=a.owner_id WHERE a.status='waiting' LIMIT 100")).mappings().all()
+            rows=conn.execute(text("SELECT a.fire_id,a.job_id,a.owner_id,r.status,r.payload FROM reminder_action_runs a JOIN assistant_runs r ON r.id=a.job_id AND r.owner_id=a.owner_id JOIN reminders f ON f.id=a.fire_id AND f.owner_id=a.owner_id WHERE f.status='delivering' AND a.status='waiting' AND r.status IN ('completed','completed_partial','failed','cancelled') ORDER BY r.updated_at,a.fire_id,a.step_id LIMIT 100")).mappings().all()
         runner=ReminderActionRunner(self.store)
+        from .scheduled_browser import reconcile_attention
+        reconcile_attention(self.store)
         for row in rows:runner.resume(row['fire_id'],row['job_id'],row['status'],json.loads(row['payload']))
         with self.store.engine.connect() as conn:
             failed=conn.execute(text("SELECT r.* FROM reminders r JOIN learning_jobs j ON j.target_id=r.id AND j.owner_id=r.owner_id WHERE r.status='delivering' AND j.kind='reminder_actions' AND j.status='failed' LIMIT 100")).mappings().all()

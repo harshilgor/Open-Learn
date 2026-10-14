@@ -1,0 +1,62 @@
+# Approved incremental budget: two Starter workers, up to $14/month.
+# Configure the existing production environment group before syncing.
+# No new database/cache/sandbox and no API worker-mode changes in this file.
+services:
+  - type: worker
+    name: openlearn-browser
+    runtime: docker
+    region: virginia
+    plan: starter
+    repo: https://github.com/harshilgor/Open-Learn
+    branch: main
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime browser
+    autoDeployTrigger: 'off'
+    maxShutdownDelaySeconds: 180
+    envVars:
+      - fromGroup: openlearn-cloud-workers
+      - key: OPENLEARN_PROCESS_ROLE
+        value: browser
+      - key: OPENLEARN_CLOUD_WORKER_STANDBY
+        value: 'true'
+      - key: OPENLEARN_WORKER_MODE
+        value: external
+      - key: OPENLEARN_NOTIFICATIONS_WORKER_MODE
+        value: external
+      - key: OPENLEARN_DB_POOL_SIZE
+        value: '2'
+      - key: OPENLEARN_MIGRATE_ON_START
+        value: 'false'
+      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+        value: 'true'
+      - key: OPENLEARN_SCHEDULED_BROWSER_ENABLED
+        value: 'false'
+  - type: worker
+    name: openlearn-notifications
+    runtime: docker
+    region: virginia
+    plan: starter
+    repo: https://github.com/harshilgor/Open-Learn
+    branch: main
+    dockerfilePath: deploy/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m backend.app.hosted_runtime notifications
+    autoDeployTrigger: 'off'
+    maxShutdownDelaySeconds: 180
+    envVars:
+      - fromGroup: openlearn-cloud-workers
+      - key: OPENLEARN_PROCESS_ROLE
+        value: notifications
+      - key: OPENLEARN_CLOUD_WORKER_STANDBY
+        value: 'true'
+      - key: OPENLEARN_WORKER_MODE
+        value: external
+      - key: OPENLEARN_DB_POOL_SIZE
+        value: '1'
+      - key: OPENLEARN_MIGRATE_ON_START
+        value: 'false'
+      - key: OPENLEARN_RELEASE_MIGRATIONS_EXTERNAL
+        value: 'true'
+      - key: OPENLEARN_SCHEDULED_BROWSER_ENABLED
+        value: 'false'

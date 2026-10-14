@@ -52,6 +52,8 @@ def plan_message(message: str) -> AdmissionPlan:
         return AdmissionPlan(kind='direct')
     if re.match(r'^(?:please\s+)?remember that\s+', lower):
         return AdmissionPlan(kind='memory')
+    if re.search(r'\b(?:portal|website|canvas|lms|browser)\b',lower) and re.search(r'\b(?:check|monitor|browse|visit)\b',lower) and re.search(r'\b(?:every|tomorrow|tonight|schedule)\b',lower):
+        return AdmissionPlan(kind='reminder')
     if re.search(r'\b(?:keep an eye on|watch|monitor|keep checking|check every|every week|every day)\b', lower) and not re.match(r'^(?:remind me|quiz me)', lower):
         return AdmissionPlan(kind='responsibility')
     if re.fullmatch(r'(?:please\s+)?(?:stop|cancel|pause|resume|continue)(?:\s+(?:that|it|the task|this task|the browser))?[.!]?', lower):
@@ -89,6 +91,8 @@ def classify_message(message: str, *, context: dict | None = None) -> AdmissionP
     existing capability, but never grants authority to execute it.
     """
     fallback = plan_message(message)
+    if fallback.kind=='reminder' and re.search(r'\b(?:portal|website|canvas|lms|browser)\b',message,re.I) and re.search(r'\b(?:every|tomorrow|tonight|schedule)\b',message,re.I):
+        return fallback  # Do not reinterpret an explicit scheduled website check as immediate browsing.
     if fallback.kind in {'control', 'calendar_read', 'calendar'}:
         return fallback
     mode = rollout_mode('turn_route')

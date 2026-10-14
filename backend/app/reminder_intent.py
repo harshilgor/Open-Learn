@@ -33,7 +33,13 @@ One-time when must be an ISO timestamp with offset. Recurring schedules use five
 Actions may use only: quiz.create_ready (sessionId, count 1-10, requestedTopic, source=weak_topics optional),
 quiz.prepare_first_item (args empty; previous quiz output), flashcards.due_summary (args empty),
 flashcards.review_session (session-independent; limit), condition.cards_due (empty),
-condition.no_study_session_since (hours), digest.learning (prompt).
+condition.no_study_session_since (hours), digest.learning (prompt),
+assistant.website_task (message, connectionId, sessionId, courseId optional).
+For requests to CHECK a website at a scheduled time, use assistant.website_task followed by
+buddy_message with bodyTemplate={{summary}}. Use only a cloud connection from scope.connections.
+If the website or exact time is unclear, return clarification. Never substitute a reminder-only
+notice for requested execution. "Remind me to check" is a reminder-only request.
+All browser work is read-only; do not schedule submitting, sending, purchases or deletions.
 For quiz routines: create_ready then prepare_first_item then notify. Never announce ready before preparing.
 Notify uses bodyTemplate/urlTemplate; artifacts include quizId,count,title,deepLink.
 Default channels come from scope; add push only when explicitly requested. Respect scope timezone.
@@ -44,6 +50,13 @@ Maximum five actions. Return only structured JSON, never prose.'''
     if result.get('clarification'):return {'clarification':str(result['clarification'])[:400]}
     for field in ('sessionId','courseId','buddyId','timezone'):
         result[field]=scope.get(field)
+    allowed_connections={c['id'] for c in scope.get('connections',[]) if c.get('executor')=='cloud'}
+    for action in result.get('actions',[]):
+        if action.get('skillId')=='assistant.website_task':
+            if action.get('args',{}).get('connectionId') not in allowed_connections:
+                return {'clarification':'Which connected cloud website should I check?'}
+            action.setdefault('args',{})['sessionId']=scope.get('sessionId')
+            if scope.get('courseId'):action['args']['courseId']=scope['courseId']
     result.setdefault('channels',scope['channels'])
     result.setdefault('quietStart',scope['quietStart']);result.setdefault('quietEnd',scope['quietEnd'])
     return ReminderCreate.model_validate(result).model_dump()

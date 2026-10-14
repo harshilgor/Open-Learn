@@ -239,7 +239,8 @@ def stop_in_class_worker():
 def start_browser_assistant_worker():
     import threading
     if os.getenv('OPENLEARN_BROWSER_ASSISTANT_ENABLED', 'true') != 'true': return
-    mode = os.getenv('OPENLEARN_WORKER_MODE', 'external' if os.getenv('AI_TUTOR_ENV', 'development') in {'production','deployed'} else 'embedded')
+    from .agent_execution.config import worker_mode
+    mode = worker_mode('browser')
     if mode != 'embedded': return
     from .browser_assistant.workers import AssistantWorker
     app.state.assistant_stop = threading.Event()
