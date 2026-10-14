@@ -9,6 +9,7 @@ from fastapi import HTTPException
 
 from .assessment_lifecycle import AssessmentLifecycle
 from .assessment_models import AnswerCommand, QuizCreate
+from .assessment_timing import timed
 from .context_service import canonical_evidence, retrieve, save_manifest
 from .material_service import MaterialService, problem
 from .models import utc_now
@@ -271,6 +272,7 @@ class QuizService:
     def persist_rejections(self, owner, quiz_id, artifacts: list[dict]):
         self.lifecycle.persist_rejections(owner, quiz_id, artifacts)
 
+    @timed("prepare")
     def prepare(self, owner, quiz_id, revision):
         quiz = self.records.read(owner, quiz_id, "quiz")
         if quiz["status"] == "paused":

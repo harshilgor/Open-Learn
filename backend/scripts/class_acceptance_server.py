@@ -10,7 +10,7 @@ from uuid import uuid4
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--resume-root',type=Path);args=parser.parse_args()
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--resume-root',type=Path);parser.add_argument('--port',type=int,default=8795);args=parser.parse_args()
     root=args.resume_root.resolve() if args.resume_root else Path('work')/('class-browser-'+uuid4().hex)
     if args.resume_root and (not root.is_relative_to(Path('work').resolve()) or not root.name.startswith('class-browser-')):raise SystemExit('Resume only a workspace acceptance fixture.')
     root.mkdir(parents=True,exist_ok=True)
@@ -65,7 +65,7 @@ def main():
     (root/'class-id.txt').write_text(item['id'],encoding='utf-8')
     print('ISOLATED_MOCK_CLASS='+item['id'],flush=True)
     import uvicorn
-    uvicorn.run(app,host='127.0.0.1',port=8795,log_level='warning')
+    uvicorn.run(app,host='127.0.0.1',port=args.port,log_level='warning')
 
 
 if __name__=='__main__':main()

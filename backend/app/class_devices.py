@@ -87,14 +87,31 @@ class ClassDeviceService:
             conn.execute(text('UPDATE class_pairings SET state=\'revoked\' WHERE owner_id=:owner AND class_id=:class AND state=\'pending\''), {'owner': owner, 'class': class_id})
             code = ''.join(secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ23456789') for _ in range(12))
             identifier, expiry = 'pair_' + uuid4().hex, time.time() + 120
-            conn.execute(text('INSERT INTO class_pairings(id,owner_id,class_id,challenge_hash,state,expires_at,payload) VALUES(:id,:owner,:class,:hash,\'pending\',:expires,:payload)'), {'id': identifier, 'owner': owner, 'class': class_id, 'hash': digest(code), 'expires': expiry, 'payload': encoded({'commandId': body.commandId, 'requestingDeviceId': body.deviceId, 'title': item['title']})})
+            conn.execute(text('INSERT INTO class_pairings(id,owner_id,class_id,challenge_hash,state,expires_at,payload) VALUES(:id,:owner,:class,:hash,\'pending\',:expires,:payload)'), {'id': identifier, 'owner': owner, 'class': class_id, 'hash': digest(code), 'expires': expiry, 'payload': encoded({'commandId': body.commandId, 'requestingDeviceId': body.deviceId, 'requestingDeviceName':body.deviceName, 'title': item['title']})})
             link = 'openlearn://class-pair?code=' + code
             import qrcode
             from qrcode.image.svg import SvgPathImage
             svg = qrcode.make(link, image_factory=SvgPathImage).to_string().decode()
             return {'id': identifier, 'classId': class_id, 'code': code, 'expiresAt': expiry, 'deepLink': link, 'qrSvg': svg, 'title': item['title']}
 
+    def preview(self, owner, body, network='local'):
+        from .class_features import require
+        require('phonePairing')
+        self.rate(owner, body.deviceId, network)
+        code_hash=digest(body.code.strip().upper().replace('-', '').replace(' ', ''))
+        with self.store.engine.connect() as conn:
+            row=conn.execute(text('SELECT * FROM class_pairings WHERE challenge_hash=:hash AND owner_id=:owner'),{'hash':code_hash,'owner':owner}).mappings().first()
+            if not row:error('pairing_unavailable','This pairing code is unavailable.',404)
+            if row['state']!='pending' or row['expires_at']<=time.time():error('pairing_expired','This pairing code expired or was used. Generate a new one.')
+            item=self.classes.row(conn,owner,row['class_id'])
+            if item.get('draftExpired'):error('draft_expired','This empty class draft expired. Start a new class.')
+            saved=json.loads(row['payload'])
+            return {'pairingId':row['id'],'classId':row['class_id'],'title':item['title'],'ownerId':owner,'expiresAt':row['expires_at'],
+                    'requestingDeviceId':saved['requestingDeviceId'],'requestingDeviceName':saved.get('requestingDeviceName','Open Learn laptop')}
+
     def claim(self, owner, body, network='local'):
+        from .class_features import require
+        require('phonePairing')
         if not body.consent:
             error('recording_consent_required', 'Confirm permission to record on the phone.', 422)
         self.rate(owner, body.deviceId, network)

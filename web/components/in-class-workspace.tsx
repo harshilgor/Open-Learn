@@ -19,6 +19,7 @@ import {ClassSpeechSettings} from './class-speech-settings';
 import {ClassVerificationStatus} from './class-verification-status';
 import {ClassTranscriptPassage} from './class-transcript-passage';
 import {setClassQuestionContext,CLASS_EVIDENCE_OPEN_EVENT} from '@/lib/class-buddy';
+import {useClassPanelState} from '@/lib/class-panel-state';
 
 const mergeSnapshot=(current:ClassSnapshot|null,next:ClassSnapshot)=>typeof mergeClassSnapshot==='function'?mergeClassSnapshot(current,next):next;
 const ACTIVE_INTAKE_STATUSES=new Set(['queued','fetching','uploading','processing']);
@@ -45,6 +46,7 @@ async function fingerprintFile(file:File){const chunks:string[]=[];const chunkBy
 function forgetIntakeCommand(commandId:string){for(let index=localStorage.length-1;index>=0;index--){const key=localStorage.key(index);if(key?.startsWith('openlearn.class-intake-command:')&&localStorage.getItem(key)===commandId)localStorage.removeItem(key);}}
 
 export function InClassWorkspace({classId}:{classId:string|null}){
+  const [buddyOpen,setBuddyOpen]=useClassPanelState(classId||'setup','buddy');
   const buddies=useBuddies();
   const [courses,setCourses]=useState<CourseSummary[]>([]);
   const [coursesLoading,setCoursesLoading]=useState(true);
@@ -575,7 +577,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     </details>
     {reference?<button className={styles.referenceToggle} type="button" aria-pressed={referenceOpen} onClick={()=>setReferenceOpen(open=>!open)}>{referenceOpen?'Hide reference':'Show reference'} · {reference.title}</button>:null}
     {markers.length||cueSegments.length||referenceCues.length?<nav className={styles.cueRail} aria-label="Live class cues and recording markers"><strong>Live cues</strong><div className={styles.cueList}>{markers.map((marker,index)=><button key={`marker-${index}-${marker}`} type="button" className={styles.markerCue} onClick={()=>jumpToMarker(marker,index)} aria-label={`Recording marker ${index+1} at ${formatCueTime(marker)}; jump to nearest loaded transcript passage`}><span aria-hidden="true">◆</span> Marker {index+1} · {formatCueTime(marker)}</button>)}{cueSegments.map(segment=>{const text=(segment.normalizedText||segment.rawText).replace(/\s+/g,' ').trim();const excerpt=text.length>72?`${text.slice(0,69)}…`:text;return <button key={segment.id} type="button" className={styles.transcriptCue} onClick={()=>jumpToTranscript(segment.id,`Showing transcript passage at ${formatCueTime(segment.startMs)}.`)} aria-label={`Transcript cue at ${formatCueTime(segment.startMs)}: ${text}`}><time>{formatCueTime(segment.startMs)}</time><span>{excerpt||'Transcript passage'}</span></button>;})}{referenceCues.map(source=><button key={source.spanId} type="button" className={styles.markerCue} onClick={()=>void actionRouter.dispatch({type:'open-reference',source})} aria-label={`Open course reference ${source.title}, page ${source.pageLabel||source.pageIndex+1}`}><span aria-hidden="true">↗</span> {source.title} · p. {source.pageLabel||source.pageIndex+1}</button>)}</div>{cueStatus?<small>{cueStatus}</small>:null}</nav>:null}
-    <div className={styles.stage} data-reference-open={referenceOpen&&Boolean(reference)} data-buddy={Boolean(snapshot.session.features?.buddy)}>
+    <div className={styles.stage} data-reference-open={referenceOpen&&Boolean(reference)} data-buddy={Boolean(snapshot.session.features?.buddy)} data-buddy-open={buddyOpen}>
       <div className={styles.stageMain}>
         {view==='materials'&&snapshot.session.needInfoHasMore?<Button disabled={needsPageBusy} onClick={()=>{
           const scope=classId;const after=snapshot.session.needInfoNextCursor;if(!scope||!after)return;setNeedsPageBusy(true);
@@ -592,7 +594,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
           <p role="status">{libraryStatus}</p>
           {libraryCandidates.map(source=><button key={source.spanId} type="button" className={styles.source} onClick={()=>actionRouter.dispatch({type:'open-reference',source})}>{source.title} · Page {source.pageLabel||source.pageIndex+1}<p>{source.text.slice(0,300)}</p></button>)}
         </section>:null}
-        {view==='notes'&&snapshot.session.features?.topicNotes?<ClassDocument classId={snapshot.session.id} version={snapshot.cursor} visualsEnabled={snapshot.session.features?.visualNotes}/>:null}
+        {snapshot.session.features?.topicNotes?<div hidden={view!=='notes'}><ClassDocument key={snapshot.session.id} classId={snapshot.session.id} version={snapshot.cursor} visualsEnabled={snapshot.session.features?.visualNotes} markers={markers} onMarker={jumpToMarker}/></div>:null}
         {view==='notes'&&(snapshot.provisionalNotes?.length??0)>0?<section className={styles.output} aria-label="Caption notes">
           <h3>Fast notes · provisional</h3><p>These drafts use live captions. Recorded audio replaces them with archived transcript evidence; your saved note edits remain separate.</p>
           {(snapshot.provisionalNotes??[]).slice(-20).map(note=><article key={note.id}>
@@ -639,7 +641,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
         {snapshot.outputHasMore?<Button size="sm" variant="outline" disabled={outputPageBusy} onClick={()=>void loadMoreOutputs()}>{outputPageBusy?'Loading earlier results…':'Load earlier class results'}</Button>:null}
         {!outputs.length?<p>Waiting for settled speech. Notes and practice appear quietly as coverage arrives.</p>:null}
       </div>
-      {snapshot.session.features?.buddy?<ClassBuddyPanel classId={snapshot.session.id} sessionId={snapshot.session.sessionId} anchorMs={classAnchorMs} version={snapshot.cursor} buddyName={buddies.snapshot?.profiles.find(buddy=>buddy.id===snapshot.session.buddyId)?.name}/>:null}
+      {snapshot.session.features?.buddy?<aside className={styles.buddyContainer} data-open={buddyOpen} aria-label="Class Buddy"><Button size="sm" variant="outline" aria-expanded={buddyOpen} aria-controls="class-buddy-content" onClick={()=>setBuddyOpen(!buddyOpen)}>{buddyOpen?'Hide Buddy':'Show Buddy'}</Button><div id="class-buddy-content" hidden={!buddyOpen}><ClassBuddyPanel key={snapshot.session.id} classId={snapshot.session.id} sessionId={snapshot.session.sessionId} anchorMs={classAnchorMs} version={snapshot.cursor} buddyName={buddies.snapshot?.profiles.find(buddy=>buddy.id===snapshot.session.buddyId)?.name}/></div></aside>:null}
       {reference&&referenceOpen?<aside className={styles.referencePane} aria-label="Class reference" onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();setReferenceOpen(false);if(referenceOpener.current?.isConnected)referenceOpener.current.focus();else document.querySelector<HTMLButtonElement>('[aria-label="Class views"] button[aria-pressed="true"]')?.focus();}}}>
         <header><div><small>COURSE REFERENCE · PAGE {shownReferenceLabel}{shownReferenceLabel!==String(shownReferencePage+1)?` · PDF PAGE ${shownReferencePage+1}`:''}</small><h3>{reference.title}</h3></div><button type="button" aria-label="Close reference" onClick={()=>{setReferenceOpen(false);if(referenceOpener.current?.isConnected)referenceOpener.current.focus();else document.querySelector<HTMLButtonElement>('[aria-label="Class views"] button[aria-pressed="true"]')?.focus();}}>×</button></header>
         {activeReferenceManifest?.outline.length?<details className={styles.referenceOutline}><summary>Document contents</summary><nav aria-label="PDF contents">{activeReferenceManifest.outline.map((entry,index)=><button key={`${entry.pageIndex}:${index}`} type="button" onClick={()=>setReferencePageIndex(entry.pageIndex)} style={{paddingInlineStart:`${8+Math.min(entry.depth,10)*12}px`}}><span>{entry.title}</span><small>{entry.pageLabel}</small></button>)}</nav></details>:null}

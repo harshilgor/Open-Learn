@@ -115,7 +115,7 @@ def schema_for_transport(schema: dict) -> dict:
     return schema
 
 
-def complete(provider, instructions: str, data: dict, schema: dict):
+def complete(provider, instructions: str, data: dict, schema: dict, *, timing_stage=None, attempt=None):
     from .json_context_prompt import bounded_json_prompt
     profile = getattr(provider, "assessment_profile", None)
     # The transport already supplies the strict schema; avoid billing it twice.
@@ -133,6 +133,9 @@ def complete(provider, instructions: str, data: dict, schema: dict):
         status = "completed"
         return result
     finally:
+        if timing_stage:
+            from .assessment_timing import emit
+            emit(timing_stage, (time.monotonic() - started) * 1000, status=status, attempt=attempt)
         logging.getLogger(__name__).info("assessment_model_call", extra={
             "assessment_role": (profile or {}).get("role", "legacy"),
             "assessment_profile_version": (profile or {}).get("version"),

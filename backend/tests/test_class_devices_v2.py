@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import text
 
-from backend.app.class_device_routes import DraftInput, PairInput, ClaimInput, HeartbeatInput, CaptureCommandInput, AckInput
+from backend.app.class_device_routes import DraftInput, PairInput, PairPreviewInput, ClaimInput, HeartbeatInput, CaptureCommandInput, AckInput
 from backend.app.class_devices import ClassDeviceService
 from backend.app.storage import Store
 
@@ -106,3 +106,30 @@ def test_pairing_attempt_budget_is_durable(setup):
     for _ in range(10):svc.rate('alice','phone','same-network')
     with pytest.raises(HTTPException) as error:svc.rate('alice','phone','same-network')
     assert error.value.status_code==429
+
+
+def test_pairing_preview_is_owned_read_only_and_expires(setup):
+    store,svc,class_id,_=setup
+    pairing=svc.pairing('alice',class_id,PairInput(commandId='preview-pair',deviceId='laptop',deviceName='Library laptop'))
+    body=PairPreviewInput(code=pairing['code'],deviceId='phone')
+    preview=svc.preview('alice',body)
+    assert preview['title']=='Biology' and preview['ownerId']=='alice' and preview['requestingDeviceName']=='Library laptop'
+    assert preview['classId']==class_id and 'captureCapability' not in str(preview)
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT COUNT(*) FROM class_capture_runs WHERE class_id=:id'),{'id':class_id}).scalar_one()==0
+        assert conn.execute(text('SELECT state FROM class_pairings WHERE id=:id'),{'id':pairing['id']}).scalar_one()=='pending'
+    with pytest.raises(HTTPException) as failure:svc.preview('bob',body)
+    assert failure.value.status_code==404
+    with store.transaction() as conn:conn.execute(text('UPDATE class_pairings SET expires_at=0 WHERE id=:id'),{'id':pairing['id']})
+    with pytest.raises(HTTPException) as failure:svc.preview('alice',body)
+    assert failure.value.detail['code']=='pairing_expired'
+
+
+def test_phone_status_retains_confirmed_duration_backlog_and_battery(setup):
+    store,svc,class_id,_=setup
+    _,_,run=pair(svc,class_id)
+    svc.heartbeat('alice',class_id,run['runId'],HeartbeatInput(state='paused',audioEndMs=61000,sealedChunkCount=3,backlog=2,batteryPercent=0),'c'*64)
+    status=svc.status('alice',class_id)['run']
+    assert status['state']=='paused' and status['audioEndMs']==61000 and status['backlog']==2 and status['batteryPercent']==0
+    with store.transaction() as conn:conn.execute(text('UPDATE class_capture_runs SET last_seen_at=0 WHERE id=:id'),{'id':run['runId']})
+    assert svc.status('alice',class_id)['run']['stale']

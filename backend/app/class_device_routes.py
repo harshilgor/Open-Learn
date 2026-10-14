@@ -21,6 +21,13 @@ class DraftInput(BaseModel):
 class PairInput(BaseModel):
     commandId: str = Field(min_length=1, max_length=160)
     deviceId: str = Field(min_length=1, max_length=160)
+    deviceName: str = Field(default='Open Learn laptop', min_length=1, max_length=80)
+
+
+class PairPreviewInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    code: str = Field(min_length=12, max_length=80)
+    deviceId: str = Field(min_length=1, max_length=160)
 
 
 class ClaimInput(PairInput):
@@ -65,6 +72,9 @@ def build_class_device_router(get_store):
     @router.post('/class-pairings/claim')
     def claim(body: ClaimInput, request: Request, owner=Depends(material_owner)):
         return service().claim(owner, body, request.client.host if request.client else 'unknown')
+    @router.post('/class-pairings/preview')
+    def preview(body: PairPreviewInput, request: Request, owner=Depends(material_owner)):
+        return service().preview(owner, body, request.client.host if request.client else 'unknown')
     @router.get('/class-sessions/{class_id}/capture-status')
     def status(class_id: str, owner=Depends(material_owner)):
         return service().status(owner, class_id)

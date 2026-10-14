@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {AccessibilityInfo,Alert,AppState,Pressable,Text,TextInput,View} from 'react-native';
 import {account,api} from './account';
-import {deleteLocalRecording,recordings,saveRecording,startRecording,updateRecording,uploadRecording,claimPhoneClass,startPairedRecording,reportCapture,acknowledgeCapture} from './recordings';
+import {deleteLocalRecording,recordings,saveRecording,startRecording,updateRecording,uploadRecording,claimPhoneClass,startPairedRecording,reportCapture,acknowledgeCapture,previewPhoneClass,finishPhonePairing,type PhonePairPreview} from './recordings';
 import type {Recording} from './protocol';
 import {styles} from './theme';
 import {startPhoneCaptions} from './class-stream';
@@ -17,6 +17,10 @@ export function ClassCapture({owner,visible,courses,onOpen,pairingCode}:{owner:s
   const current=useRef<Recording|null>(null),locked=useRef(false);
   const [processing,setProcessing]=useState('');
   const [pairCode,setPairCode]=useState(pairingCode||'');const promptedResume=useRef(new Set<string>());
+  const [pairPreview,setPairPreview]=useState<PhonePairPreview|null>(null);
+  const pairScope=useRef('');pairScope.current=owner+':'+pairCode;
+  const [phoneBattery,setPhoneBattery]=useState<number|null>(null);
+  useEffect(()=>{setPairPreview(null);setConsent(false);},[pairCode,owner]);
   useEffect(()=>{if(pairingCode)setPairCode(pairingCode);},[pairingCode]);
   const captureState=record?(record.stopped?'Stopped':record.paused?'Paused':'Recording'):null;
   const [captionStatus,setCaptionStatus]=useState('');
@@ -30,7 +34,7 @@ export function ClassCapture({owner,visible,courses,onOpen,pairingCode}:{owner:s
       let latest=value.stopped?value:await updateRecording(value,'inspect');apply(latest);
       if(latest.classSetup?.runId){
         let status:Awaited<ReturnType<typeof reportCapture>>;
-        try{status=await reportCapture(latest);}catch(cause){
+        try{status=await reportCapture(latest);setPhoneBattery(status.batteryPercent);}catch(cause){
           if(cause instanceof ApiError&&cause.status===409&&!latest.stopped){
             latest=await updateRecording(latest,'stop');
             latest.classSetup={...latest.classSetup!,finalizeOnStop:false};
@@ -75,7 +79,7 @@ export function ClassCapture({owner,visible,courses,onOpen,pairingCode}:{owner:s
     <Text accessibilityRole="header" style={styles.heading}>Class microphone capture</Text>
     {restoring?<Text style={styles.muted}>Checking saved class audio…</Text>:null}
     {record?<>
-      <Text style={styles.text}>{captureState} · {Math.floor(record.durationMs/1000)} seconds · {record.segments.filter(s=>s.acknowledged).length}/{record.segments.length} slices uploaded{record.finalized?' · Audio finalized':''}</Text>
+      <Text style={styles.text}>{captureState} · Captured {Math.floor(record.durationMs/60000)}:{String(Math.floor(record.durationMs/1000)%60).padStart(2,'0')} · {record.segments.filter(s=>s.acknowledged).length}/{record.segments.length} slices uploaded{phoneBattery!==null?` · Battery ${phoneBattery}%`:''}{record.finalized?' · Audio finalized':''}</Text>
       {processing?<Text style={styles.muted}>{processing}</Text>:null}
       {captionStatus?<Text accessibilityLiveRegion="polite" style={styles.muted}>{captionStatus}</Text>:null}
       {visible&&record.classSetup?.classId?<ClassBuddy classId={record.classSetup.classId} anchorMs={(record.classSetup.startMs||0)+record.durationMs}/>:null}
@@ -89,12 +93,15 @@ export function ClassCapture({owner,visible,courses,onOpen,pairingCode}:{owner:s
       {record.stopped?button('Set up another class',async()=>{apply(record);current.current=null;setRecord(null);setConsent(false);}):null}
     </>:<>
       <Text accessibilityRole="header" style={styles.heading}>Use this phone for a laptop class</Text>
-      <TextInput accessibilityLabel="Laptop class pairing code" style={styles.input} value={pairCode} onChangeText={setPairCode} autoCapitalize="characters" maxLength={80}/>
-      <Text style={styles.muted}>Enter the code shown on your laptop. The microphone starts only after you confirm permission and tap Connect and record.</Text>
+      <TextInput accessibilityLabel="Laptop class pairing code" style={styles.input} value={pairCode} onChangeText={setPairCode} editable={!busy} autoCapitalize="characters" maxLength={80}/>
+      <Text style={styles.muted}>Enter the code shown on your laptop to preview the class. Previewing does not access the microphone.</Text>
+      {button('Preview laptop class',async()=>{const scope=pairScope.current;const preview=await previewPhoneClass(owner,pairCode.trim());if(account()?.owner!==owner||scope!==pairScope.current)return;setPairPreview(preview);setConsent(false);},pairCode.trim().replace(/[ -]/g,'').length<12)}
+      {pairPreview?<View accessibilityLabel="Class pairing preview"><Text style={styles.heading}>{pairPreview.title}</Text><Text style={styles.text}>Account: {account()?.name||owner}</Text><Text style={styles.text}>Requested by: {pairPreview.requestingDeviceName} · {pairPreview.requestingDeviceId.slice(-12)}</Text><Text style={styles.muted}>Confirm this is the class and laptop you intend to record for. The pairing expires at {new Date(pairPreview.expiresAt*1000).toLocaleTimeString()}.</Text></View>:null}
       <Pressable accessibilityRole="checkbox" accessibilityState={{checked:consent}} onPress={()=>setConsent(value=>!value)}><Text style={styles.link}>{consent?'☑':'☐'} I have permission to record this class</Text></Pressable>
       <Text style={styles.muted}>{inputCheck||'Check microphone input for five seconds. The short local sample is deleted and never uploaded.'}</Text>
       {button('Check phone microphone input',async()=>{if(!consent)throw Error('Confirm permission before checking the microphone.');const controller=new AbortController();checkController.current=controller;setInputCheck('Speak normally for five seconds.');try{setInputCheck(await checkPhoneMicrophone(controller.signal));}finally{checkController.current=null;}},!consent)}
-      {button('Connect and record laptop class',async()=>{const claim=await claimPhoneClass(owner,pairCode.trim(),consent);const value=await startPairedRecording(owner,claim);apply(value);setPairCode('');onOpen(claim.classId);},!consent||pairCode.trim().length<12)}
+      {button('Confirm pairing and start recording',async()=>{if(!pairPreview||pairPreview.ownerId!==owner)throw Error('Preview this class before recording.');const claim=await claimPhoneClass(owner,pairCode.trim(),consent);if(claim.classId!==pairPreview.classId)throw Error('The class changed. Preview it again.');const value=await startPairedRecording(owner,claim);apply(value);await finishPhonePairing(owner,pairCode.trim()).catch(()=>undefined);setPairCode('');setPairPreview(null);onOpen(claim.classId);},!consent||!pairPreview)}
+      {pairPreview?button('Cancel pairing preview',async()=>{setPairPreview(null);setConsent(false);}):null}
       <TextInput accessibilityLabel="Class recording title" style={styles.input} value={title} onChangeText={setTitle} maxLength={240}/>
       <View style={styles.row}><Pressable accessibilityRole="button" accessibilityState={{selected:course===''}} onPress={()=>setCourse('')}><Text style={styles.link}>{course===''?'✓ ':''}General</Text></Pressable>{courses.map(item=><Pressable key={item.id} accessibilityRole="button" accessibilityState={{selected:course===item.id}} onPress={()=>setCourse(item.id)}><Text style={styles.link}>{course===item.id?'✓ ':''}{item.name}</Text></Pressable>)}</View>
       <Text style={styles.muted}>With consent, your microphone audio is saved privately on this device and uploaded to Open Learn for transcription and notes. Local audio remains until you delete the saved recording. Background capture depends on your phone; interruptions are shown when you return.</Text>

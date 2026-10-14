@@ -84,8 +84,18 @@ class GroundedBlock(BaseModel):
     body:str=Field(min_length=1,max_length=4000)
     segmentIds:list[str]=Field(min_length=1,max_length=40)
 
+class OrganizedNoteBlock(GroundedBlock):
+    topicId:str|None=Field(default=None,min_length=1,max_length=160)
+    topicTitle:str|None=Field(default=None,min_length=1,max_length=240)
+
+class SemanticTopicMerge(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    sourceTopicId:str=Field(min_length=1,max_length=160)
+    targetTopicId:str=Field(min_length=1,max_length=160)
+
 class NotesOutput(BaseModel):
-    blocks:list[GroundedBlock]=Field(min_length=1,max_length=12)
+    blocks:list[OrganizedNoteBlock]=Field(min_length=1,max_length=12)
+    topicMerges:list[SemanticTopicMerge]=Field(default_factory=list,max_length=4)
 
 class RecallItem(BaseModel):
     prompt:str=Field(min_length=1,max_length=500)

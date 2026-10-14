@@ -41,6 +41,9 @@ class ClassDocumentService:
     def publish(conn, item, output):
         if output.get('kind') != 'notes' or output.get('status') != 'ready':
             return
+        from .class_topics import ClassTopicService
+        topic_context=output.get('topicContext',[])
+        ClassTopicService.semantic_merges(conn,item,output.get('result',{}).get('topicMerges',[]),topic_context)
         for block in output.get('result', {}).get('blocks', []):
             sources = sorted(set(block.get('segmentIds', [])))
             if not sources:
@@ -72,7 +75,7 @@ class ClassDocumentService:
                 saved = {'id': identifier,'schemaVersion':1,'blockType':'paragraph','generatorVersion':'class-notes-v2', 'title': generated['title'], 'body': generated['body'], 'generated': generated, 'studentEdited': False, 'suggestion': None}
                 conn.execute(text("INSERT INTO class_document_blocks(id,owner_id,class_id,state,created_at,updated_at,payload) VALUES(:id,:owner,:class,'ready',:now,:now,:payload)"), {'id': identifier, 'owner': item['owner'], 'class': item['id'], 'now': now, 'payload': encoded(saved)})
             from .class_topics import ClassTopicService
-            ClassTopicService.assign(conn,item,identifier,block['title'],(block.get('sourceManifest') or {}).get('startMs',now*1000))
+            ClassTopicService.assign(conn,item,identifier,block.get('topicTitle') or block['title'],(block.get('sourceManifest') or {}).get('startMs',now*1000),block.get('topicId'),topic_context)
             conn.execute(text('UPDATE class_document_blocks SET source_start_ms=:start,source_end_ms=:end WHERE id=:id AND owner_id=:owner'),{'id':identifier,'owner':item['owner'],'start':start,'end':end})
 
     def page(self, owner, class_id, cursor=''):
@@ -100,6 +103,7 @@ class ClassDocumentService:
             if body.action=='move':
                 if not conn.execute(text('SELECT 1 FROM class_document_topics WHERE id=:id AND owner_id=:owner AND class_id=:class'),{'id':body.topicId,'owner':owner,'class':class_id}).first():raise HTTPException(404,{'code':'topic_unavailable','message':'Choose a topic from this class.'})
                 topic_id,position=body.topicId,body.position
+                saved['organizationLocked']=True
             elif body.action == 'accept_suggestion':
                 if not saved.get('suggestion'):
                     raise HTTPException(409, {'code': 'suggestion_unavailable', 'message': 'There is no update to accept.'})

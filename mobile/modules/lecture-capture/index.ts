@@ -9,5 +9,6 @@ export default requireNativeModule<{
   inspect(directory:string):Promise<CaptureState>;
   setLivePcmEnabled(enabled:boolean):Promise<void>;
   ackPcm():Promise<void>;
+  getBatteryPercent?():Promise<number|null>;
   addListener(event:'pcm',listener:(event:PcmEvent)=>void):{remove():void};
 }>('LectureCapture');

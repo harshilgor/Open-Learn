@@ -78,3 +78,8 @@
 .transcriptBody>div{padding:10px 0;border-bottom:1px solid var(--border)}.transcriptBody>div:focus{outline:2px solid var(--primary);outline-offset:2px;border-radius:4px}.transcriptBody textarea{width:100%;min-height:90px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--background);font:inherit}.transcriptBody label{display:block;margin:8px 0;font-size:12px}.transcriptBody audio{width:100%;margin:8px 0}
 
 .stage[data-buddy=false]{grid-template-columns:minmax(0,1fr)}
+.stage[data-buddy-open=false]{grid-template-columns:minmax(0,1fr) auto}
+.buddyContainer{min-width:0;position:sticky;top:12px}
+.buddyContainer>button{margin-bottom:8px}
+.buddyContainer :global(.class-buddy-panel){position:static}
+@container class-workspace (max-width:700px){.stage[data-buddy-open=false]{grid-template-columns:minmax(0,1fr)}.buddyContainer{position:static}}

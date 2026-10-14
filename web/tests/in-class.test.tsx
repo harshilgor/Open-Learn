@@ -7,9 +7,20 @@ const fixture=()=>({session:{id:'class-one',sessionId:'chat-one',revision:1,reco
 vi.mock('@/lib/in-class',async importOriginal=>{const actual=await importOriginal<typeof import('@/lib/in-class')>();return {...actual,classApi:{...actual.classApi,snapshot:vi.fn(),events:vi.fn(),stream:vi.fn(),command:vi.fn(),materials:vi.fn(),materialIntakes:vi.fn(),resourceConnectors:vi.fn(),resourcePreferences:vi.fn(),transcriptSegments:vi.fn(),metrics:vi.fn(),lookupReference:vi.fn(),needs:vi.fn()}};});
 vi.mock('@/components/buddies',()=>({useBuddies:()=>({snapshot:null}),BuddyAvatar:()=>null}));
 vi.mock('@/components/rich-content',()=>({RichContent:({body}:{body:string})=><p>{body}</p>}));
+vi.mock('@/components/class-buddy-panel',()=>({ClassBuddyPanel:()=> <textarea aria-label="Buddy draft" defaultValue=""/>}));
 let root:Root,container:HTMLDivElement;
 beforeEach(()=>{(globalThis as {IS_REACT_ACT_ENVIRONMENT?:boolean}).IS_REACT_ACT_ENVIRONMENT=true;vi.useFakeTimers();vi.mocked(classApi.snapshot).mockResolvedValue(fixture());vi.mocked(classApi.events).mockResolvedValue({...fixture(),delta:true,outputs:[],transcript:[]});vi.mocked(classApi.stream).mockImplementation((_id,_cursor,_event,signal)=>new Promise(resolve=>signal.addEventListener('abort',()=>resolve(),{once:true})));vi.mocked(classApi.materials).mockResolvedValue({materials:[]});vi.mocked(classApi.materialIntakes).mockResolvedValue({intakes:[]});vi.mocked(classApi.resourceConnectors).mockResolvedValue({items:[],externalWritesEnabled:false});vi.mocked(classApi.resourcePreferences).mockResolvedValue({courseId:'course-one',revision:1,updatedAt:null,preferences:{connectorOrder:['library','upload','url','drive','canvas','blackboard','moodle'],enabledConnectors:['library','upload'],allowPublicUrls:false,acceptedMediaTypes:['application/pdf'],maxUploadBytes:250*1024*1024,requireExplicitSelection:true,crossCourseLibrarySearch:false}});vi.mocked(classApi.transcriptSegments).mockResolvedValue({items:[],hasMore:false,nextCursor:null,generation:0});container=document.createElement('div');document.body.appendChild(container);root=createRoot(container);});
 afterEach(()=>{act(()=>root.unmount());container.remove();vi.clearAllMocks();vi.useRealTimers();});
+it('keeps a Buddy draft mounted through collapse and class view changes',async()=>{
+ const value=fixture();value.session.features={buddy:true,topicNotes:false,phonePairing:false,visualNotes:false,autoVisuals:false};vi.mocked(classApi.snapshot).mockResolvedValue(value);
+ await act(async()=>root.render(<InClassWorkspace classId="class-one"/>));
+ const draft=container.querySelector<HTMLTextAreaElement>('[aria-label="Buddy draft"]')!;draft.value='Why does this happen?';
+ act(()=>[...container.querySelectorAll('button')].find(button=>button.textContent==='Hide Buddy')!.click());
+ expect(container.querySelector('#class-buddy-content')!.hasAttribute('hidden')).toBe(true);
+ act(()=>[...container.querySelectorAll('button')].find(button=>button.textContent?.startsWith('Practice'))!.click());
+ act(()=>[...container.querySelectorAll('button')].find(button=>button.textContent==='Show Buddy')!.click());
+ expect(container.querySelector('[aria-label="Buddy draft"]')).toBe(draft);expect(draft.value).toBe('Why does this happen?');
+});
 it('retains notes and reading focus when a specialist fails and polling reconnects',async()=>{
  vi.mocked(classApi.stream).mockRejectedValueOnce(new Error('Connection interrupted'));
  vi.mocked(classApi.events).mockRejectedValueOnce(new Error('Connection interrupted'));

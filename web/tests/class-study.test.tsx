@@ -43,3 +43,25 @@ it('preserves an unsaved note draft when background source updates arrive',async
   expect(container.querySelector('textarea')!.value).toBe('My unsaved explanation');
   expect([...container.querySelectorAll('button')].some(button=>button.textContent==='Save')).toBe(true);
 });
+it('reports incoming notes without moving a student reading earlier notes, and returns explicitly to live',async()=>{
+  let count=1;
+  request.mockImplementation(async(path:string)=>path.endsWith('/document')?{items:Array.from({length:count},(_,index)=>({id:`note-${index}`,revision:1,title:`Note ${index}`,body:'Text',studentEdited:false,state:'ready',generated:{title:'Note',body:'Text',segmentIds:[],sourceManifest:{startMs:index*1000,endMs:(index+1)*1000,segments:[]}},suggestion:null})),nextCursor:null,totalCount:count}:{items:[],nextCursor:null});
+  await act(async()=>root.render(<ClassDocument classId="navigation" version={1}/>));
+  const pane=container.querySelector('[aria-label="Scrollable class notebook"]') as HTMLDivElement;
+  Object.defineProperties(pane,{scrollHeight:{value:1000,configurable:true},clientHeight:{value:300,configurable:true}});
+  pane.scrollTop=100;act(()=>pane.dispatchEvent(new Event('scroll',{bubbles:true})));
+  count=2;await act(async()=>root.render(<ClassDocument classId="navigation" version={2}/>));
+  expect(pane.scrollTop).toBe(100);expect(container.textContent).toContain('1 new note below');
+  const frame=vi.spyOn(window,'requestAnimationFrame').mockImplementation(callback=>{callback(0);return 1;});
+  await act(async()=>[...container.querySelectorAll('button')].find(button=>button.textContent==='Return to live')!.click());
+  expect(container.textContent).not.toContain('1 new note below');frame.mockRestore();
+});
+it('remembers outline collapse and navigates recording bookmarks',async()=>{
+  sessionStorage.clear();request.mockImplementation(async(path:string)=>path.endsWith('/document')?{items:[],nextCursor:null,totalCount:0}:{items:[],nextCursor:null});
+  const onMarker=vi.fn();await act(async()=>root.render(<ClassDocument classId="panels" version={1} markers={[61000]} onMarker={onMarker}/>));
+  act(()=>[...container.querySelectorAll('button')].find(button=>button.textContent?.startsWith('Marker 1'))!.click());expect(onMarker).toHaveBeenCalledWith(61000,0);
+  act(()=>[...container.querySelectorAll('button')].find(button=>button.textContent==='Hide topics and bookmarks')!.click());
+  expect(container.querySelector('#class-note-outline')!.hasAttribute('hidden')).toBe(true);
+  await act(async()=>root.render(<ClassDocument key="remount" classId="panels" version={2}/>));
+  expect(container.querySelector('#class-note-outline')!.hasAttribute('hidden')).toBe(true);
+});

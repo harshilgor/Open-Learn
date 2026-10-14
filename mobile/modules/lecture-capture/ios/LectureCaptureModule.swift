@@ -1,5 +1,6 @@
 import ExpoModulesCore
 import AVFoundation
+import UIKit
 
 public class LectureCaptureModule: Module {
   private let capture = SegmentedCapture()
@@ -10,6 +11,17 @@ public class LectureCaptureModule: Module {
     OnDestroy {self.capture.enableLive(false);self.capture.onPcm=nil}
     AsyncFunction("setLivePcmEnabled") { (enabled:Bool) in self.capture.enableLive(enabled) }
     AsyncFunction("ackPcm") { self.capture.ackPcm() }
+    AsyncFunction("getBatteryPercent") { () -> Int? in
+      let read = { () -> Int? in
+        let device=UIDevice.current
+        let previous=device.isBatteryMonitoringEnabled
+        device.isBatteryMonitoringEnabled=true
+        defer {device.isBatteryMonitoringEnabled=previous}
+        let level=device.batteryLevel
+        return level>=0 && level<=1 ? Int((level*100).rounded()) : nil
+      }
+      return Thread.isMainThread ? read() : DispatchQueue.main.sync(execute:read)
+    }
     AsyncFunction("start") { (directory:String,id:String) in try self.capture.start(directory,id) }
     AsyncFunction("stop") { try self.capture.stop("stopped") }
     AsyncFunction("pause") { try self.capture.stop("paused") }

@@ -108,3 +108,20 @@ Smoke latency measures one synthetic request; it is not p95, recognition improve
 Do not record a real class merely to create acceptance evidence without the required permission. The application asks consent on laptop/phone; consented synthetic/practice speech can be used first. No additional user setup is required for the completed code work above.
 
 Final explicit document-acceptance and verification suite: **7 passed in 31.11 seconds**. Final web/mobile TypeScript, mobile protocol (16 tests), desktop main-process syntax, and `git diff --check` all passed.
+
+## Original-spec gaps completed — 2026-10-13
+
+The four follow-up implementation gaps are now built:
+
+- Classroom navigation: collapsible topic/bookmark sidebar and Buddy panel, remembered per-class panel choices, mounted draft state across view switches, a scrollable notebook with new-note notification, and explicit Return to live. Missing pages load within the existing 1,000-note bound. Background updates preserve active edits and avoid forcing reading/selection to move.
+- Phone pairing: authenticated rate-limited preview displays the signed-in account, class title and requesting laptop before explicit permission/recording confirmation. Preview neither claims the code nor opens the microphone. Startup revalidates capture ownership, and idempotent claims survive startup retries.
+- Semantic organization: the existing note-generation call receives up to 20 topic sections and two short generated-note excerpts per section. It can group different headings by meaning and consolidate up to four unmodified generated sections. Publication fences topic and sample-note revisions, preserves stable block IDs/text and protects student edits, moves, renamed/reordered sections and manual merges. Merged headings redirect later mentions. No additional provider job is created; existing topic-notes rollout gates control the prompt.
+- Phone status: native Android/iOS battery readers feed cached, timeout-bounded heartbeat telemetry; unavailable values remain null and zero percent remains valid. Phone and laptop display confirmed captured duration. Laptop shows backlog/report age, detects stale status during polling failures and reports low battery. Native sensor behavior is still awaiting device acceptance.
+
+Native battery APIs were checked against [Android BatteryManager documentation](https://developer.android.com/reference/android/os/BatteryManager) and [Apple battery monitoring documentation](https://developer.apple.com/documentation/uikit/uidevice/isbatterymonitoringenabled). No new native package is required.
+
+Follow-up verification: **52 backend tests passed in 207.61 seconds**; 18 web classroom tests passed; 20 mobile protocol/telemetry tests passed; web and mobile TypeScript passed. The semantic topic suite passed 11 cases after adding source-revision fencing. The actual local API preview returned the expected account/class/laptop and confirmed that no capture run was created. Browser through the real local proxy/API verified the topic sidebar and Buddy collapse/reopen, retained question draft and expanded layout, using isolated mocked lecture/provider data. The temporary web environment was restored after verification.
+
+The preview uses `localhost` because the installed vinext dev server listens on that address. Its generated route types were refreshed with `next typegen` before the final TypeScript check; the sandbox attempt was blocked by Windows path canonicalization and succeeded outside that restriction.
+
+Android build setup remains the next acceptance step and has not been started. Real lecture recognition, scientific visual acceptance and production measurements remain external checks described above.

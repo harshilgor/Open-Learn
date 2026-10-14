@@ -4,6 +4,8 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import android.content.Intent
 import android.os.Build
+import android.os.BatteryManager
+import android.content.Context
 import java.io.File
 import java.net.URI
 
@@ -15,6 +17,11 @@ class LectureCaptureModule : Module() {
     OnDestroy {Capture.enableLivePcm(false);Capture.pcmListener=null}
     AsyncFunction("setLivePcmEnabled") {enabled:Boolean->Capture.enableLivePcm(enabled)}
     AsyncFunction("ackPcm") {Capture.ackPcm()}
+    AsyncFunction("getBatteryPercent") {
+      val manager=appContext.reactContext?.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+      val percent=manager?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+      percent?.takeIf {it in 0..100}
+    }
     AsyncFunction("start") { directory: String, id: String ->
       val context = appContext.reactContext ?: error("Application unavailable")
       val folder = File(URI(directory)).canonicalFile
