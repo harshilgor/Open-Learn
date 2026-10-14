@@ -1,0 +1,36 @@
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--event-exam) 30%, var(--border));
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--event-exam-soft) 70%, var(--card));
+  box-shadow: var(--shadow-sm);
+}
+.dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--event-exam); animation: ol-pulse 1.4s ease-in-out infinite; }
+.dot[data-paused] { animation: none; background: var(--muted-foreground); }
+.time { flex: none; min-width: 42px; font-size: var(--type-ui); font-weight: 600; font-variant-numeric: tabular-nums; }
+.meter { flex: 0 1 70px; height: 4px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--event-exam) 15%, transparent); }
+.meter span { display: block; height: 100%; background: var(--event-exam); transform-origin: left; transition: transform 90ms linear; }
+.label { min-width: 0; flex: 1; overflow: hidden; color: var(--muted-foreground); font-size: var(--type-meta); text-overflow: ellipsis; white-space: nowrap; }
+.actions { display: flex; flex: none; align-items: center; gap: 2px; }
+.stop { gap: 6px; }
+
+@container study-panel (max-width: 440px) {
+  .meter, .label { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+.bar { flex-wrap: wrap; }
+.interrupted { flex-basis: 100%; margin: 2px 0 0; color: var(--event-exam); font-size: var(--type-meta); font-weight: 500; }
+.liveAsk { display: flex; flex-basis: 100%; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 2px; font-size: var(--type-caption); }
+.liveAsk > span { margin-right: 4px; }
+.liveWords { flex-basis: 100%; display: grid; gap: 2px; margin-top: 2px; padding: 8px 10px; border-radius: 8px; background: var(--card); }
+.liveWords p { margin: 0; font-size: var(--type-ui); line-height: 1.5; }
+.liveWords p span, .liveWords em { color: var(--muted-foreground); }
+.liveWords em { font-size: var(--type-caption); }
+.liveWords small { color: var(--muted-foreground); font-size: 11px; }

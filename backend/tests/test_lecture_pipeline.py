@@ -280,6 +280,77 @@ def test_legacy_class_recording_uses_openrouter_for_transcription(monkeypatch, l
     assert "The lecture covered cells." in notes.get("alice", note.id).body
 
 
+def test_recording_into_an_existing_note_keeps_the_learners_writing_first(monkeypatch, lecture):
+    store, _, _ = lecture
+    notes = WorkspaceNoteService(store)
+    note = notes.create("alice", WorkspaceNoteCreate(title="Biology", body="My own notes about cells.", frontmatter={}))
+    seen = {}
+
+    class Transcriber:
+        def transcribe_chunk(self, audio, mime, duration_ms, previous_tail=""):
+            seen["context"] = previous_tail
+            return SimpleNamespace(spans=[SimpleNamespace(text="Mitochondria make ATP.", start_ms=0, end_ms=duration_ms)])
+
+    class TextProvider:
+        def _complete(self, prompt, max_tokens):
+            return [SimpleNamespace(heading="Energy", body="Mitochondria produce ATP.")]
+
+    monkeypatch.setattr("backend.app.class_recording_service.configured_transcription_provider", lambda: Transcriber())
+    service = ClassRecordingService(store, TextProvider())
+    recorded = service.upload("alice", note.id, b"\x1a\x45\xdf\xa3audio", "audio/webm", 8000, [1200])
+    assert notes.get("alice", note.id).frontmatter["class_recording_id"] == recorded["id"]
+    with usage_scope(store, "alice", recorded["id"]):
+        service.process(recorded["id"], "alice")
+    body = notes.get("alice", note.id).body
+    assert service.get("alice", recorded["id"])["status"] == "completed"
+    assert body.index("My own notes about cells.") < body.index("## Study guide") < body.index("## Transcript")
+    assert "**[~00:00]** Mitochondria make ATP." in body
+
+
+def test_recording_notes_use_the_notes_course_for_terms_and_reference(monkeypatch, lecture):
+    store, _, _ = lecture
+    notes = WorkspaceNoteService(store)
+    note = notes.create("alice", WorkspaceNoteCreate(title="Bio lecture", body="", frontmatter={"course_id": "course_bio"}))
+    seen = {}
+
+    class Transcriber:
+        def transcribe_chunk(self, audio, mime, duration_ms, previous_tail=""):
+            seen["context"] = previous_tail
+            return SimpleNamespace(spans=[SimpleNamespace(text="ATP synthase spins.", start_ms=0, end_ms=duration_ms)])
+
+    class TextProvider:
+        def _complete(self, prompt, max_tokens):
+            seen["prompt"] = prompt
+            return [SimpleNamespace(heading="Energy", body="ATP synthase makes ATP.")]
+
+    def context(store_, owner, course_id, hint=""):
+        seen.setdefault("courses", []).append(course_id)
+        return "Course terms: Biology 101, ATP synthase", ("[Textbook ch. 9]\nATP synthase is a rotary enzyme." if hint else "")
+
+    monkeypatch.setattr("backend.app.class_recording_service.configured_transcription_provider", lambda: Transcriber())
+    monkeypatch.setattr("backend.app.class_recording_service.course_context", context)
+    service = ClassRecordingService(store, TextProvider())
+    recorded = service.upload("alice", note.id, b"\x1a\x45\xdf\xa3audio", "audio/webm", 8000, [])
+    with usage_scope(store, "alice", recorded["id"]):
+        service.process(recorded["id"], "alice")
+    assert seen["courses"] == ["course_bio", "course_bio"]
+    assert seen["context"] == "Course terms: Biology 101, ATP synthase"
+    assert "COURSE REFERENCE" in seen["prompt"] and "rotary enzyme" in seen["prompt"]
+    assert "**[" not in seen["prompt"].split("LECTURE TRANSCRIPT:")[1]
+
+
+def test_timed_transcript_uses_segment_times_or_marks_estimates():
+    from backend.app.class_recording_service import timed_transcript
+    spans = [SimpleNamespace(text="Cells divide.", start_ms=0, end_ms=20_000),
+             SimpleNamespace(text="Mitosis has phases.", start_ms=50_000, end_ms=70_000),
+             SimpleNamespace(text="Prophase comes first.", start_ms=3_725_000, end_ms=3_730_000)]
+    assert timed_transcript(spans, 3_730_000) == "**[00:00]** Cells divide.\n\n**[00:50]** Mitosis has phases.\n\n**[1:02:05]** Prophase comes first."
+    words = " ".join(f"Sentence number {index} is about cells." for index in range(30))
+    estimated = timed_transcript([SimpleNamespace(text=words, start_ms=0, end_ms=600_000)], 600_000)
+    paragraphs = estimated.split("\n\n")
+    assert len(paragraphs) > 1 and paragraphs[0].startswith("**[~00:00]**") and paragraphs[1].startswith("**[~0")
+
+
 def test_legacy_notes_and_user_body_survive_generation(lecture):
     store, service, created = lecture
     rid = created["id"]

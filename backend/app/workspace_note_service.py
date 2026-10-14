@@ -581,6 +581,10 @@ class WorkspaceNoteService:
         self._upsert_index(record, self._file_hash(content))
         return record
 
+    def read(self, learner_id: str, note_id: str) -> WorkspaceNoteRecord:
+        """Read a note without refreshing the local index, so it is safe inside another write transaction."""
+        return self._read_file(learner_id, note_id)
+
     def get(self, learner_id: str, note_id: str) -> WorkspaceNoteRecord:
         record = self._read_file(learner_id, note_id)
         from .identity import hosted

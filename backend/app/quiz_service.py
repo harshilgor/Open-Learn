@@ -140,9 +140,12 @@ class QuizService:
         session = MaterialService(self.store).session(owner, request.session_id)
         lesson_note = None
         if request.lesson_note_id:
-            lesson_note = WorkspaceNoteService(self.store).get(owner, request.lesson_note_id)
+            lesson_note = WorkspaceNoteService(self.store).read(owner, request.lesson_note_id)
             frontmatter = lesson_note.frontmatter or {}
-            if frontmatter.get("study_note") is not True or session.id not in (frontmatter.get("session_ids") or []):
+            linked_lesson = frontmatter.get("study_note") is True and session.id in (frontmatter.get("session_ids") or [])
+            # A recorded lecture note is self-contained: its transcript grounds the quiz.
+            recording_note = bool(frontmatter.get("class_recording_id")) and "## Transcript" in lesson_note.body
+            if not (linked_lesson or recording_note):
                 problem("invalid_lesson", "Choose the lesson linked to this conversation.", 422)
         if request.origin == "learn" and lesson_note is None:
             problem("lesson_required", "A lesson quiz needs its study note.", 422)

@@ -17,7 +17,7 @@ import { request } from '@/lib/api';
 import { BuddyAvatar, useBuddies } from './buddies';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
-const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes'], activeTab: 'notes', activeNoteKey:undefined };
+const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes'], activeTab: 'notes' };
 
 export type WorkspaceSplitContextValue = {
   collapsed: boolean;
@@ -146,7 +146,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       const draft = (event as CustomEvent<WorkspaceNoteSeed>).detail;
       if (!draft?.id) return;
       setNoteSeed(draft);
-      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
+      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
     };
     window.addEventListener(WORKSPACE_NOTE_SEED_EVENT, receiveDraft);
     return () => window.removeEventListener(WORKSPACE_NOTE_SEED_EVENT, receiveDraft);
@@ -156,7 +156,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       const noteId = (event as CustomEvent<string>).detail;
       if (!noteId) return;
       setNoteToOpen(noteId);
-      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
+      setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
     };
     window.addEventListener(WORKSPACE_NOTE_OPEN_EVENT, receiveOpen);
     return () => window.removeEventListener(WORKSPACE_NOTE_OPEN_EVENT, receiveOpen);
@@ -168,7 +168,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       setQuizToOpen(detail);
       if (detail.origin === 'learn' && detail.lessonNoteId) {
         setNoteToOpen(detail.lessonNoteId);
-        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes', activeNoteKey:undefined }));
+        setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('notes') ? current.tabs : [...current.tabs, 'notes'], activeTab: 'notes' }));
       } else {
         setLayout(current => ({ ...current, collapsed: false, tabs: current.tabs.includes('practice') ? current.tabs : [...current.tabs, 'practice'], activeTab: 'practice', practiceView: 'quiz' }));
       }
@@ -195,7 +195,9 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       if(!live)return;
       try {
         const stored=JSON.parse(localStorage.getItem(`${STORAGE_KEY}:${account.ownerId}`)||'null');
-        if(validLayout(stored)){const noteTabs=Array.isArray(stored.noteTabs)?stored.noteTabs.filter(item=>item&&typeof item.key==='string'&&typeof item.title==='string'&&(item.noteId===null||typeof item.noteId==='string')):[];const tabs=[...new Set(stored.tabs.map(workspaceToolFor).filter((tool):tool is WorkspaceTool=>tool!==null))];const practiceView:PracticeView=stored.activeTab==='quiz'?'quiz':stored.activeTab==='flashcards'?'flashcards':stored.practiceView==='quiz'||stored.practiceView==='flashcards'?stored.practiceView:'home';setLayout(current=>({...current,tabs:tabs.length?tabs:['notes'],activeTab:workspaceToolFor(stored.activeTab)||'notes',practiceView,noteTabs,activeNoteKey:noteTabs.some(item=>item.key===stored.activeNoteKey)?stored.activeNoteKey:undefined,width:Math.min(80,Math.max(20,stored.width)),pinned:stored.pinned,focused:false,noteId:stored.noteId}));}
+        if(validLayout(stored)){const legacyTabs=(stored as {noteTabs?:unknown;activeNoteKey?:unknown}).noteTabs;const legacyKey=(stored as {activeNoteKey?:unknown}).activeNoteKey;
+          // Earlier versions kept several notes open as tabs; keep the one that was in front.
+          const frontNote=Array.isArray(legacyTabs)?(legacyTabs as {key?:unknown;noteId?:unknown}[]).find(item=>item&&item.key===legacyKey&&typeof item.noteId==='string')?.noteId as string|undefined:undefined;const tabs=[...new Set(stored.tabs.map(workspaceToolFor).filter((tool):tool is WorkspaceTool=>tool!==null))];const practiceView:PracticeView=stored.activeTab==='quiz'?'quiz':stored.activeTab==='flashcards'?'flashcards':stored.practiceView==='quiz'||stored.practiceView==='flashcards'?stored.practiceView:'home';setLayout(current=>({...current,tabs:tabs.length?tabs:['notes'],activeTab:workspaceToolFor(stored.activeTab)||'notes',practiceView,width:Math.min(80,Math.max(20,stored.width)),pinned:stored.pinned,focused:false,noteId:frontNote||stored.noteId}));}
       } catch { /* Layout persistence is optional. */ }
       setLayoutOwner(account.ownerId);setReady(true);
     }).catch(()=>{});
