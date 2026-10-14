@@ -120,8 +120,8 @@ class BrowserControl:
             row=conn.execute(text("SELECT provider_session,expires_at FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run AND status='active' AND expires_at>:now"),{'owner':owner,'run':identifier,'now':time.time()}).mappings().first()
             if not row:fail('control_unavailable','Browser session expired. Return control to reconnect.',409)
             url=CloudExecutor(self.store).provider.live_view(row['provider_session'])
-            parsed=urlsplit(url)
-            if parsed.scheme!='https' or parsed.hostname!='debug.browserbase.com' or parsed.username or parsed.password:
+            from .executors.cloud import valid_live_view_url
+            if not valid_live_view_url(url):
                 fail('capability_unavailable','Provider returned an unsupported browser view.',503)
             return {'kind':'cloud','url':url,'expiresAt':min(time.time()+60,row['expires_at']),'generation':control['generation']}
 

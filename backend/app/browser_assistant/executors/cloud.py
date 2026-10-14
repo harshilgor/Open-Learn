@@ -22,6 +22,16 @@ TERMINAL_SESSION_STATES = {'COMPLETED', 'TIMED_OUT', 'ERROR', 'RELEASED', 'STOPP
 OBSERVER = Path(__file__).resolve().parents[1] / 'observer.js'
 
 
+def valid_live_view_url(value):
+    """Accept exact provider hosts; reject credentials, alternate ports and lookalikes."""
+    try:
+        parsed = urlsplit(value)
+        return (parsed.scheme == 'https' and parsed.hostname in {'debug.browserbase.com', 'www.browserbase.com'}
+                and parsed.port in {None, 443} and not parsed.username and not parsed.password)
+    except (ValueError, TypeError):
+        return False
+
+
 def readiness():
     import importlib.util
     try:

@@ -49,11 +49,11 @@ def setup(monkeypatch):
         with admin.begin() as conn:conn.execute(text('DROP SCHEMA '+schema+' CASCADE'))
         admin.dispose()
 
-def launch(setup, key='once', recurring=False):
+def launch(setup, key='once', recurring=False, channels=None):
     store,svc,site=setup
     args={'message':'Check assignments','connectionId':site,'sessionId':'session'}
     timing={'schedule':{'type':'cron','cron':'0 18 * * *'}} if recurring else {'when':'in 1 minute'}
-    fire=svc.create('alice',ReminderCreate(**timing,message='Portal check',sessionId='session',quietStart=0,quietEnd=0,actions=[{'type':'skill','skillId':'assistant.website_task','args':args},{'type':'buddy_message','bodyTemplate':'{{summary}}'}]),key)
+    fire=svc.create('alice',ReminderCreate(**timing,message='Portal check',sessionId='session',channels=channels or ['inbox'],quietStart=0,quietEnd=0,actions=[{'type':'skill','skillId':'assistant.website_task','args':args},{'type':'buddy_message','bodyTemplate':'{{summary}}'}]),key)
     svc.tick(fire['dueAt']+1)
     jobs=WorkflowStore(store)
     job=jobs.claim(jobs.ready_ids('interactive',{'reminder_actions'})[0])
@@ -90,6 +90,48 @@ def test_login_pause_restart_and_duplicate_completion(setup):
         assert len(messages)==2
         assert any('Assignment A' in m['body'] for m in messages)
 
+
+def test_hard_process_exit_after_completion_and_resume_recovers_once(setup):
+    """Real process exits at persistence boundaries; provider work stays synthetic."""
+    import subprocess
+    import sys
+    store,svc,_=setup
+    fire,task=launch(setup)
+    completion='''
+import json,os,sys
+from sqlalchemy import text
+from backend.app.storage import Store
+from backend.app.identity import Principal,principal_context
+store=Store(sys.argv[1]);principal_context.set(Principal('alice','local'))
+with store.transaction() as conn:
+    payload=json.loads(conn.execute(text('SELECT payload FROM assistant_runs WHERE id=:id'),{'id':sys.argv[2]}).scalar_one())
+    payload.update(status='completed',summary='Synthetic persisted portal result.',facts=[])
+    conn.execute(text("UPDATE assistant_runs SET status='completed',payload=:payload WHERE id=:id"),{'id':sys.argv[2],'payload':json.dumps(payload)})
+os._exit(73)
+'''
+    resume='''
+import os,sys
+from backend.app.storage import Store
+from backend.app.identity import Principal,principal_context
+from backend.app.reminder_service import ReminderService
+store=Store(sys.argv[1]);principal_context.set(Principal('alice','local'))
+ReminderService(store).reconcile()
+os._exit(73)
+'''
+    for source in (completion,resume):
+        result=subprocess.run([sys.executable,'-c',source,store.url,task],capture_output=True,timeout=45)
+        assert result.returncode==73, 'Synthetic crash subprocess did not reach its persistence checkpoint'
+    svc.reconcile()
+    jobs=WorkflowStore(store)
+    ids=jobs.ready_ids('interactive',{'reminder_actions'})
+    assert len(ids)==1
+    ReminderActionRunner(store).execute(jobs.claim(ids[0]))
+    svc.reconcile()
+    assert len(jobs.listing_by_parent('alice','reminder_message','session'))==1
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT count(*) FROM assistant_runs')).scalar_one()==1
+        assert conn.execute(text('SELECT status FROM reminders WHERE id=:id'),{'id':fire['id']}).scalar_one()=='delivered'
+
 def test_cancellation_fences_result_and_task(setup):
     store,svc,_=setup
     fire,task=launch(setup)
@@ -111,7 +153,8 @@ def test_overlapping_occurrence_is_skipped(setup):
         assert json.loads(row['payload'])['skipReason']=='previous_occurrence_active'
         assert conn.execute(text('SELECT count(*) FROM assistant_runs')).scalar_one()==1
 
-def test_email_unknown_outcome_retries_frozen_request(setup,monkeypatch):
+@pytest.mark.parametrize('browser_flow', [False, True])
+def test_email_unknown_outcome_retries_frozen_request(setup,monkeypatch,browser_flow):
     import httpx
     from backend.app.scheduled_email import dispatch_email
     store,svc,_=setup
@@ -122,9 +165,14 @@ def test_email_unknown_outcome_retries_frozen_request(setup,monkeypatch):
     monkeypatch.setenv('FORMA_WEB_ORIGIN','https://example.com')
     with store.transaction() as conn:
         conn.execute(text("INSERT INTO reminder_preferences(owner_id,payload) VALUES('alice',:payload)"),{'payload':encoded({'emailOptIn':True,'channels':['email'],'quietStart':0,'quietEnd':0})})
-    fire=svc.create('alice',ReminderCreate(when='in 1 minute',message='Notice',channels=['email']),'email')
-    svc.tick(fire['dueAt']+1)
     jobs=WorkflowStore(store)
+    if browser_flow:
+        fire,task=launch(setup,channels=['email'])
+        terminal(store,task)
+        svc.reconcile()
+    else:
+        fire=svc.create('alice',ReminderCreate(when='in 1 minute',message='Notice',channels=['email']),'email')
+        svc.tick(fire['dueAt']+1)
     ReminderActionRunner(store).execute(jobs.claim(jobs.ready_ids('interactive',{'reminder_actions'})[0]))
     identifier=jobs.ready_ids('interactive',{'general_reminder_dispatch'})[0]
     calls=[]
@@ -140,7 +188,10 @@ def test_email_unknown_outcome_retries_frozen_request(setup,monkeypatch):
     assert calls[0]['headers']['Idempotency-Key']==calls[1]['headers']['Idempotency-Key']
     with store.engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM notification_deliveries WHERE status='provider_handoff_confirmed'")).scalar_one()==1
-        assert conn.execute(text('SELECT count(*) FROM assistant_runs')).scalar_one()==0
+        assert conn.execute(text('SELECT count(*) FROM assistant_runs')).scalar_one()==int(browser_flow)
+    if browser_flow:
+        svc.reconcile()
+        assert len(WorkflowStore(store).listing_by_parent('alice','reminder_message','session'))==1
 
 
 def test_dispatch_commit_rolls_back_with_failed_binding(setup,monkeypatch):
@@ -167,6 +218,38 @@ def test_partial_result_does_not_advance_checkpoint(setup):
     with store.engine.connect() as conn:
         data=json.loads(conn.execute(text('SELECT artifacts_json FROM reminder_action_runs WHERE fire_id=:id'),{'id':fire['id']}).scalar_one())
     assert data['summary'].startswith('Partial website check:')
+
+
+def test_more_than_one_hundred_attention_tasks_do_not_starve_completed_work(setup):
+    store,svc,_=setup
+    fire,task=launch(setup)
+    with store.transaction() as conn:
+        templates={table:dict(conn.execute(text('SELECT * FROM '+table+' LIMIT 1')).mappings().one())
+                   for table in ('reminders','assistant_runs','reminder_action_runs')}
+        for index in range(105):
+            identifiers={'fire':'pending_fire_'+str(index),'task':'pending_task_'+str(index)}
+            for table,template in templates.items():
+                row=dict(template)
+                if table=='reminders':
+                    row.update(id=identifiers['fire'],dedup_key=identifiers['fire'])
+                elif table=='assistant_runs':
+                    row.update(id=identifiers['task'],command_key=identifiers['task'],status='waiting_for_login',updated_at=1)
+                    payload=json.loads(row['payload']);payload.update(id=row['id'],status=row['status'])
+                    row['payload']=encoded(payload)
+                else:
+                    row.update(fire_id=identifiers['fire'],job_id=identifiers['task'])
+                columns=','.join(row)
+                values=','.join(':'+column for column in row)
+                conn.execute(text('INSERT INTO '+table+' ('+columns+') VALUES ('+values+')'),row)
+    terminal(store,task)
+    svc.reconcile()
+    with store.engine.connect() as conn:
+        assert conn.execute(text('SELECT status FROM reminder_action_runs WHERE fire_id=:fire'),{'fire':fire['id']}).scalar_one()=='completed'
+    jobs=WorkflowStore(store)
+    ids=jobs.ready_ids('interactive',{'reminder_actions'})
+    assert len(ids)==1
+    ReminderActionRunner(store).execute(jobs.claim(ids[0]))
+    assert any('Assignment A' in m['body'] for m in jobs.listing_by_parent('alice','reminder_message','session'))
 
 
 def test_local_connection_cannot_schedule_cloud_work(setup):
