@@ -1,4 +1,4 @@
-const requestHeaders = ['authorization', 'content-type', 'accept', 'last-event-id', 'idempotency-key', 'x-idempotency-key', 'if-match', 'range', 'x-openlearn-trace-id'];
+const requestHeaders = ['authorization', 'content-type', 'accept', 'last-event-id', 'idempotency-key', 'x-idempotency-key', 'if-match', 'range', 'x-openlearn-trace-id','x-capture-capability','x-capture-device','x-capture-epoch','x-capture-run','x-chunk-start-ms','x-chunk-end-ms','x-chunk-sha256'];
 const responseHeaders = ['content-type', 'content-disposition', 'content-range', 'accept-ranges', 'retry-after', 'etag', 'x-openlearn-trace-id'];
 
 export async function proxyHostedApi(request: Request, segments: string[]): Promise<Response> {
@@ -7,9 +7,10 @@ export async function proxyHostedApi(request: Request, segments: string[]): Prom
   const unavailable = () => Response.json({ detail: { code: 'service_unavailable', message: 'Open Learn is temporarily unavailable. Your draft is still here. Please retry.' } }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   if (!configured) return unavailable();
   let origin: URL;
+  let localUpstream=false;
   try {
     origin = new URL(configured);
-    const localUpstream = localPreview && origin.origin === 'http://127.0.0.1:8000';
+    localUpstream = localPreview && origin.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(origin.hostname);
     if ((!localUpstream && (origin.protocol !== 'https:' || ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname))) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) return unavailable();
   } catch { return unavailable(); }
   if (segments.some(part => !part || part === '.' || part === '..' || part.includes('/') || part.includes('\\'))) return Response.json({ detail: { code: 'invalid_path', message: 'Invalid request.' } }, { status: 400 });
@@ -17,6 +18,7 @@ export async function proxyHostedApi(request: Request, segments: string[]): Prom
   upstream.search = new URL(request.url).search;
   const headers = new Headers();
   for (const name of requestHeaders) { const value = request.headers.get(name); if (value) headers.set(name, value); }
+  if(localUpstream){const localOwner=request.headers.get('x-dev-learner-id');if(localOwner)headers.set('x-dev-learner-id',localOwner);}
   try {
     const startedAt = performance.now();
     const response = await fetch(upstream, {

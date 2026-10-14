@@ -16,6 +16,9 @@ class ClassPolicy(BaseModel):
     autoScrollLock:bool=True
     keepAudio:bool|None=None
     buddyQuietDuringClass:bool=False
+    autoVisuals:bool=False
+    autoVisualBudget:int=Field(default=3,ge=0,le=10)
+    speechQuality:Literal['balanced','economical']='balanced'
 
 class ClassCreate(BaseModel):
     model_config=ConfigDict(populate_by_name=True,extra='forbid')

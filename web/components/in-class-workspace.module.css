@@ -1,4 +1,4 @@
-.workspace{height:100%;overflow:auto;padding:20px;color:var(--foreground)}
+.workspace{height:100%;overflow:auto;padding:20px;color:var(--foreground);container-type:inline-size;container-name:class-workspace}
 .workspace header{padding-bottom:16px;border-bottom:1px solid var(--border)}
 .workspace h2{font-size:20px;font-weight:600;overflow-wrap:anywhere}.workspace h3{font-size:16px;font-weight:600;margin:12px 0 6px}.workspace p{font-size:14px;line-height:1.7;margin:8px 0;overflow-wrap:anywhere}.workspace small{display:block;color:var(--muted-foreground);font-size:11px;margin:6px 0;line-height:1.6}
 .tabs{display:flex;gap:5px;margin:14px 0;flex-wrap:wrap}.tabs button{border-radius:8px;padding:8px 10px;font-size:12px;background:var(--muted)}.tabs [aria-pressed=true]{background:var(--primary);color:var(--primary-foreground)}
@@ -56,3 +56,25 @@
 .transcriptionStatus{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:8px 0;padding:8px 10px;border-left:3px solid var(--primary);border-radius:6px;background:var(--muted);font-size:12px}.transcriptionStatus strong{font-size:12px}.transcriptionStatus span{color:var(--muted-foreground)}.transcriptionStatus[data-state=recovery]{border-color:var(--destructive)}.transcriptionStatus[data-state=uploading],.transcriptionStatus[data-state=transcribing],.transcriptionStatus[data-state=coordinating]{border-color:#b7791f}.transcriptionStatus[data-state=caught-up]{border-color:#25855a}
 .cueRail{display:grid;gap:6px;min-width:0;margin:10px 0;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:var(--card)}.cueRail>strong{font-size:12px}.cueList{display:flex;align-items:stretch;gap:6px;overflow-x:auto;padding:2px 1px 6px;scrollbar-width:thin}.cueList button{display:flex;align-items:center;gap:6px;flex:none;max-width:260px;min-height:34px;padding:6px 9px;border:1px solid var(--border);border-radius:8px;background:var(--muted);color:var(--foreground);text-align:left;font:inherit;font-size:11px;cursor:pointer}.cueList button:hover{background:var(--background)}.cueList button:focus-visible{outline:2px solid var(--primary);outline-offset:2px}.cueList button time{flex:none;color:var(--primary);font-variant-numeric:tabular-nums}.cueList button span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cueList .markerCue{color:var(--primary);white-space:nowrap}.cueRail>small{margin:0;color:var(--muted-foreground)}.transcriptBody p:focus{outline:2px solid var(--primary);outline-offset:2px;border-radius:3px}
 @media(max-width:560px){.transcriptionStatus{align-items:flex-start;flex-direction:column;gap:2px}.cueRail{padding:8px}.cueList button{max-width:220px}}
+.stage{grid-template-columns:minmax(0,1fr) minmax(240px,30%)}
+.stage[data-reference-open=true]{grid-template-columns:minmax(0,1fr) minmax(240px,30%)}
+.stage>.referencePane{grid-column:1 / -1;position:relative}
+.stage :global(.class-buddy-panel){position:sticky;top:12px;max-height:75vh;overflow:auto;padding:16px;border:1px solid var(--border);border-radius:12px;background:var(--card);font-size:13px}
+.stage :global(.class-buddy-panel) h3{margin:0 0 8px}
+.stage :global(.class-buddy-panel) form{display:grid;gap:8px;margin:12px 0}
+.stage :global(.class-buddy-panel) textarea{width:100%;min-height:76px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--background);font:inherit}
+.stage :global(.class-buddy-panel) article{margin:14px 0;padding-top:12px;border-top:1px solid var(--border)}
+.stageMain section[aria-label="Editable class notes"]{padding:16px;border:1px solid var(--border);border-radius:12px;margin:12px 0}
+.stageMain section[aria-label="Editable class notes"] header{display:flex;align-items:center;justify-content:space-between}
+.stageMain section[aria-label="Editable class notes"] article{padding:16px 0;border-top:1px solid var(--border);scroll-margin-top:20px}
+.stageMain section[aria-label="Editable class notes"] form{display:grid;gap:8px}
+.stageMain section[aria-label="Editable class notes"] input,.stageMain section[aria-label="Editable class notes"] textarea{display:block;width:100%;padding:8px;background:var(--background);border:1px solid var(--border);border-radius:6px;font:inherit}
+.stageMain section[aria-label="Editable class notes"] figure{margin:12px 0;padding:12px;background:var(--muted);border-radius:8px}
+.stageMain section[aria-label="Editable class notes"] svg{width:100%;max-height:600px}
+@media(max-width:850px){.stage,.stage[data-reference-open=true]{grid-template-columns:minmax(0,1fr)}.stage :global(.class-buddy-panel){position:relative;max-height:none}}
+@container class-workspace (max-width:700px){.stage,.stage[data-reference-open=true]{grid-template-columns:minmax(0,1fr)}.stage :global(.class-buddy-panel){position:relative;max-height:none}.stageMain section[aria-label="Editable class notes"] header{flex-wrap:wrap;gap:8px}}
+.stageMain section[aria-label="Editable class notes"] label{display:block;margin:8px 0;font-size:12px}
+.stageMain section[aria-label="Editable class notes"] select{max-width:100%;padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--background);font:inherit}
+.transcriptBody>div{padding:10px 0;border-bottom:1px solid var(--border)}.transcriptBody>div:focus{outline:2px solid var(--primary);outline-offset:2px;border-radius:4px}.transcriptBody textarea{width:100%;min-height:90px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--background);font:inherit}.transcriptBody label{display:block;margin:8px 0;font-size:12px}.transcriptBody audio{width:100%;margin:8px 0}
+
+.stage[data-buddy=false]{grid-template-columns:minmax(0,1fr)}

@@ -9,8 +9,9 @@ from .identity import assert_owner_active
 class LectureObservationService:
     def __init__(self, store): self.store = store; self.lectures = LectureService(store)
 
-    def correct_transcript(self, owner, recording, segment_id, wording, revision):
+    def correct_transcript(self, owner, recording, segment_id, wording, revision, speaker_role=None):
         if not wording.strip() or len(wording) > 4000: raise LectureError('invalid_transcript_edit', 'Enter up to 4000 characters.')
+        if speaker_role is not None and speaker_role not in {'professor','student','unknown'}:raise LectureError('invalid_speaker','Choose professor, student or unknown.')
         with self.store.transaction() as conn:
             assert_owner_active(conn, owner)
             self.lectures._row(owner, recording, conn)
@@ -18,10 +19,15 @@ class LectureObservationService:
             if not segment: raise LectureError('segment_not_found', 'Transcript segment unavailable.', 404)
             if segment['normalization_version'] != revision: raise LectureError('transcript_revision_conflict', 'This transcript changed. Refresh before editing.', 409)
             historical = {'segmentId': segment_id, 'previousWording': segment['normalized_text'], 'rawText': segment['raw_text'], 'wording': wording.strip(), 'startMs': segment['start_ms'], 'endMs': segment['end_ms'], 'previousRevision': revision, 'source': 'student_correction'}
+            historical.update(previousSpeakerRole=segment['speaker'],speakerRole=speaker_role or segment['speaker'])
             conn.execute(text('INSERT INTO lecture_transcript_revisions(owner_id,id,recording_id,revision,payload,created_at) VALUES(:owner,:id,:recording,:revision,:payload,:now)'), {'owner': owner, 'id': uuid4().hex, 'recording': recording, 'revision': revision+1, 'payload': json.dumps(historical), 'now': time.time()})
-            conn.execute(text('UPDATE lecture_transcript_segments SET normalized_text=:wording,normalization_version=normalization_version+1 WHERE id=:id AND normalization_version=:revision'), {'wording': wording.strip(), 'id': segment_id, 'revision': revision})
+            conn.execute(text('UPDATE lecture_transcript_segments SET normalized_text=:wording,speaker=:speaker,normalization_version=normalization_version+1 WHERE id=:id AND normalization_version=:revision'), {'wording': wording.strip(),'speaker':speaker_role or segment['speaker'],'id': segment_id, 'revision': revision})
             from .flashcards.class_adapter import invalidate_source
             invalidate_source(self.store,conn,owner,segment_id)
+            from .class_buddy import ClassBuddyService
+            ClassBuddyService.invalidate_source(conn, owner, segment_id)
+            from .class_document import ClassDocumentService
+            ClassDocumentService.invalidate_source(conn, owner, recording, segment_id)
             from .in_class_service import handoff
             handoff(conn,owner,recording,'correction:'+segment_id+':'+str(revision+1))
             from .class_live_notes import ClassLiveNoteService
@@ -43,7 +49,16 @@ class LectureObservationService:
                     DecisionStore.invalidate(conn,owner,Invalidation(owner_id=owner,id=f'lecture_invalidated_{uuid4().hex}',dependency=RevisionRef(kind='lecture_entity',id=entity[0],revision=entity[1]),reason='transcript_corrected',created_at=datetime.now(timezone.utc)))
                 conn.execute(text("UPDATE lecture_entities SET verification_status='superseded' WHERE section_id=:id"), {'id': section})
                 self.lectures.jobs.enqueue(owner, recording, 'lecture_section', {'recording_id': recording, 'section_id': section}, f'lecture:correction:{segment_id}:{revision+1}:{section}', connection=conn)
-            return {'segmentId': segment_id, 'revision': revision+1, 'affectedSections': affected, 'rawTranscriptPreserved': True}
+            return {'segmentId': segment_id, 'revision': revision+1, 'wording':wording.strip(),'speakerRole':speaker_role or segment['speaker'],'affectedSections': affected, 'rawTranscriptPreserved': True}
+
+    def undo_transcript(self,owner,recording,segment_id,revision):
+        with self.store.engine.connect() as conn:
+            self.lectures._row(owner,recording,conn)
+            predicate="json_extract(payload,'$.segmentId')=:segment" if conn.dialect.name=='sqlite' else "payload::jsonb->>'segmentId'=:segment"
+            prior=conn.execute(text('SELECT payload FROM lecture_transcript_revisions WHERE owner_id=:owner AND recording_id=:recording AND revision=:revision AND '+predicate+' ORDER BY created_at DESC LIMIT 1'),{'owner':owner,'recording':recording,'revision':revision,'segment':segment_id}).scalar_one_or_none()
+        if not prior:raise LectureError('transcript_undo_unavailable','No correction is available to undo.',409)
+        data=json.loads(prior)
+        return self.correct_transcript(owner,recording,segment_id,data['previousWording'],revision,data.get('previousSpeakerRole'))
 
     def observe(self, owner, recording, command):
         with self.store.transaction() as conn:

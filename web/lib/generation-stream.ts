@@ -5,7 +5,7 @@ import { beginGenerationTiming, bindGenerationTiming, recordGenerationTiming } f
 import { sharedGenerationResponse } from './shared-generation-response';
 
 export type GenerationMode = 'ask' | 'learn';
-export type GenerationRequest = { mode: GenerationMode; presentation?: 'conversation' | 'ask' | 'learn'; message: string; gear: Gear; expectedRevision: number; clientMessageId?: string; replyToGenerationId?: string; parentGenerationId?: string; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string; pastedRanges?: { start: number; end: number }[]; clientTimezone?: string };
+export type GenerationRequest = { mode: GenerationMode; presentation?: 'conversation' | 'ask' | 'learn'; message: string; gear: Gear; expectedRevision: number; clientMessageId?: string; replyToGenerationId?: string; parentGenerationId?: string; classificationBypassId?: string; taskId?: string; canonicalConceptIds?: string[]; action?: 'message' | 'start' | 'next' | 'repair'; visualType?: VisualType | 'auto'; noteContext?: unknown; selectedSpanIds?: string[]; selectedText?: string; selectedLessonId?: string; selectedBlockId?: string; pastedRanges?: { start: number; end: number }[]; clientTimezone?: string; classContext?: import('./class-buddy').ClassQuestionContext };
 export type GenerationEvent = { generationId: string; sequence: number; type: string; data: Record<string, unknown> };
 export type GenerationUsage = { totalTokens: number; promptTokens?: number | null; completionTokens?: number | null; usageSource: 'exact' | 'estimated'; provider?: string | null; model?: string | null };
 export type GenerationDescriptor = { id: string | null; sessionId: string; mode: GenerationMode; status: string; sequence: number; provider: string; model: string; journeyRevision?: number | null; finalRevision?: number | null; errorCode?: string | null; messageId?: string | null; conversationSeq?: number | null; contextRevision?: number | null; parentGenerationId?: string | null; branchId?: string | null; relation?: string | null; branchRevision?: number | null; selectedBranchId?: string | null; cancelTargetGenerationId?: string | null; cancelTargetStatus?: string | null; accepted?: boolean; scheduledGenerationIds?: string[]; activeGenerationIds?: string[]; metrics?: Record<string, number | string | boolean | null> | null; modeSuggestion?: import('./api').ModeTransitionSuggestion | null; modeDecision?: 'stay' | 'suggest' | 'request_transition' | null; requiresModeChoice?: boolean };
@@ -86,6 +86,13 @@ export class GenerationStream {
     this.flushTextDelta(this.lastCallbacks);
     this.controller?.abort();
     if (this.descriptor?.id) await request(`/v1/generations/${encodeURIComponent(this.descriptor.id)}/cancel`, { method: 'POST' });
+  }
+
+  disconnect(): void {
+    // Detach this observer; the accepted server generation remains durable.
+    this.stopped = true;
+    this.controller?.abort();
+    this.flushTextDelta(this.lastCallbacks);
   }
 
   private async observe(callbacks: GenerationCallbacks): Promise<void> {

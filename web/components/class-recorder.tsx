@@ -1,4 +1,5 @@
 "use client";
+import {ClassMicrophoneCheck} from './class-microphone-check';
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Mic, Pause, Play, Square } from 'lucide-react';
@@ -14,6 +15,7 @@ import styles from './class-recorder.module.css';
 import { readSettingsPreferences, SETTINGS_CHANGED_EVENT } from '@/lib/settings-preferences';
 import { needsFloatingRecovery, processingStarted } from '@/lib/recording-ui';
 import { useBuddies } from './buddies';
+import {classDevices,type ClassPairing} from '@/lib/class-devices';
 
 function clock(ms: number) { return `${Math.floor(ms / 60000).toString().padStart(2, '0')}:${Math.floor(ms % 60000 / 1000).toString().padStart(2, '0')}`; }
 type DesktopDisplaySleepStatus = { state: 'inactive' | 'active' | 'unavailable' };
@@ -64,6 +66,14 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
   const [microphones,setMicrophones]=useState<MediaDeviceInfo[]>([]);
   const [microphoneId,setMicrophoneId]=useState('');
   const [starting,setStarting]=useState(false);
+  const [captureSource,setCaptureSource]=useState<'laptop'|'phone'>('laptop');
+  const [phonePairing,setPhonePairing]=useState<ClassPairing|null>(null);
+  const phoneDraft=useRef<{commandId:string;startedAtMs:number}|null>(null);
+  useEffect(()=>{if(!setupOpen){phoneDraft.current=null;setPhonePairing(null);}},[setupOpen]);
+  const [pairingExpired,setPairingExpired]=useState(false);
+  const [phoneAvailable,setPhoneAvailable]=useState(false);
+  useEffect(()=>{let active=true;if(setupOpen)void request<{features:{phonePairing:boolean}}>('/v1/class-speech-settings').then(value=>{if(active)setPhoneAvailable(value.features.phonePairing);}).catch(()=>undefined);return()=>{active=false;};},[setupOpen]);
+  useEffect(()=>{if(!phonePairing)return;const tick=()=>setPairingExpired(Date.now()/1000>=phonePairing.expiresAt);tick();const timer=setInterval(tick,1000);return()=>clearInterval(timer);},[phonePairing]);
   useEffect(()=>{let live=true;void request<{ownerId:string}>('/v1/account').then(async value=>{if(!live)return;setOwner(value.ownerId);const captions=await learningApi.getLiveTranscriptionAvailability(value.ownerId).catch(()=>({available:false,provider:null}));if(live)setLiveTranscriptionAvailable(captions.available);}).catch(()=>undefined);if(setupOpen){void learningApi.listCourses().then(value=>{if(live)setCourses(value);}).catch(()=>undefined);void navigator.mediaDevices?.enumerateDevices().then(value=>{if(live)setMicrophones(value.filter(device=>device.kind==='audioinput'));}).catch(()=>undefined);}return()=>{live=false;};},[setupOpen]);
   useEffect(()=>{let live=true;if(!setupOpen||!effectiveCourse)return;void learningApi.listCourseMaterials(effectiveCourse).then(value=>{if(live)setMaterials(value.materials.filter(material=>['ready','partially_ready'].includes(material.status)&&!['answer_key','sample_paper'].includes(material.role)));}).catch(()=>{if(live)setMaterials([]);});return()=>{live=false;};},[setupOpen,effectiveCourse]);
   const buddies=useBuddies();
@@ -194,22 +204,28 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
     setError('');
     let liveVadContext:AudioContext|null=null;
     try {
-      if(liveTranscription&&liveTranscriptionAvailable){
+      if(captureSource==='phone'){
+        let deviceId=localStorage.getItem('openlearn.class.pairing-device');if(!deviceId){deviceId=crypto.randomUUID();localStorage.setItem('openlearn.class.pairing-device',deviceId);}
+        phoneDraft.current??={commandId:crypto.randomUUID(),startedAtMs:Date.now()};
+        const draft=await classDevices.draft({...phoneDraft.current,deviceId,title:title.trim()||initialTitle||'Class',courseId:effectiveCourse,buddyId:resolvedBuddy,materialVersionIds:selectedMaterials,policy:{...policy,keepAudio:preferences.keepAudio,noteDensity:preferences.depth}});
+        const pairing=await classDevices.pair(draft.session.id,deviceId);setPhonePairing(pairing);openClassWorkspace(draft.session.id,draft.session.sessionId);return;
+      }
+      if(liveTranscription&&liveTranscriptionAvailable&&policy.speechQuality!=='economical'){
         if(typeof AudioContext==='undefined')throw new Error('This browser cannot start live captions. You can still record the class.');
         liveVadContext=new AudioContext();
         void liveVadContext.resume().catch(()=>undefined);
       }
       let deviceId=localStorage.getItem('openlearn-capture-device');if(!deviceId){deviceId=crypto.randomUUID();localStorage.setItem('openlearn-capture-device',deviceId);}
       const lectureTitle=title.trim() || `Class recording · ${new Date().toLocaleDateString()}`;
-      const capabilityBytes=liveTranscription&&liveTranscriptionAvailable?crypto.getRandomValues(new Uint8Array(32)):null;
+      const capabilityBytes=liveTranscription&&liveTranscriptionAvailable&&policy.speechQuality!=='economical'?crypto.getRandomValues(new Uint8Array(32)):null;
       const captureCapability=capabilityBytes?Array.from(capabilityBytes,byte=>byte.toString(16).padStart(2,'0')).join(''):undefined;
       const setup={deviceId,...(captureCapability?{captureCapability}:{}),materialVersionIds:selectedMaterials.filter(vid=>materials.some(m=>m.versionId===vid)),policy:{...policy,keepAudio:preferences.keepAudio}};
       recordingConsent.current=true;
-      const id=await lectureCapture.start({ title: lectureTitle, courseId:effectiveCourse, buddyId:resolvedBuddy, noteFolder: folder, preferences,ownerId:owner,microphoneId,includeSystemAudio,liveTranscription:liveTranscription&&liveTranscriptionAvailable,liveVadContext,classSetup:setup });
+      const id=await lectureCapture.start({ title: lectureTitle, courseId:effectiveCourse, buddyId:resolvedBuddy, noteFolder: folder, preferences,ownerId:owner,microphoneId,includeSystemAudio,liveTranscription:liveTranscription&&liveTranscriptionAvailable&&policy.speechQuality!=='economical',liveVadContext,classSetup:setup });
       setDesktopLifecycleNotice('');
       liveVadContext=null;
       openClassWorkspace('class_'+id);
-      if(liveTranscription&&liveTranscriptionAvailable){
+      if(liveTranscription&&liveTranscriptionAvailable&&policy.speechQuality!=='economical'){
         try{
           const localSession=await getLocalLecture(id);
           if(!localSession)throw new Error('The local recording manifest is unavailable.');
@@ -240,16 +256,20 @@ export function ClassRecorder({ setupOpen, onSetupOpenChange, folder, courseId, 
   return <>
     <Dialog open={setupOpen} onOpenChange={open=>{if(!open&&starting)lectureCapture.cancelStart();if(!open){setConsent(false);setIncludeSystemAudio(false);}onSetupOpenChange(open);}}>
       <DialogContent className={styles.setup} showCloseButton={!starting} onEscapeKeyDown={event=>{if(starting)event.preventDefault();}} onPointerDownOutside={event=>{if(starting)event.preventDefault();}}>
-        <DialogHeader><DialogTitle>Start an In-Class session</DialogTitle><DialogDescription>Audio is saved on this device first. Connected providers prepare live notes and study material after upload; charges may apply. Capture stays on this device, and reopening a class never restarts the microphone.</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>Start an In-Class session</DialogTitle><DialogDescription>Audio is saved on the recording device first. Connected providers prepare notes after upload; charges may apply. Reopening a class never restarts a microphone.</DialogDescription></DialogHeader>
+        {captureSource==='laptop'?<ClassMicrophoneCheck microphoneId={microphoneId}/>:null}
+        <fieldset><legend>Recording device</legend><label className={styles.optionLabel}><input type="radio" name="class-recording-device" checked={captureSource==='laptop'} onChange={()=>{setCaptureSource('laptop');setPhonePairing(null);}}/>Laptop microphone</label><label className={styles.optionLabel}><input type="radio" name="class-recording-device" disabled={!phoneAvailable} checked={captureSource==='phone'} onChange={()=>{setCaptureSource('phone');setIncludeSystemAudio(false);}}/>Phone microphone</label></fieldset>
+        {phonePairing&&captureSource==='phone'?<section aria-label="Connect phone microphone"><p>Open Learn must be installed on your phone. Sign in to the same account, scan this code or enter the pairing code in Classes, then confirm recording permission on the phone.</p><img src={'data:image/svg+xml,'+encodeURIComponent(phonePairing.qrSvg)} width={200} height={200} alt="Pair this class with the Open Learn phone app"/><p><strong>{phonePairing.code}</strong> · {pairingExpired?'Expired — generate a new code':'Expires in two minutes'}</p><Button onClick={()=>{setConsent(false);onSetupOpenChange(false);}}>Open class workspace</Button></section>:null}
         {courseChoice!==undefined?<p>{effectiveCourse?courses.find(course=>course.id===effectiveCourse)?.name||courseName||'Course class':'General class · No course'} · {buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'}</p>:!courseId?<label className={styles.titleLabel}>Course<select value={pickedCourse} onChange={e=>{setPickedCourse(e.target.value);setSelectedMaterials([]);}}><option value="">Choose a course</option>{courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}</select></label>:null}
         {courseChoice===undefined?<p>{courseName||'General class session'} · {buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'}</p>:null}<label className={styles.titleLabel}>Class title<input autoFocus value={title} onChange={event => setTitle(event.target.value)} placeholder="e.g. Biology · Lecture 4" /></label>
         <label className={styles.titleLabel}>Buddy for this session<select value={effectiveOverride} onChange={e=>{setBuddyOverride({course:effectiveCourse,id:e.target.value});}}><option value="">Course/default Buddy ({buddies.snapshot?.profiles.find(p=>p.id===resolvedBuddy)?.name||'Buddy'})</option>{buddies.snapshot?.profiles.filter(p=>!p.archived).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <label className={styles.titleLabel}>Note detail<select value={preferences.depth} onChange={event => setPreferences(current => ({ ...current, depth: event.target.value as LecturePreferences['depth'] }))}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
         <label className={styles.optionLabel}><input type="checkbox" checked={preferences.keepAudio} onChange={event => setPreferences(current => ({ ...current, keepAudio: event.target.checked }))} /> Keep class audio for playback</label>
         <small>When off, local recovery audio stays until upload and transcription finish; then the server copy is removed. Notes and transcript remain.</small>
-        {systemAudioAvailable?<><label className={styles.optionLabel}><input id="include-computer-audio" type="checkbox" checked={includeSystemAudio} aria-describedby="computer-audio-description" onChange={event=>setIncludeSystemAudio(event.target.checked)} /> Include computer audio (Windows desktop)</label><small id="computer-audio-description">Windows will ask you to choose a screen or window. Open Learn stops the temporary video track immediately; computer audio may include sounds from other apps.</small></>:null}
-        <label className={styles.optionLabel}><input type="checkbox" checked={liveTranscription} disabled={!liveTranscriptionAvailable} aria-describedby="class-live-captions-description" onChange={event=>setLiveTranscription(event.target.checked)} /> Live captions with OpenAI</label>
-        <small id="class-live-captions-description">{liveTranscriptionAvailable?`Optional. Sends ${includeSystemAudio?'microphone and computer audio':'microphone audio'} to OpenAI during capture for temporary captions. Archived batch transcription still runs separately; extra provider usage applies. Live captions produce provisional drafts which the archived transcript replaces.`:'Live captions are unavailable until the server enables them and has an OpenAI key.'}</small>
+        {systemAudioAvailable&&captureSource==='laptop'?<><label className={styles.optionLabel}><input id="include-computer-audio" type="checkbox" checked={includeSystemAudio} aria-describedby="computer-audio-description" onChange={event=>setIncludeSystemAudio(event.target.checked)} /> Include computer audio (Windows desktop)</label><small id="computer-audio-description">Windows will ask you to choose a screen or window. Open Learn stops the temporary video track immediately; computer audio may include sounds from other apps.</small></>:null}
+        <label>Speech quality<select value={policy.speechQuality} onChange={event=>setPolicy(current=>({...current,speechQuality:event.target.value as ClassPolicy['speechQuality']}))}><option value="balanced">Balanced · live captions plus recorded verification</option><option value="economical">Economical · recorded verification, longer updates</option></select></label>
+        <label className={styles.optionLabel}><input type="checkbox" checked={liveTranscription&&policy.speechQuality!=='economical'} disabled={!liveTranscriptionAvailable||policy.speechQuality==='economical'} aria-describedby="class-live-captions-description" onChange={event=>setLiveTranscription(event.target.checked)} /> Live captions</label>
+        <small id="class-live-captions-description">{policy.speechQuality==='economical'?'Saved audio is verified in longer windows; live streaming is off to avoid additional streaming usage.':liveTranscriptionAvailable?`Optional. Sends ${includeSystemAudio?'microphone and computer audio':'microphone audio'} to the configured speech provider during capture. Recorded verification runs separately; extra streaming usage applies. Live captions remain provisional until verification.`:'Live captions are unavailable until the server enables and configures them.'}</small>
         {microphones.length>1?<label className={styles.titleLabel}>Microphone<select value={microphoneId} onChange={e=>setMicrophoneId(e.target.value)}><option value="">System default</option>{microphones.map((device,index)=><option key={device.deviceId||index} value={device.deviceId}>{device.label||`Microphone ${index+1}`}</option>)}</select></label>:null}
         <fieldset><legend>Prepare quietly during class</legend>{(['notes','materials','practice','flashcards'] as const).map(key=><label className={styles.optionLabel} key={key}><input type="checkbox" checked={policy[key]} onChange={e=>setPolicy(value=>({...value,[key]:e.target.checked}))}/>{key==='notes'?'Live notes':key==='materials'?'Supporting materials':key==='practice'?'Practice quizzes (at most every 10 minutes)':'Draft flashcards'}</label>)}</fieldset>
         {materials.length?<fieldset><legend>Available course materials</legend>{materials.map(material=><label className={styles.optionLabel} key={material.versionId}><input type="checkbox" checked={selectedMaterials.includes(material.versionId)} onChange={e=>setSelectedMaterials(current=>e.target.checked?[...current,material.versionId]:current.filter(vid=>vid!==material.versionId))}/>{material.title}</label>)}</fieldset>:<p>No ready course materials selected. Lecture notes can still be prepared.</p>}

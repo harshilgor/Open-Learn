@@ -10,6 +10,11 @@ import java.net.URI
 class LectureCaptureModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("LectureCapture")
+    Events("pcm")
+    OnCreate {Capture.pcmListener={bytes,rate,id->sendEvent("pcm",mapOf("recordingId" to id,"sampleRate" to rate,"data" to android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)))}}
+    OnDestroy {Capture.enableLivePcm(false);Capture.pcmListener=null}
+    AsyncFunction("setLivePcmEnabled") {enabled:Boolean->Capture.enableLivePcm(enabled)}
+    AsyncFunction("ackPcm") {Capture.ackPcm()}
     AsyncFunction("start") { directory: String, id: String ->
       val context = appContext.reactContext ?: error("Application unavailable")
       val folder = File(URI(directory)).canonicalFile

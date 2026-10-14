@@ -1,4 +1,5 @@
 import { request } from './api';
+import {AssemblyClassStream} from './class-assembly-stream';
 
 export const LIVE_LECTURE_TRANSCRIPTION_EVENT = 'open-learn-live-lecture-transcription';
 export type LiveTranscriptTurn = { id: string; text: string };
@@ -35,6 +36,7 @@ export function adaptOpenAICaptionEvent(raw:unknown):CaptionProviderEvent|null{
 
 /** Ephemeral captions only. Durable batch transcription remains the archive source. */
 export class LiveLectureTranscription {
+  private assembly:AssemblyClassStream|null=null;
   private peer: RTCPeerConnection | null = null;
   private channel: RTCDataChannel | null = null;
   private cancelled = false;
@@ -238,6 +240,14 @@ export class LiveLectureTranscription {
     this.publish();
     for (const [itemId, turn] of this.turns) if (turn.final && !this.persistedTurns.has(itemId)) void this.persistFinalTurn(itemId, turn.text);
     try {
+        const speech=await request<{configured:boolean;liveEnabled:boolean}>('/v1/class-speech-settings').catch(()=>null);
+        if(this.cancelled)return;
+        if(speech?.configured&&speech.liveEnabled){
+          this.assembly?.stop();
+          this.assembly=new AssemblyClassStream(this.recordingId,()=>this.recordingElapsedMs());
+          await this.assembly.start(stream,captureCapability,vadContext);
+          return;
+        }
       if (typeof RTCPeerConnection === 'undefined') throw new Error('WebRTC is unavailable.');
       const secret = await request<ClientSecret>(`/v1/learners/${encodeURIComponent(ownerId)}/lecture-recordings/${encodeURIComponent(this.recordingId)}/live-transcription-session`, {
         method: 'POST',
@@ -326,6 +336,7 @@ export class LiveLectureTranscription {
   }
 
   pause() {
+    this.assembly?.pause();
     if (this.cancelled) return;
     this.cancelled = true;
     this.closePeer();
@@ -334,6 +345,7 @@ export class LiveLectureTranscription {
   }
 
   stop() {
+    this.assembly?.stop();this.assembly=null;
     this.cancelled = true;
     this.closePeer();
     this.status = 'stopped';

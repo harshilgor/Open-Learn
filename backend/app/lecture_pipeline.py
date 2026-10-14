@@ -22,7 +22,7 @@ from .usage.context import usage_scope
 
 log = logging.getLogger(__name__)
 _worker_lock = threading.Lock()
-JOB_KINDS = ("lecture_transcribe", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention")
+JOB_KINDS = ("lecture_transcribe", "lecture_class_verify", "lecture_segment", "lecture_section", "lecture_verify", "lecture_generate", "lecture_audio_retention")
 def configured_class_transcription_provider():
     """Use the configured speech provider for authoritative class audio too.
 
@@ -474,10 +474,17 @@ class LectureWorker:
                 WHERE c.transcription_status IN ('pending','running')""")).all()
         for recording_id, sequence, owner in chunks:
             _enqueue(self.store, owner, recording_id, "lecture_transcribe", {"recording_id": recording_id, "sequence": sequence}, f"lecture:chunk:{recording_id}:{sequence}")
+        from .class_verification import ClassVerificationService
+        verification = ClassVerificationService(self.store)
+        for recording_id, owner in list(dict.fromkeys((recording_id, owner) for recording_id, _sequence, owner in chunks))[:100]:
+            if verification.configured(owner, recording_id):
+                verification.plan(owner, recording_id)
         with self.store.engine.connect() as conn:
             recordings = conn.execute(text("SELECT id,learner_id FROM lecture_recordings WHERE expected_chunk_count IS NOT NULL AND status NOT IN ('completed','cancelled')")).all()
         for recording_id, owner in recordings:
             LectureService(self.store).maybe_enqueue_finalize(owner, recording_id)
+        from .class_verification import ClassVerificationService
+        ClassVerificationService(self.store).reconcile()
 
     def _process(self, job):
         owner, recording_id, payload, kind = job["owner_id"], job["target_id"], job["payload"], job["kind"]
@@ -486,7 +493,15 @@ class LectureWorker:
         try:
               with job_scope(job), usage_scope(self.store, owner, job["target_id"]):
                 if kind == "lecture_transcribe":
-                    result = transcribe_chunk(self.store, owner, recording_id, payload["sequence"], self.transcriber, job)
+                    from .class_verification import ClassVerificationService
+                    verification = ClassVerificationService(self.store)
+                    if self.transcriber is None and verification.configured(owner, recording_id):
+                        result = verification.plan(owner, recording_id)
+                    else:
+                        result = transcribe_chunk(self.store, owner, recording_id, payload["sequence"], self.transcriber, job)
+                elif kind == "lecture_class_verify":
+                    from .class_verification import ClassVerificationService
+                    result = ClassVerificationService(self.store).step(owner, payload['requestId'])
                 elif kind == "lecture_segment":
                     result = segment_lecture(self.store, owner, recording_id, self.provider_getter())
                 elif kind == "lecture_section":
@@ -523,7 +538,9 @@ class LectureWorker:
                 pass
             # A stale lease must not overwrite the stage state published by a
             # newer attempt. The transcriber already records owned failures.
-            if changed and kind != "lecture_transcribe":
+            if changed and kind == 'lecture_class_verify':
+                _stage(self.store, recording_id, 'transcription', 'failed', error=message[:500])
+            elif changed and kind != "lecture_transcribe":
                 stage = "semanticAnalysis" if kind in {"lecture_segment", "lecture_section"} else "verification" if kind == "lecture_verify" else "noteGeneration"
                 if kind == "lecture_section":
                     try:

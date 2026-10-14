@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .database import database_url
+from .class_speech_settings import build_class_speech_settings_router
 from .stable_concept_routes import build_stable_concept_router
 from .hypothesis_routes import build_hypothesis_router
 from .graph_generator import GraphGenerator
@@ -165,6 +166,13 @@ from .flashcards.routes import build_flashcard_router
 app.include_router(build_flashcard_router(get_store))
 from .in_class_routes import build_in_class_router
 app.include_router(build_in_class_router(get_store, lambda: lesson_provider))
+app.include_router(build_class_speech_settings_router())
+from .class_streaming import build_class_streaming_router
+app.include_router(build_class_streaming_router(get_store))
+from .class_device_routes import build_class_device_router
+app.include_router(build_class_device_router(get_store))
+from .class_study_routes import build_class_study_router
+app.include_router(build_class_study_router(get_store))
 from .class_youtube_routes import build_class_youtube_router
 app.include_router(build_class_youtube_router(get_store))
 app.include_router(build_academic_router(get_store))

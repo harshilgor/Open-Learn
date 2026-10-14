@@ -17,7 +17,7 @@ import {Responsibilities} from './Responsibilities';
 import {LectureDetails} from './LectureDetails';
 import {ClassLive} from './ClassLive';
 import {ClassCapture} from './ClassCapture';
-import type {CourseSummary,Message,JourneyCommand,SessionCreate} from './generated/api';
+import type {CourseSummary,Message,JourneyCommand,backend__app__session_models__SessionCreate as SessionCreate} from './generated/api';
 import {styles} from './theme';
 type Conversation={id:string;title?:string;goal?:string;courseId?:string|null};
 type Activity={id:string;sequence:number;text?:string;type:string};
@@ -26,6 +26,7 @@ type Notice={id:string;title:string;url:string;status:string};
 function Button({title,onPress,disabled=false}:{title:string;onPress:()=>void;disabled?:boolean}){return <Pressable accessibilityRole="button" disabled={disabled} onPress={onPress} style={[styles.button,{opacity:disabled?.5:1}]}><Text style={styles.buttonText}>{title}</Text></Pressable>}
 export default function App(){return <SafeAreaProvider><SafeAreaView style={styles.screen}><Workspace/></SafeAreaView></SafeAreaProvider>}
 function Workspace(){
+  const [pairingCode,setPairingCode]=useState('');
   const [identity,setIdentity]=useState<ReturnType<typeof account>>(null),[sessions,setSessions]=useState<Conversation[]>([]),[courses,setCourses]=useState<CourseSummary[]>([]),[session,setSession]=useState<Conversation|null>(null),[course,setCourse]=useState<string|null>(null),[screen,setScreen]=useState<'chats'|'conversation'|'recordings'|'inbox'|'flashcards'|'settings'|'classes'>('chats');
   const [tasks,setTasks]=useState<Task[]>([]),[activity,setActivity]=useState<Activity[]>([]),[journey,setJourney]=useState<Journey|null>(null),[pending,setPending]=useState<PendingMessage[]>([]),[records,setRecords]=useState<Recording[]>([]),[active,setActive]=useState<Recording|null>(null),[notices,setNotices]=useState<Notice[]>([]),[text,setText]=useState(''),[topic,setTopic]=useState(''),[mode,setMode]=useState<'ask'|'learn'|'research'|'sandbox_lab'>('ask'),[error,setError]=useState(''),[busy,setBusy]=useState(false),[pushEnabled,setPushEnabled]=useState(false);
   const [remoteRecords,setRemoteRecords]=useState<{id:string;title:string}[]>([]);
@@ -72,9 +73,10 @@ function Workspace(){
   useEffect(()=>{
     if(!owner)return;
     const open=(link:ReturnType<typeof safeDeepLink>)=>{if(!link || account()?.owner!==owner)return;const version=generation.current;void api.json<Conversation>(`/v1/sessions/${link.session}`).then(value=>{if(version!==generation.current)return;generation.current++;setBusy(false);setSession(value);setJourney(null);setTasks([]);setActivity([]);setScreen('conversation');}).catch(cause=>setError(cause.message));};
-    void Linking.getInitialURL().then(url=>{if(url)open(safeDeepLink(url))});
+    const openUrl=(value:string)=>{try{const url=new URL(value);const code=url.searchParams.get('code');if(url.protocol==='openlearn:'&&url.hostname==='class-pair'&&code&&/^[A-Z2-9]{12}$/.test(code)){setPairingCode(code);setScreen('classes');return;}}catch{}open(safeDeepLink(value));};
+    void Linking.getInitialURL().then(url=>{if(url)openUrl(url)});
     void Notifications.getLastNotificationResponseAsync().then(response=>{if(response)open(notificationLink(response))});
-    const link=Linking.addEventListener('url',event=>open(safeDeepLink(event.url)));
+    const link=Linking.addEventListener('url',event=>openUrl(event.url));
     const push=Notifications.addNotificationResponseReceivedListener(response=>open(notificationLink(response)));
     return()=>{link.remove();push.remove()};
   },[owner]);
@@ -100,7 +102,7 @@ function Workspace(){
   return <KeyboardAvoidingView style={styles.screen} behavior={Platform.OS==='ios'?'padding':'height'}><View style={[styles.row,{paddingHorizontal:18}]}>{(['chats','classes','recordings','inbox','flashcards','settings'] as const).map(tab=><Pressable accessibilityRole="button" key={tab} onPress={()=>setScreen(tab)}><Text style={styles.link}>{tab==='chats'?'Chats':tab==='classes'?'Classes':tab==='recordings'?'Recordings':tab==='flashcards'?'Flashcards':tab==='settings'?'Settings':'Inbox'}</Text></Pressable>)}<Pressable accessibilityRole="button" onPress={()=>void run(logout)}><Text style={styles.link}>Sign out</Text></Pressable></View>
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.scroll} automaticallyAdjustKeyboardInsets={Platform.OS==='ios'}>
       <Text style={styles.title}>{screen==='conversation'?session?.title||session?.goal||'Conversation':screen==='chats'?'Conversations':screen==='classes'?'In-Class':screen==='recordings'?'Record lecture':screen==='flashcards'?'Flashcards':screen==='settings'?'Settings':'Inbox'}</Text>
-      {owner?<ClassCapture key={'capture:'+owner} owner={owner} visible={screen==='classes'} courses={courses} onOpen={id=>{setRequestedClass(id);setClassOpenRevision(value=>value+1);setScreen('classes');}}/>:null}
+      {owner?<ClassCapture key={'capture:'+owner} owner={owner} visible={screen==='classes'} courses={courses} pairingCode={pairingCode} onOpen={id=>{setPairingCode('');setRequestedClass(id);setClassOpenRevision(value=>value+1);setScreen('classes');}}/>:null}
       {screen==='chats'?<><Text style={styles.muted}>{identity.name}</Text>{sessions.map(item=><Pressable accessibilityRole="button" style={styles.card} key={item.id} onPress={()=>void run(()=>openConversation(item))}><Text style={styles.heading}>{item.title||item.goal||'Conversation'}</Text></Pressable>)}<TextInput accessibilityLabel="New conversation topic" style={styles.input} placeholder="What would you like to learn?" placeholderTextColor="#a6abb8" value={topic} onChangeText={setTopic}/><Text style={styles.heading}>Course</Text><View style={styles.row}><Pressable accessibilityRole="button" onPress={()=>setCourse(null)}><Text style={styles.link}>General</Text></Pressable>{courses.map(item=><Pressable accessibilityRole="button" key={item.id} onPress={()=>setCourse(item.id)}><Text style={styles.link}>{course===item.id?'✓ ':''}{item.name}</Text></Pressable>)}</View><Button title="Start conversation" disabled={busy||!topic.trim()} onPress={()=>void run(async()=>{const body:SessionCreate={topic,goal:topic,courseId:course};const created=await api.json<Conversation>('/v1/sessions',{method:'POST',body:JSON.stringify(body)});await openConversation(created)})}/></>:null}
       {screen==='conversation' && session?<>
         {journey?.turns?.map((turn,index)=><View key={index} style={styles.card}><Text style={styles.heading}>{turn.question}</Text>{turn.lesson?.blocks?.map((block,i)=><Text key={i} style={styles.text}>{block.body}</Text>)}</View>)}

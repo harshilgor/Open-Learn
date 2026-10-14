@@ -100,6 +100,9 @@ class JourneyService:
         submitted_revision = journey["revision"] + (1 if journey.get("persisted") else 0)
         turn = {"question": question, "sessionId": sid, "mode": command.mode, "generationId": generation_id,
                 "status": "pending", "submittedAt": time.time(), "submittedRevision": submitted_revision}
+        if command.class_context:
+            from .class_buddy import ClassBuddyService
+            turn['classContextId'] = ClassBuddyService(self.store).freeze(conn, owner, sid, generation_id, command.class_context, question, submission)
         if submission:
             turn.update({
                 "clientMessageId": submission.get("messageId"),
@@ -635,6 +638,17 @@ class JourneyService:
         }
         if command.mode == "learn" and not is_conversation:
             required_keys.add("lessonState")
+        if command.class_context and generation_id:
+            from .class_buddy import ClassBuddyService, INSTRUCTIONS as CLASS_INSTRUCTIONS
+            class_evidence = ClassBuddyService(self.store).for_generation(owner, generation_id)
+            if class_evidence is None:
+                problem('class_context_missing', 'The accepted lecture context is unavailable. Retry this class question.', 409)
+            # Keep the full acceptance manifest in storage; the provider gets
+            # only teaching evidence, without redundant receipts and ID arrays.
+            context_data['classEvidence'] = {key:class_evidence.get(key) for key in ('title','anchorMs','availableThroughMs','needsReview','uncertainty','evidence','selectedNotes','outline','priorDoubts')}
+            priorities['classEvidence'] = 1
+            required_keys.add('classEvidence')
+            prompt_instructions += CLASS_INSTRUCTIONS
         def relevance_score(value):
             return max((float(item.get("relevanceScore") or 0) for item in value if isinstance(item, dict)), default=0.0) if isinstance(value, list) else 0.0
         candidates = [ContextBlock(key, value, key, priorities.get(key, 6), key in required_keys,

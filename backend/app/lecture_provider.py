@@ -56,7 +56,7 @@ def _usage_failure(exc) -> TranscriptionFailure:
     return TranscriptionFailure(message, code=code, status_code=getattr(exc, "status_code", 503))
 
 
-def _reserve_transcription_usage(provider: str, model: str, duration_ms: int):
+def _reserve_transcription_usage(provider: str, model: str, duration_ms: int, *, addon_rates=()):
     """Reserve the configured per-minute maximum before each paid STT attempt."""
     from .usage.ledger import UsageError
     from .usage.operations import begin_external, configured_rate
@@ -66,6 +66,7 @@ def _reserve_transcription_usage(provider: str, model: str, duration_ms: int):
     rate_name = {
         "openai": "OPENLEARN_OPENAI_STT_USD_PER_MINUTE",
         "openrouter": "OPENLEARN_OPENROUTER_STT_USD_PER_MINUTE",
+        "assemblyai": "OPENLEARN_ASSEMBLYAI_STT_USD_PER_MINUTE",
     }[provider]
     try:
         # Rates are operator-confirmed USD/minute ceilings. Prorate by known
@@ -73,11 +74,15 @@ def _reserve_transcription_usage(provider: str, model: str, duration_ms: int):
         # every short chunk to a whole provider-minute would multiply the
         # allowance charge for long recordings with many chunks.
         rate_nano = configured_rate(rate_name)
+        components = {rate_name: rate_nano}
+        for name in addon_rates:
+            components[name] = configured_rate(name)
+            rate_nano += components[name]
         liability = max(1, (rate_nano * duration_ms + 59_999) // 60_000)
         ticket = begin_external(
             "stt", {"milliseconds": duration_ms}, liability, seconds=240,
             provider=provider, model=model,
-            provider_rates={"usd_nano_per_minute": rate_nano, "billing_unit": "minute"},
+            provider_rates={"usd_nano_per_minute": rate_nano, "billing_unit": "minute", "components": components},
         )
     except UsageError as exc:
         raise _usage_failure(exc) from exc

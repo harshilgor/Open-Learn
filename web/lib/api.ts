@@ -20,7 +20,7 @@ export type LectureStatus = { id: string; noteId: string; title: string; courseI
 export type LectureEvidence = { segmentId: string; startMs: number; endMs: number };
 export type LectureNoteBlock = { id: string; sectionId: string; entityId: string; ordinal: number; blockType: string; title: string; content: string; evidence: LectureEvidence[]; sourceKind: string; verificationStatus: string };
 export type LectureSection = { id: string; ordinal: number; title: string; sectionType: string; summary: string; startMs: number; endMs: number; evidence: LectureEvidence[]; confidence: number | null; analysisStatus: string };
-export type LectureTranscriptSegment = { id: string; chunkId: string; startMs: number; endMs: number; speaker: string; rawText: string; normalizedText: string; confidence: number | null };
+export type LectureTranscriptSegment = { id: string; chunkId: string; startMs: number; endMs: number; speaker: string; rawText: string; normalizedText: string; confidence: number | null; normalizationVersion?: number };
 
 export type GraphRevision = {
   id: string;
@@ -1657,4 +1657,3 @@ export type CourseUpdateInput = {
   reminderPreferences?: Partial<CourseReminderPreferences>;
   archived?: boolean;
 };
-

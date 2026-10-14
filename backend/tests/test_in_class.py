@@ -35,6 +35,8 @@ class Transcriber:
 
 @pytest.fixture
 def env(monkeypatch):
+    for flag in ('OPENLEARN_CLASS_BUDDY_ENABLED','OPENLEARN_CLASS_VISUAL_NOTES_ENABLED','OPENLEARN_CLASS_TOPIC_NOTES_ENABLED'):
+        monkeypatch.setenv(flag,'true')
     path=Path('work')/('class-tests-'+uuid4().hex);path.mkdir(parents=True)
     monkeypatch.setenv('AI_TUTOR_NOTE_VAULT_DIR',str(path/'notes'));monkeypatch.setenv('AI_TUTOR_RECORDINGS_DIR',str(path/'audio'))
     db=Store(path/'test.sqlite');svc=InClassService(db,Provider())
@@ -62,6 +64,10 @@ def test_live_outputs_arrive_before_stop_and_share_quiz_engine(env):
     db,svc,body,created=env;audio(env);drain(svc)
     snap=svc.snapshot('alice',created['session']['id'])
     assert not snap['recording']['captureComplete'] and snap['session']['watermark']==0
+    assert {o['kind'] for o in snap['outputs'] if o['status']=='ready'}=={'notes','materials','flashcards'}
+    # A later speech window after a quiet interval reaches the first cadence.
+    audio(env,1,570000,600000);drain(svc)
+    snap=svc.snapshot('alice',created['session']['id'])
     assert {o['kind'] for o in snap['outputs'] if o['status']=='ready'}=={'notes','materials','practice','flashcards'}
     quiz=next(o for o in snap['outputs'] if o['kind']=='practice')['result']['quizId']
     from backend.app.workflow_store import WorkflowStore
@@ -75,7 +81,7 @@ def test_reordered_chunks_wait_for_contiguous_transcription(env):
     audio(env);drain(svc);assert svc.snapshot('alice',created['session']['id'])['session']['watermark']==1
 
 def test_correction_supersedes_outputs_without_deleting_quiz_attempts(env):
-    db,svc,body,created=env;audio(env);drain(svc);first=svc.snapshot('alice',created['session']['id']);old={o['id'] for o in first['outputs']}
+    db,svc,body,created=env;audio(env,start=570000,end=600000);drain(svc);first=svc.snapshot('alice',created['session']['id']);old={o['id'] for o in first['outputs']}
     segment=first['transcript'][0]
     LectureObservationService(db).correct_transcript('alice',body.recording.id,segment['id'],'Cells have a membrane.',1)
     drain(svc);next=svc.snapshot('alice',created['session']['id'])
@@ -132,7 +138,7 @@ def test_correction_during_provider_call_cannot_publish_stale_notes(env):
 
 
 def test_independent_failure_and_explicit_retry(env):
-    _,svc,_,created=env;audio(env)
+    _,svc,_,created=env;audio(env,start=570000,end=600000)
     delegate=svc.provider
     class FailingProvider:
         def complete_json(self,prompt,tokens=4000):

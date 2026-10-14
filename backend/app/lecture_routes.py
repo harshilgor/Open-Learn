@@ -60,6 +60,12 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None, live
     def live_transcription_status(learner_id: str = Path(min_length=1, max_length=120), owner=Depends(material_owner)):
         authorize(learner_id, owner)
         configured = live_transcription_enabled() and bool(os.getenv("OPENAI_API_KEY"))
+        try:
+            from .class_streaming import configuration
+            configuration()
+            return {'available': True, 'provider': 'AssemblyAI'}
+        except Exception:
+            pass
         return {"available": configured, "provider": "OpenAI" if configured else None}
 
     @router.post("/{recording_id}/live-transcription-session")
@@ -147,7 +153,20 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None, live
             class_setup=conn.execute(text('SELECT payload FROM class_sessions WHERE recording_id=:id AND owner_id=:owner'),{'id':recording_id,'owner':owner}).scalar_one_or_none()
         if class_setup:
             expected=json.loads(class_setup)
-            if request.headers.get('x-capture-device')!=expected['deviceId'] or request.headers.get('x-capture-epoch')!=str(expected['captureEpoch']):
+            if expected.get('activeRunId'):
+                from .class_devices import ClassDeviceService,digest
+                with svc.store.engine.connect() as conn:
+                    run=ClassDeviceService(svc.store).run(conn,owner,expected['id'],request.headers.get('x-capture-run',''))
+                capability=request.headers.get('x-capture-capability','')
+                if (not hmac.compare_digest(run['payload']['capabilityHash'],digest(capability))
+                        or request.headers.get('x-capture-device')!=run['device_id'] or request.headers.get('x-capture-epoch')!=str(run['epoch'])):
+                    raise HTTPException(409,{'code':'capture_device_mismatch','message':'This upload is not authorized for its recording run.'})
+                base=run['payload']['sequenceBase']
+                if sequence<base or x_chunk_start_ms<run['payload']['startMs']:
+                    raise HTTPException(422,{'code':'capture_range_mismatch','message':'This slice is outside its recording run.'})
+                if run['state'] in {'stopped','interrupted'} and (sequence>=base+run['payload']['sealedChunkCount'] or x_chunk_end_ms>run['payload']['audioEndMs']):
+                    raise HTTPException(422,{'code':'capture_range_mismatch','message':'This recovered audio exceeds its sealed recording manifest.'})
+            elif request.headers.get('x-capture-device')!=expected['deviceId'] or request.headers.get('x-capture-epoch')!=str(expected['captureEpoch']):
                 raise HTTPException(409,{'code':'capture_device_mismatch','message':'This class is recording on another device. Join its views instead.'})
         try:
             declared = int(length) if length else 0
@@ -162,6 +181,14 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None, live
                 raise HTTPException(status_code=413, detail={"code": "chunk_too_large", "message": "An audio slice must be smaller than 4 MB."})
         result = translate(lambda: svc.put_chunk(owner, recording_id, sequence, bytes(content), start_ms=x_chunk_start_ms,
                                                    end_ms=x_chunk_end_ms, media_type=request.headers.get("content-type", ""), checksum=x_chunk_sha256))
+        if class_setup:
+            capture_run=run['id'] if expected.get('activeRunId') else None
+            epoch=run['epoch'] if capture_run else expected.get('captureEpoch',1)
+            with svc.store.transaction() as conn:
+                chunk=conn.execute(text('SELECT id FROM lecture_audio_chunks WHERE recording_id=:recording AND sequence_number=:sequence'),{'recording':recording_id,'sequence':sequence}).scalar_one()
+                previous=conn.execute(text('SELECT run_id,epoch FROM class_audio_sources WHERE chunk_id=:id AND owner_id=:owner'),{'id':chunk,'owner':owner}).mappings().first()
+                if previous and (previous['run_id']!=capture_run or previous['epoch']!=epoch):raise HTTPException(409,{'code':'capture_source_conflict','message':'This audio slice already belongs to another capture run.'})
+                conn.execute(text("INSERT INTO class_audio_sources(chunk_id,owner_id,class_id,run_id,epoch,source_kind) VALUES(:chunk,:owner,:class,:run,:epoch,'recorded_audio') ON CONFLICT(chunk_id) DO NOTHING"),{'chunk':chunk,'owner':owner,'class':expected['id'],'run':capture_run,'epoch':epoch})
         schedule_local(tasks, runner.drain)
         return result
 
@@ -169,6 +196,10 @@ def build_lecture_router(store_provider, provider_getter, transcriber=None, live
     def finalize(recording_id: str, command: LectureFinalize, tasks: BackgroundTasks, learner_id: str,
                  owner=Depends(material_owner), svc=Depends(service), runner=Depends(worker)):
         authorize(learner_id, owner)
+        with svc.store.engine.connect() as conn:
+            active=conn.execute(text('SELECT r.state,r.payload FROM class_capture_runs r JOIN class_sessions c ON c.id=r.class_id WHERE c.recording_id=:recording AND r.owner_id=:owner ORDER BY r.epoch DESC LIMIT 1'),{'recording':recording_id,'owner':owner}).mappings().first()
+        if active and (active['state']!='stopped' or not json.loads(active['payload']).get('endClass')):
+            raise HTTPException(409,{'code':'capture_stop_unacknowledged','message':'The recording device must confirm Stop before this class can finish.'})
         result = translate(lambda: svc.finalize(owner, recording_id, command))
         schedule_local(tasks, runner.drain)
         return result

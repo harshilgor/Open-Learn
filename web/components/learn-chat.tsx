@@ -52,6 +52,7 @@ import { clientTimezone, memorySettings, pastedRangesFor } from '@/lib/learner-m
 import { useBuddies, BuddyAvatar } from './buddies';
 import { buddyApi } from '@/lib/buddies';
 import { DevContextInspector } from './dev-context-inspector';
+import {getClassQuestionContext} from '@/lib/class-buddy';
 import { readSettingsPreferences } from '@/lib/settings-preferences';
 import { VerificationBadge, type MessageVerification } from './message-action-bar';
 import {useBrowserAssistant} from '@/lib/browser-assistant';
@@ -230,7 +231,7 @@ export function LearnChat({
   const [quizClarification, setQuizClarification] = useState<{ sessionId?: string; conceptId?: string; origin: 'ask' | 'learn'; sourceTransitionId?: string } | null>(null);
   const quizOrigin = useRef<'ask' | 'learn'>('ask');
   const classificationBypass = useRef<string | null>(null);
-  const submitRef = useRef<((text?:string, fromOutbox?:boolean, clientMessageId?:string, onAccepted?:()=>void) => Promise<'choice' | void>) | null>(null);
+  const submitRef = useRef<((text?:string, fromOutbox?:boolean, clientMessageId?:string, onAccepted?:()=>void, frozenClassContext?:import('@/lib/class-buddy').ClassQuestionContext|null) => Promise<'choice' | void>) | null>(null);
   // Recently pasted text, matched against each sent message (queued messages
   // included). Pasted text never supports a remembered fact about the learner.
   const pastedSnippets = useRef<string[]>([]);
@@ -241,7 +242,7 @@ export function LearnChat({
     storageKey:`openlearn-text-outbox:${buddies.active?.id||'connecting'}:${sessionId||initialSessionId||'new'}`,
     enabled:!waitingForModeChoice&&chatMode==='ask'&&Boolean(buddies.active)&&!quizClarification,
     turnCount:turns.length,
-    send:async (message,onAccepted)=>{outboxProcessing.current++;try{const submit=submitRef.current;if(!submit)throw new Error('Chat is still connecting. Retry this message.');return await submit(message.text,true,message.id,onAccepted);}finally{outboxProcessing.current=Math.max(0,outboxProcessing.current-1);}},
+    send:async (message,onAccepted)=>{outboxProcessing.current++;try{const submit=submitRef.current;if(!submit)throw new Error('Chat is still connecting. Retry this message.');return await submit(message.text,true,message.id,onAccepted,message.classContext||null);}finally{outboxProcessing.current=Math.max(0,outboxProcessing.current-1);}},
   });
   useEffect(() => {
     if (!sessionId) return;
@@ -923,7 +924,7 @@ export function LearnChat({
     finally { setBusy(false); }
   }
 
-  async function streamTurn(input: { action: 'message' | 'start' | 'next' | 'repair'; message: string; question: string }, sid = sessionId, bypassId?: string | null, modeOverride?: ChatMode, clientMessageId?: string, onAccepted?:()=>void, allowConcurrent = false, retryGenerationId?: string, retryMessageId?: string): Promise<'choice' | void> {
+  async function streamTurn(input: { action: 'message' | 'start' | 'next' | 'repair'; message: string; question: string; classContext?:import('@/lib/class-buddy').ClassQuestionContext|null }, sid = sessionId, bypassId?: string | null, modeOverride?: ChatMode, clientMessageId?: string, onAccepted?:()=>void, allowConcurrent = false, retryGenerationId?: string, retryMessageId?: string): Promise<'choice' | void> {
     if (!sid || (busy && !allowConcurrent)) return;
     const submittedDraft = prompt;
     const requestMode = modeOverride || chatMode;
@@ -1135,7 +1136,7 @@ export function LearnChat({
         canonicalConceptIds: studyTask?.canonicalConceptIds, noteContext, selectedText: passageContext?.excerpt,
         selectedSpanIds: passageContext?.spanId ? [passageContext.spanId] : undefined,
         pastedRanges: (() => { const ranges = pastedRangesFor(input.message, pastedSnippets.current); return ranges.length ? ranges : undefined; })(),
-        clientTimezone: clientTimezone() };
+        clientTimezone: clientTimezone(),classContext:input.classContext===undefined?getClassQuestionContext(sid):input.classContext||undefined };
       if (retryGenerationId) await stream.retry(retryGenerationId, clientMessageId || crypto.randomUUID(), callbacks);
       else await stream.start(sid, requestBody, callbacks);
       if (stream.descriptor?.requiresModeChoice) return 'choice';
@@ -1210,7 +1211,7 @@ export function LearnChat({
     } finally { activeGeneration.current = null; setBusy(false); }
   }
 
-  async function submit(quickAction?: string, fromOutbox = false, clientMessageId?: string, onAccepted?:()=>void) {
+  async function submit(quickAction?: string, fromOutbox = false, clientMessageId?: string, onAccepted?:()=>void, frozenClassContext?:import('@/lib/class-buddy').ClassQuestionContext|null) {
     const submittedDraft = prompt;
     const clearSubmittedDraft = () => {if(!fromOutbox)setPrompt(current => current === submittedDraft ? '' : current);};
     const text = quickAction?.trim() || prompt.trim() || (attachments.length ? `Help me understand ${attachments.map(item => item.name).join(', ')}` : '');
@@ -1241,7 +1242,7 @@ export function LearnChat({
     if (fromOutbox && sessionId && canUseTutorFastPath(text, chatMode,
       !!(attachments.length || noteMentions.length || passageContext || browserAssistant.replyTarget))) {
       setClassActionReply(''); setError('');
-      return await streamTurn({ action: 'message', message: text, question: text }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
+      return await streamTurn({ action: 'message', message: text, question: text, classContext:frozenClassContext }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
     }
     setClassActionReply('');
     if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}
@@ -1371,7 +1372,7 @@ export function LearnChat({
         }
       } else {
         setBusy(false);
-        const result = await streamTurn({ action: 'message', message: text, question: text }, currentSession.id, classifiedSuggestion?.id || bypassId,
+        const result = await streamTurn({ action: 'message', message: text, question: text, classContext:frozenClassContext }, currentSession.id, classifiedSuggestion?.id || bypassId,
           undefined, clientMessageId, onAccepted, fromOutbox);
         if (result === 'choice') return 'choice';
       }
@@ -1550,7 +1551,7 @@ export function LearnChat({
       <ChatComposer onPasteText={text => { pastedSnippets.current = [...pastedSnippets.current, text].slice(-20); }} onVoice={() => void startVoice()} onInClass={onInClass} conversation={conversation} onConversation={()=>chooseMode('ask',true)} variant="main" contextConcept={contextConcept} onRemoveContext={() => { if (selectedConcept) setSelectedConcept(null); else setDismissedConceptId(activeConcept?.conceptId || null); }} value={prompt} onChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onSubmit={() => {
         if(/^(?:please )?(?:discuss this separately|open (?:a )?side chat about this|rewrite (?:this|the selected passage)|simplify (?:this|the selected passage)|add (?:an? )?example|improve (?:this|the selected passage)|make question \d+ (?:harder|easier)|let me focus on (?:this|the) (?:document|note)|focus on (?:this|the) workspace|restore split view|return to split view)[.!]?$/i.test(prompt.trim())){void submit();return;}
         if(chatMode==='ask'&&!attachments.length&&!noteMentions.length&&!passageContext&&!quizClarification&&!waitingForModeChoice&&buddies.active){
-          const text=prompt.trim();if(text&&outbox.enqueue(text)){setPrompt('');requestAnimationFrame(()=>scrollToBottom(false));}
+          const text=prompt.trim();if(text&&outbox.enqueue(text,getClassQuestionContext(sessionId||initialSessionId||null))){setPrompt('');requestAnimationFrame(()=>scrollToBottom(false));}
         }else if(!busy&&!outbox.messages.length)void submit();
       }} allowSendWhileBusy={chatMode==='ask'&&!attachments.length&&!noteMentions.length&&!passageContext&&!quizClarification&&!waitingForModeChoice&&outbox.messages.length<30} onCancel={streaming ? () => void activeGeneration.current?.stop() : pendingWorkspaceJob ? () => void request(`/v1/learning-jobs/${pendingWorkspaceJob}/cancel`,{method:'POST'}).catch(cause=>setError(String(cause))) : undefined} busy={busy||outbox.messages.length>0} unavailable={!buddies.active?(buddies.error?'Open Learn could not connect. You can keep writing your draft.':'Connecting to your study partner. You can write while we connect.'):buddies.active.archived&&!sessionId?'Choose an active Buddy to send a new message.':undefined} onRetry={()=>void buddies.refresh()} followup={turns.length > 0} gear={gear} onGearChange={setGear} mode={chatMode} onModeChange={mode=>chooseMode(mode)} noteMentions={noteMentions} onAddNoteMention={note => void addNoteMention(note)} onRemoveNoteMention={noteId => setNoteMentions(current => current.filter(note => note.noteId !== noteId))} onOpenNoteMention={openWorkspaceNote} /></div></div>
   </div>;

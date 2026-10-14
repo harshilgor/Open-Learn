@@ -42,7 +42,7 @@ def practice_due(policy,last_end,window_end,*,at_end=False):
     if cadence=='off':return False
     if cadence=='at_end':return at_end
     interval=PRACTICE_INTERVALS_MS.get(cadence)
-    return interval is not None and (last_end is None or window_end-last_end>=interval)
+    return interval is not None and window_end-(last_end if last_end is not None else 0)>=interval
 
 class ProviderUsageMeter:
     """Capture per-job calls; unmarked providers get estimates and unknown cost."""
@@ -410,6 +410,8 @@ class InClassService:
         from .material_service import MaterialService
         identifier='class_'+command.recording.id
         wanted=command.model_dump(by_alias=True,mode='json')
+        for key,default in (('autoVisuals',False),('autoVisualBudget',3),('speechQuality','balanced')):
+            if wanted.get('policy',{}).get(key)==default:wanted['policy'].pop(key,None)
         if command.capture_capability is None:wanted.pop('captureCapability',None)
         digest=fingerprint(wanted)
         with self.store.engine.connect() as conn:
@@ -421,6 +423,14 @@ class InClassService:
         for vid in command.material_version_ids:
             source=MaterialService(self.store).version(owner,vid)
             if source['course_id'] not in {None,command.recording.course_id} or source['role'] in {'answer_key','sample_paper'}:raise HTTPException(422,{'code':'invalid_material','message':'Choose reference materials available to this course.'})
+        import os
+        speech = None
+        if os.getenv('OPENLEARN_CLASS_VERIFICATION_ENABLED', 'false').lower() == 'true':
+            from .assemblyai_transcription import AssemblyAITranscriptionAdapter
+            model = os.getenv('OPENLEARN_CLASS_VERIFICATION_MODEL', '')
+            if model not in AssemblyAITranscriptionAdapter.SUPPORTED_MODELS:
+                raise HTTPException(422, {'code': 'unsupported_model', 'message': 'Configure a reviewed class verification model.'})
+            speech = {'verificationProvider': 'assemblyai', 'verificationModel': model, 'streamingModel': os.getenv('OPENLEARN_CLASS_STREAMING_MODEL', 'universal-3-6-pro'), 'region': os.getenv('OPENLEARN_CLASS_ASSEMBLYAI_REGION', 'us'), 'schemaVersion': 1}
         status=LectureService(self.store).create(owner,command.recording)
         # Stable linked chat identity also makes a setup retry recoverable after a crash.
         sid='session_class_'+command.recording.id
@@ -429,7 +439,9 @@ class InClassService:
             from .graph_generator import GraphGenerator
             from .session_models import LearningSession
             scope=TopicScope(id='scope_class_'+command.recording.id,topic=command.recording.title,resolved_meaning=command.recording.title,objective='Understand the material covered in this class.',depth='introductory',created_at=utc_now())
-            self.store.save_scope(scope);graph=GraphGenerator().generate(scope);self.store.save_graph(graph)
+            from .usage.context import usage_scope
+            with usage_scope(self.store,owner,'class-setup:'+command.recording.id):
+                self.store.save_scope(scope);graph=GraphGenerator().generate(scope);self.store.save_graph(graph)
             self.store.save_session(LearningSession(id=sid,learner_id=owner,buddy_id=status['buddyId'],course_id=command.recording.course_id,graph_id=graph.id,goal=command.recording.title,title=command.recording.title,created_at=utc_now(),updated_at=utc_now()))
         for vid in command.material_version_ids:MaterialService(self.store).attach(owner,sid,vid)
         policy=command.policy.model_dump(exclude_none=True)
@@ -437,6 +449,10 @@ class InClassService:
         policy.setdefault('keepAudio',bool(status.get('preferences',{}).get('keepAudio',True)))
         item={'id':identifier,'owner':owner,'recordingId':command.recording.id,'sessionId':sid,'buddyId':status['buddyId'],'courseId':status['courseId'],'noteId':status['noteId'],'title':status['title'],'deviceId':command.device_id,'captureCapabilityHash':hashlib.sha256(command.capture_capability.encode('utf-8')).hexdigest() if command.capture_capability else None,'captureEpoch':1,'processingEpoch':0,'policy':policy,'materialVersionIds':command.material_version_ids,'setupHash':digest,'processing':'waiting-for-audio','notesWindowing':True,'partial':False,'cancelled':False}
         item['activeWindowSetId']=self._window_set_id(item)
+        from .class_features import status as class_features
+        item['features']=class_features()
+        if speech is not None:
+            item['speech'] = speech
         with self.store.transaction() as conn:
             conn.execute(text('INSERT INTO class_sessions(id,owner_id,recording_id,session_id,revision,payload,created_at) VALUES(:id,:owner,:recording,:session,1,:payload,:now) ON CONFLICT(id) DO NOTHING'),{'id':identifier,'owner':owner,'recording':command.recording.id,'session':sid,'payload':encoded(item),'now':time.time()})
             from .class_metadata import migrate_legacy
@@ -1067,7 +1083,7 @@ class InClassService:
         if limit<1:return []
         after=self._last_class_target.get(queue)
         now=time.time()
-        eligible="queue=:queue AND kind IN ('class_specialist','class_live_note') AND cancellation_requested=false AND cancel_requested=false AND next_retry_at<=:now AND (status IN ('queued','retry_wait') OR (status='running' AND expires<=:now))"
+        eligible="queue=:queue AND kind IN ('class_specialist','class_live_note','class_visual') AND cancellation_requested=false AND cancel_requested=false AND next_retry_at<=:now AND (status IN ('queued','retry_wait') OR (status='running' AND expires<=:now))"
         with self.store.engine.connect() as conn:
             def targets(operator,value,count):
                 return list(conn.execute(text('SELECT DISTINCT target_id FROM learning_jobs WHERE '+eligible+' AND target_id '+operator+' :after ORDER BY target_id LIMIT :limit'),{'queue':queue,'now':now,'after':value,'limit':count}).scalars())
@@ -1095,7 +1111,12 @@ class InClassService:
         if limit<1:return 0
         from .class_live_notes import ClassLiveNoteService
         live_notes=ClassLiveNoteService(self)
-        with self.store.transaction() as conn:live_notes.cleanup_interims(conn)
+        with self.store.transaction() as conn:
+            live_notes.cleanup_interims(conn)
+            from .class_document import ClassDocumentService
+            ClassDocumentService.backfill_ranges(conn)
+            from .class_devices import ClassDeviceService
+            ClassDeviceService.cleanup(conn)
         for _ in range(20):
             if not self.outbox.deliver_one({
                 'class.transcript':self.coordinate,
@@ -1134,11 +1155,18 @@ class InClassService:
             heartbeat=LeaseHeartbeat(self.store,job)
             usage_meter=ProviderUsageMeter(self.provider) if self.provider else None
             usage_outcome='completed'
-            try:usage_outcome=self.execute(job,usage_meter=usage_meter) or 'completed'
+            try:
+                from .usage.context import usage_scope
+                with usage_scope(self.store, job['owner_id'], job['target_id']):
+                    usage_outcome=self.execute(job,usage_meter=usage_meter) or 'completed'
             except Exception as exc:
                 usage_outcome='error'
                 from .execution import failure_policy
                 reason,retry=failure_policy(exc)
+                if job['kind']=='class_visual':
+                    from .class_visuals import ClassVisualService
+                    ClassVisualService(self).fail(job,reason)
+                    return
                 if job['kind']=='class_live_note':
                     try:live_notes.fail(job,reason,retry)
                     except (HTTPException,LectureError):pass
@@ -1499,6 +1527,9 @@ class InClassService:
         self.event(conn,item,kind+'.failed',{'outputId':output_id,'windowId':package_window,'kind':kind})
 
     def execute(self,job,usage_meter=None):
+        if job['kind']=='class_visual':
+            from .class_visuals import ClassVisualService
+            return ClassVisualService(self).execute(job,usage_meter or self.provider)
         if job['kind']=='class_live_note':
             from .class_live_notes import ClassLiveNoteService
             return ClassLiveNoteService(self).execute(job,usage_meter or self.provider)
@@ -1671,7 +1702,15 @@ class InClassService:
         return 'ready'
 
     def publish(self,conn,item,output):
+        from .class_provenance import enrich_manifest
+        if output.get('sourceManifest'):output['sourceManifest']=enrich_manifest(conn,item['owner'],item['recordingId'],output['sourceManifest'])
+        for block in output.get('result',{}).get('blocks',[]):
+            if block.get('sourceManifest'):block['sourceManifest']=enrich_manifest(conn,item['owner'],item['recordingId'],block['sourceManifest'])
         conn.execute(text('UPDATE class_output_versions SET revision=revision+1,payload=:payload WHERE id=:id AND owner_id=:owner'),{'id':output['id'],'owner':item['owner'],'payload':encoded(output)})
+        from .class_document import ClassDocumentService
+        ClassDocumentService.publish(conn, item, output)
+        from .class_visuals import ClassVisualService
+        ClassVisualService(self).auto(conn,item,output)
 
     def _current_output_page(self,conn,item,cursor=None):
         page=page_active_outputs(conn,owner=item['owner'],class_id=item['id'],active_window_set_ids=[item.get('activeWindowSetId')],package_window=item.get('packageWindow'),generation=int(item.get('outputGeneration',0)),cursor=cursor)

@@ -34,6 +34,11 @@ class CaptureService : Service() {
 }
 
 object Capture {
+  @Volatile var pcmListener:((ByteArray,Int,String)->Unit)?=null
+  @Volatile var livePcmEnabled=false
+  private val pendingPcm=java.util.concurrent.atomic.AtomicInteger(0)
+  fun enableLivePcm(enabled:Boolean){livePcmEnabled=enabled;if(!enabled)pendingPcm.set(0)}
+  fun ackPcm(){pendingPcm.updateAndGet { value -> maxOf(0,value-1) }}
   private var folder:File?=null
   private var journal=JSONObject()
   @Volatile private var running=false
@@ -44,6 +49,7 @@ object Capture {
   private var start=0L
   private var size=0
   private const val rate=16000
+  private var monotonicStart=android.os.SystemClock.elapsedRealtime()
   private fun persist(){
     val directory=folder?:return
     val temporary=File(directory,"capture.tmp")
@@ -55,6 +61,7 @@ object Capture {
     require(Regex("rec_[a-f0-9]{32}").matches(id))
     directory.mkdirs();check(!File(directory,"capture.json").exists())
     folder=directory
+    monotonicStart=android.os.SystemClock.elapsedRealtime()
     journal=JSONObject().put("recordingId",id).put("directory",android.net.Uri.fromFile(directory).toString()).put("status","recording").put("startedAtMs",System.currentTimeMillis()).put("durationMs",0).put("interrupted",false).put("segments",JSONArray())
     persist()
   }
@@ -70,7 +77,7 @@ object Capture {
   @Synchronized private fun openSegment(){
     val seq=journal.getJSONArray("segments").length()
     active=File(folder,"active_$seq.wav");output=RandomAccessFile(active,"rw");output!!.setLength(0);output!!.write(ByteArray(44));size=0
-    start=System.currentTimeMillis()-journal.getLong("startedAtMs")
+    start=android.os.SystemClock.elapsedRealtime()-monotonicStart
     journal.put("activeStartMs",start);persist()
   }
   private fun header(file:RandomAccessFile,length:Int){
@@ -101,6 +108,10 @@ object Capture {
         while(running){
           val count=audio.read(buffer,0,buffer.size);if(!running)break;check(count>0){"Microphone interrupted"}
           synchronized(this){output?.write(buffer,0,count);size+=count;if(size>=rate*2*30){seal();openSegment()}}
+          if(livePcmEnabled && pendingPcm.get()<2 && pcmListener!=null){
+            pendingPcm.incrementAndGet()
+            runCatching {pcmListener?.invoke(buffer.copyOf(count),rate,journal.optString("recordingId"))}.onFailure {ackPcm()}
+          }
         }
       }catch(error:Exception){synchronized(this){journal.put("status","interrupted").put("interrupted",true)}}
       finally {running=false;try{recorder?.stop()}catch(_:Exception){};recorder?.release();recorder=null;synchronized(this){seal();persist()};done()}

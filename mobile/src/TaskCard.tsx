@@ -6,7 +6,7 @@ import {WebView} from 'react-native-webview';
 import * as Crypto from 'expo-crypto';
 import {api} from './account';
 import {download} from './files';
-import type {Command,Decision} from './generated/api';
+import type {Command,backend__app__agent_execution__connected_contracts__Decision as Decision} from './generated/api';
 import {styles} from './theme';
 import {Quiz} from './Quiz';
 export type Task={deckId?:string;id:string;sessionId:string;revision:number;status:string;kind?:string;phase?:string;summary?:string;message?:string;allowedCommands?:string[];pendingRequests?:{requestId:string;revision:number;question:string;options:string[]}[];artifacts?:{id:string;name:string}[];sources?:{id:string;title:string}[];browserControl?:{owner:string;generation:string};connectionId?:string;completion?:{status:string}};

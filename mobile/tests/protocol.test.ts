@@ -2,6 +2,14 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {ApiError,flushMessages,safeDeepLink,syncRecording,type Recording,type Transport,type PendingMessage} from '../src/protocol';
 const make=():Recording=>({id:'rec_'+ 'a'.repeat(32),owner:'alice',title:'Physics',courseId:'course',startedAtMs:1000,directory:'file:///private',segments:[{sequence:0,uri:'file:///part.wav',startMs:0,endMs:30000}],durationMs:30000,interrupted:false,stopped:true,created:false,finalized:false});
+test('paired handoff maps run sequence and time and does not stop the whole class',async()=>{
+  const record=make();record.created=true;record.classSetup={deviceId:'phone',captureEpoch:2,runId:'run',classId:'class',sequenceBase:4,startMs:120000,finalizeOnStop:false,captureCapability:'secret'};
+  const calls:string[]=[];let supplied:Record<string,string>={};
+  const api=transport(calls);api.binary=async<T>(path:string,_bytes:Uint8Array,headers:Record<string,string>)=>{calls.push(path);supplied=headers;return {} as T};
+  await syncRecording(record,'alice',api,async()=>{},async()=>new Uint8Array(100),async()=> 'a'.repeat(64));
+  assert.ok(calls.some(path=>path.endsWith('/chunks/4')));assert.equal(supplied['X-Chunk-Start-Ms'],'120000');assert.equal(supplied['X-Chunk-End-Ms'],'150000');
+  assert.equal(supplied['X-Capture-Run'],'run');assert.equal(supplied['X-Capture-Capability'],'secret');assert.equal(calls.some(path=>path.endsWith('/finalize')),false);
+});
 function transport(calls:string[]):Transport{return {async json<T>(path:string){calls.push(path);return {} as T},async binary<T>(path:string){calls.push(path);return {} as T}}}
 test('interrupted upload retries same identity and checksum before finalize',async()=>{
   const record=make(),calls:string[]=[];const api=transport(calls);let fail=true;

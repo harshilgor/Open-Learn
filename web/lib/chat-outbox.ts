@@ -1,4 +1,5 @@
-export type OutboxMessage = { id: string; text: string; createdAt: number; status: 'queued' | 'sending' | 'accepted' | 'failed' | 'choice'; baseTurn: number; error?: string };
+import type {ClassQuestionContext} from './class-buddy';
+export type OutboxMessage = { id: string; text: string; createdAt: number; status: 'queued' | 'sending' | 'accepted' | 'failed' | 'choice'; baseTurn: number; error?: string; classContext?: ClassQuestionContext };
 
 export function restoreOutbox(raw: string | null): OutboxMessage[] {
   try {

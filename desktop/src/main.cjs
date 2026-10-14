@@ -333,7 +333,7 @@ async function startApi() {
   process.env.FORMA_API_PORT = String(apiPort);
   const executable = pythonExecutable();
   const providerEnvironment = {};
-  for (const key of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY']) {
+  for (const key of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ASSEMBLYAI_API_KEY']) {
     const value = readCredential(key);
     if (value) providerEnvironment[key] = value;
   }

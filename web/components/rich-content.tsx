@@ -64,7 +64,7 @@ function CodeBlock({ children, onExplore, hideHtmlSource = false }: { children?:
  * Canonical renderer for all LLM-generated teaching content.
  * Persisted storage stays Markdown + LaTeX; this component typesets at presentation time.
  */
-export function RichContent({ body, onExplore, onExerciseResolved, onConceptSelect, hideHtmlSource = false }: { body: string; onExplore?: (raw: string, equation?: boolean) => void; onExerciseResolved?: (id: string) => void; onConceptSelect?: (term: string) => void; hideHtmlSource?: boolean }) {
+export function RichContent({ body, onExplore, onExerciseResolved, onConceptSelect, classEvidence, hideHtmlSource = false }: { body: string; onExplore?: (raw: string, equation?: boolean) => void; onExerciseResolved?: (id: string) => void; onConceptSelect?: (term: string) => void; classEvidence?: { segmentIds: string[]; onOpen: (id: string) => void }; hideHtmlSource?: boolean }) {
   const source = normalizeMathMarkdown(body);
   return (
     <div className={styles.rich}>
@@ -72,11 +72,11 @@ export function RichContent({ body, onExplore, onExerciseResolved, onConceptSele
         key={`markdown-${partIndex}`}
         remarkPlugins={remarkPlugins as never}
         rehypePlugins={rehypePlugins as never}
-        urlTransform={url => url.startsWith('concept:') ? url : defaultUrlTransform(url)}
+        urlTransform={url => url.startsWith('concept:') || url.startsWith('class-evidence:') ? url : defaultUrlTransform(url)}
         skipHtml
         components={{
           pre: ({ children }) => <CodeBlock onExplore={onExplore} hideHtmlSource={hideHtmlSource}>{children}</CodeBlock>,
-          a: ({ href, children }) => href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+          a: ({ href, children }) => href?.startsWith('class-evidence:') ? (classEvidence?.segmentIds.includes(href.slice(15)) ? <button type="button" onClick={() => classEvidence.onOpen(href.slice(15))}>{children}</button> : <span>{children}</span>) : href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
           img: ({ alt }) => <span className={styles.imagePlaceholder}>{alt || 'Image reference'}</span>,
           table: ({ children }) => (
             <div className={styles.table}>

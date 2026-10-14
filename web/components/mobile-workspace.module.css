@@ -67,7 +67,7 @@
   .shell :global(.mobile-today > summary) { padding: 10px 12px; }
   .shell :global(.mobile-today[open]) { max-height: 30dvh; }
   .shell :global(.mobile-workspace-nav) { padding: 6px 10px calc(6px + env(safe-area-inset-bottom)); }
-  .shell :global(.buddy-today > *, .buddy-event) { min-width: 0; flex-basis: 100%; overflow-wrap: anywhere; }
+  .shell :global(.buddy-today > *), .shell :global(.buddy-event) { min-width: 0; flex-basis: 100%; overflow-wrap: anywhere; }
   .shell :global(.workspace.chat-focus > .chat-view) { min-height: 0; }
 
   .shell .chat > div {

@@ -19,6 +19,16 @@ from .resource_intents import (
     ResourceIntentService,
 )
 from .lecture_service import LectureError
+from pydantic import BaseModel,Field
+
+class VerificationReceiptInput(BaseModel):
+    expectedRevision:int=Field(ge=1)
+    externalRequestId:str=Field(min_length=1,max_length=160,pattern=r'^[A-Za-z0-9_-]+$')
+
+class ClassTranscriptEditInput(BaseModel):
+    expectedRevision:int=Field(ge=1)
+    wording:str=Field(min_length=1,max_length=4000)
+    speakerRole:str=Field(default='unknown',pattern=r'^(professor|student|unknown)$')
 
 def parse_http_range(value:str|None,size:int):
     if value is None:return None
@@ -42,6 +52,57 @@ def parse_http_range(value:str|None,size:int):
 def build_in_class_router(get_store,provider_getter):
     router=APIRouter(prefix='/v1/class-sessions',tags=['in-class'])
     def service(db=Depends(get_store)):return InClassService(db,provider_getter())
+    @router.get('/{identifier}/verification-requests')
+    def verification_requests(identifier:str,owner=Depends(material_owner),svc=Depends(service)):
+        from .class_verification import ClassVerificationService
+        return ClassVerificationService(svc.store).listing(owner,identifier)
+    @router.post('/{identifier}/verification-requests/{request_id}/retry')
+    def retry_verification(identifier:str,request_id:str,revision:int=Query(ge=1),owner=Depends(material_owner),svc=Depends(service)):
+        from .class_verification import ClassVerificationService
+        from .lecture_provider import TranscriptionFailure
+        try:return ClassVerificationService(svc.store).retry(owner,identifier,request_id,revision)
+        except TranscriptionFailure as exc:raise HTTPException(exc.status_code,{'code':exc.code,'message':str(exc)}) from None
+    @router.post('/{identifier}/verification-requests/{request_id}/receipt')
+    def verification_receipt(identifier:str,request_id:str,body:VerificationReceiptInput,owner=Depends(material_owner),svc=Depends(service)):
+        from .class_verification import ClassVerificationService
+        from .lecture_provider import TranscriptionFailure
+        try:return ClassVerificationService(svc.store).associate_receipt(owner,identifier,request_id,body.expectedRevision,body.externalRequestId)
+        except TranscriptionFailure as exc:raise HTTPException(exc.status_code,{'code':exc.code,'message':str(exc)}) from None
+    @router.get('/{identifier}/transcript/{segment_id}/evidence')
+    def transcript_evidence(identifier:str,segment_id:str,owner=Depends(material_owner),svc=Depends(service)):
+        with svc.store.engine.connect() as conn:
+            item=svc.row(conn,owner,identifier)
+            row=conn.execute(text('SELECT w.payload FROM class_evidence_words w JOIN lecture_transcript_segments s ON s.id=w.segment_id WHERE w.owner_id=:owner AND w.segment_id=:segment AND s.recording_id=:recording'),{'owner':owner,'segment':segment_id,'recording':item['recordingId']}).scalar_one_or_none()
+        return json.loads(row) if row else {'words':[],'settlement':'legacy','confidence':None}
+    @router.patch('/{identifier}/transcript/{segment_id}')
+    def class_transcript_edit(identifier:str,segment_id:str,body:ClassTranscriptEditInput,owner=Depends(material_owner),svc=Depends(service)):
+        from .lecture_observations import LectureObservationService
+        with svc.store.engine.connect() as conn:item=svc.row(conn,owner,identifier)
+        try:return LectureObservationService(svc.store).correct_transcript(owner,item['recordingId'],segment_id,body.wording,body.expectedRevision,body.speakerRole)
+        except LectureError as exc:raise HTTPException(exc.status_code,{'code':exc.code,'message':exc.message}) from None
+    @router.post('/{identifier}/transcript/{segment_id}/undo')
+    def class_transcript_undo(identifier:str,segment_id:str,revision:int=Query(ge=1),owner=Depends(material_owner),svc=Depends(service)):
+        from .lecture_observations import LectureObservationService
+        with svc.store.engine.connect() as conn:item=svc.row(conn,owner,identifier)
+        try:return LectureObservationService(svc.store).undo_transcript(owner,item['recordingId'],segment_id,revision)
+        except LectureError as exc:raise HTTPException(exc.status_code,{'code':exc.code,'message':exc.message}) from None
+    @router.get('/{identifier}/transcript/{segment_id}/audio-info')
+    def class_transcript_audio_info(identifier:str,segment_id:str,owner=Depends(material_owner),svc=Depends(service)):
+        with svc.store.engine.connect() as conn:
+            item=svc.row(conn,owner,identifier)
+            row=conn.execute(text('SELECT c.start_ms,s.start_ms AS segment_start,s.end_ms AS segment_end FROM lecture_transcript_segments s JOIN lecture_audio_chunks c ON c.id=s.chunk_id WHERE s.id=:id AND s.recording_id=:recording'),{'id':segment_id,'recording':item['recordingId']}).mappings().first()
+        if not row:raise HTTPException(404,{'code':'segment_unavailable','message':'This passage is unavailable.'})
+        return {'startSeconds':max(0,(row['segment_start']-row['start_ms'])/1000),'endSeconds':max(0,(row['segment_end']-row['start_ms'])/1000)}
+    @router.get('/{identifier}/transcript/{segment_id}/audio')
+    def class_transcript_audio(identifier:str,segment_id:str,owner=Depends(material_owner),svc=Depends(service)):
+        from .lecture_service import LectureService
+        with svc.store.engine.connect() as conn:
+            item=svc.row(conn,owner,identifier)
+            sequence=conn.execute(text('SELECT c.sequence_number FROM lecture_transcript_segments s JOIN lecture_audio_chunks c ON c.id=s.chunk_id WHERE s.id=:id AND s.recording_id=:recording'),{'id':segment_id,'recording':item['recordingId']}).scalar_one_or_none()
+        if sequence is None:raise HTTPException(404,{'code':'segment_unavailable','message':'This passage is unavailable.'})
+        try:content,mime=LectureService(svc.store).chunk_audio(owner,item['recordingId'],sequence)
+        except LectureError as exc:raise HTTPException(exc.status_code,{'code':exc.code,'message':exc.message}) from None
+        return Response(content,media_type=mime,headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
     @router.get('')
     def class_summaries(response:Response,limit:int=Query(20,ge=1,le=50),cursor:str|None=Query(None,max_length=512),owner=Depends(material_owner),svc=Depends(service)):
         # This compact, owner-filtered index is for selecting a class on mobile.

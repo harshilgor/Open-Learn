@@ -125,7 +125,26 @@ class NumericCheck(ApiModel):
 Candidate.model_rebuild()
 
 
+class ClassSegmentRef(ApiModel):
+    segment_id: str = Field(min_length=1, max_length=160)
+    revision: int = Field(ge=1)
+
+
+class ClassNoteRef(ApiModel):
+    block_id: str = Field(min_length=1,max_length=160)
+    revision: int = Field(ge=1)
+
+
+class ClassContextInput(ApiModel):
+    class_id: str = Field(min_length=1, max_length=160)
+    anchor_ms: int = Field(ge=0, le=86400000)
+    segment_refs: list[ClassSegmentRef] = Field(default_factory=list, max_length=12)
+    note_refs: list[ClassNoteRef] = Field(default_factory=list,max_length=3)
+    review: bool = False
+
+
 class JourneyCommand(ApiModel):
+    class_context: ClassContextInput | None = None
     expected_revision: int = Field(default=1, ge=1)
     classification_bypass_id: str | None = Field(default=None, max_length=100)
     action: Literal["message", "start", "next", "repair", "pause", "resume", "adjust", "mode"] = "message"

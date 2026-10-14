@@ -12,6 +12,13 @@ import {ClassPdfReader} from './class-pdf-reader';
 import {ClassYoutubeSearch} from './class-youtube-search';
 import {LearningApiError,learningApi,request,type CourseSummary} from '@/lib/api';
 import {AudioLines,ArrowRight,BookOpen,Clock3,Mic2} from 'lucide-react';
+import {ClassDeviceStrip} from './class-device-strip';
+import {ClassBuddyPanel} from './class-buddy-panel';
+import {ClassDocument} from './class-document';
+import {ClassSpeechSettings} from './class-speech-settings';
+import {ClassVerificationStatus} from './class-verification-status';
+import {ClassTranscriptPassage} from './class-transcript-passage';
+import {setClassQuestionContext,CLASS_EVIDENCE_OPEN_EVENT} from '@/lib/class-buddy';
 
 const mergeSnapshot=(current:ClassSnapshot|null,next:ClassSnapshot)=>typeof mergeClassSnapshot==='function'?mergeClassSnapshot(current,next):next;
 const ACTIVE_INTAKE_STATUSES=new Set(['queued','fetching','uploading','processing']);
@@ -48,6 +55,13 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   const activeClassIdRef=useRef(classId);activeClassIdRef.current=classId;
   const [identityRevision,setIdentityRevision]=useState(0);
   const [snapshot,setSnapshot]=useState<ClassSnapshot|null>(null);
+  const [phoneAudioEndMs,setPhoneAudioEndMs]=useState(0);
+  const classAnchorMs=snapshot?Math.max(phoneAudioEndMs,snapshot.recording.durationMs||0,snapshot.session.watermarkAudioEndMs||0,snapshot.transcript.reduce((max,segment)=>Math.max(max,segment.endMs),0),(snapshot.liveTranscript||[]).reduce((max,segment)=>Math.max(max,segment.endMs||0),0)):0;
+  useEffect(()=>{if(snapshot?.session.features?.buddy)setClassQuestionContext(snapshot.session.sessionId,{classId:snapshot.session.id,anchorMs:classAnchorMs},snapshot.session.recordingId);return()=>setClassQuestionContext(null,null);},[snapshot?.session.id,snapshot?.session.sessionId,snapshot?.session.features?.buddy,classAnchorMs]);
+  useEffect(()=>{
+    const open=(event:Event)=>{const value=(event as CustomEvent<{classId:string;segmentId:string}>).detail;if(!value||value.classId!==classId)return;cueNavigationPending.current=true;setPendingCueNavigation(value.segmentId);setView('notes');setCueStatus('Opening lecture evidence.');};
+    window.addEventListener(CLASS_EVIDENCE_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_EVIDENCE_OPEN_EVENT,open);
+  },[classId]);
   const [liveCaptions,setLiveCaptions]=useState<LiveTranscriptionDetail|null>(null);
   const [classMetrics,setClassMetrics]=useState<ClassMetrics|null>(null);const [classMetricsBusy,setClassMetricsBusy]=useState(false);const [classMetricsError,setClassMetricsError]=useState('');
   const [view,setView]=useState('notes');const [error,setError]=useState('');
@@ -522,11 +536,14 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     </section>;
   }
   return <section className={styles.workspace} aria-label="In-Class workspace">
+    <ClassDeviceStrip classId={snapshot.session.id} onAudioEnd={setPhoneAudioEndMs}/>
+    <ClassVerificationStatus classId={snapshot.session.id} version={snapshot.cursor}/>
       <p className={styles.srOnly} role="status" aria-live="polite">{followStatus} {cueStatus}</p>
     <header>{buddies.snapshot?.profiles.filter(buddy=>buddy.id===snapshot.session.buddyId).map(buddy=><div key={buddy.id}><BuddyAvatar buddy={buddy}/><strong>{buddy.name}</strong></div>)}<h2>{snapshot.session.title}</h2><p>{snapshot.session.processing.replaceAll('-',' ')} · {snapshot.recording.captureComplete?'Capture stopped':'Capture remains on its recording device'} · {snapshot.recording.chunks.transcribed} slices transcribed</p><div className={styles.transcriptionStatus} data-state={transcriptState.state} role="status" aria-live="polite" aria-atomic="true" aria-label={`Transcription status: ${transcriptState.label}`}><strong>{transcriptState.label}</strong><span>{transcriptState.detail}</span></div><small>Recording controls stay in the workspace shell. Opening this class never starts a microphone.</small></header>
     <nav aria-label="Class views" className={styles.tabs}>{['notes','materials','practice','package'].map(tab=><button type="button" aria-pressed={view===tab} key={tab} onClick={()=>setView(tab)}>{tab==='package'?'Revision':tab[0].toUpperCase()+tab.slice(1)}{tab==='practice'?` (${outputs.filter(o=>['practice','flashcards'].includes(o.kind)&&o.status==='ready').length})`:''}</button>)}</nav>
     <details className={styles.preferences}>
       <summary>Processing preferences</summary>
+      <ClassSpeechSettings/>
       <p>Updates apply while class processing runs. Notes can backfill retained windows; enabling materials, practice or flashcards starts with the newest settled window.</p>
       <fieldset disabled={policyUpdating||snapshot.session.cancelled||snapshot.session.outputTransitionPending}>
         <legend>Prepare during class</legend>
@@ -535,6 +552,8 @@ export function InClassWorkspace({classId}:{classId:string|null}){
       <fieldset disabled={policyUpdating||snapshot.session.cancelled||snapshot.session.outputTransitionPending}>
         <legend>Study behavior</legend>
         <label>Note detail<select value={policy.noteDensity} onChange={event=>void command('update_policy',undefined,{...policy,noteDensity:event.currentTarget.value as ClassPolicy['noteDensity']})}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
+        <label><input type="checkbox" checked={policy.autoVisuals} onChange={event=>void command('update_policy',undefined,{...policy,autoVisuals:event.currentTarget.checked})}/>Suggest one visual per topic when enough lecture evidence is available</label>
+        <label>Automatic visual budget per class<input type="number" min="0" max="10" value={policy.autoVisualBudget} onChange={event=>{const value=Number(event.currentTarget.value);if(Number.isInteger(value)&&value>=0&&value<=10)void command('update_policy',undefined,{...policy,autoVisualBudget:value});}}/></label>
         <label>Practice cadence<select value={policy.practiceCadence} onChange={event=>{const practiceCadence=event.currentTarget.value as ClassPolicy['practiceCadence'];void command('update_policy',undefined,{...policy,practiceCadence,practice:practiceCadence!=='off'});}}><option value="off">Off</option><option value="every_10_minutes">Every 10 minutes</option><option value="every_20_minutes">Every 20 minutes</option><option value="at_end">At the end</option></select></label>
         <label>Follow professor<select value={policy.followProfessor} onChange={event=>void command('update_policy',undefined,{...policy,followProfessor:event.currentTarget.value as ClassPolicy['followProfessor']})}><option value="off">Off</option><option value="explicit">Follow page, slide, chapter, or figure cues</option><option value="all">Also follow uniquely matched material references</option></select></label>
         <label><input type="checkbox" checked={policy.showInterimTranscript} onChange={event=>void command('update_policy',undefined,{...policy,showInterimTranscript:event.currentTarget.checked})}/>Show provisional live captions</label>
@@ -556,7 +575,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     </details>
     {reference?<button className={styles.referenceToggle} type="button" aria-pressed={referenceOpen} onClick={()=>setReferenceOpen(open=>!open)}>{referenceOpen?'Hide reference':'Show reference'} · {reference.title}</button>:null}
     {markers.length||cueSegments.length||referenceCues.length?<nav className={styles.cueRail} aria-label="Live class cues and recording markers"><strong>Live cues</strong><div className={styles.cueList}>{markers.map((marker,index)=><button key={`marker-${index}-${marker}`} type="button" className={styles.markerCue} onClick={()=>jumpToMarker(marker,index)} aria-label={`Recording marker ${index+1} at ${formatCueTime(marker)}; jump to nearest loaded transcript passage`}><span aria-hidden="true">◆</span> Marker {index+1} · {formatCueTime(marker)}</button>)}{cueSegments.map(segment=>{const text=(segment.normalizedText||segment.rawText).replace(/\s+/g,' ').trim();const excerpt=text.length>72?`${text.slice(0,69)}…`:text;return <button key={segment.id} type="button" className={styles.transcriptCue} onClick={()=>jumpToTranscript(segment.id,`Showing transcript passage at ${formatCueTime(segment.startMs)}.`)} aria-label={`Transcript cue at ${formatCueTime(segment.startMs)}: ${text}`}><time>{formatCueTime(segment.startMs)}</time><span>{excerpt||'Transcript passage'}</span></button>;})}{referenceCues.map(source=><button key={source.spanId} type="button" className={styles.markerCue} onClick={()=>void actionRouter.dispatch({type:'open-reference',source})} aria-label={`Open course reference ${source.title}, page ${source.pageLabel||source.pageIndex+1}`}><span aria-hidden="true">↗</span> {source.title} · p. {source.pageLabel||source.pageIndex+1}</button>)}</div>{cueStatus?<small>{cueStatus}</small>:null}</nav>:null}
-    <div className={styles.stage} data-reference-open={referenceOpen&&Boolean(reference)}>
+    <div className={styles.stage} data-reference-open={referenceOpen&&Boolean(reference)} data-buddy={Boolean(snapshot.session.features?.buddy)}>
       <div className={styles.stageMain}>
         {view==='materials'&&snapshot.session.needInfoHasMore?<Button disabled={needsPageBusy} onClick={()=>{
           const scope=classId;const after=snapshot.session.needInfoNextCursor;if(!scope||!after)return;setNeedsPageBusy(true);
@@ -573,6 +592,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
           <p role="status">{libraryStatus}</p>
           {libraryCandidates.map(source=><button key={source.spanId} type="button" className={styles.source} onClick={()=>actionRouter.dispatch({type:'open-reference',source})}>{source.title} · Page {source.pageLabel||source.pageIndex+1}<p>{source.text.slice(0,300)}</p></button>)}
         </section>:null}
+        {view==='notes'&&snapshot.session.features?.topicNotes?<ClassDocument classId={snapshot.session.id} version={snapshot.cursor} visualsEnabled={snapshot.session.features?.visualNotes}/>:null}
         {view==='notes'&&(snapshot.provisionalNotes?.length??0)>0?<section className={styles.output} aria-label="Caption notes">
           <h3>Fast notes · provisional</h3><p>These drafts use live captions. Recorded audio replaces them with archived transcript evidence; your saved note edits remain separate.</p>
           {(snapshot.provisionalNotes??[]).slice(-20).map(note=><article key={note.id}>
@@ -612,13 +632,14 @@ export function InClassWorkspace({classId}:{classId:string|null}){
         {snapshot.session.noSpeech?<p>No transcribed speech is available for a revision package. Review the saved recording and its transcription status.</p>:null}
         {snapshot.session.sourceCorrected?<p>Transcript wording was corrected. Updated study material appears here; saved note edits and existing quiz answers are preserved.</p>:null}
         {snapshot.recording.captureComplete&&snapshot.recording.chunks.missing.length?<p>Missing audio slices: {snapshot.recording.chunks.missing.join(', ')}. Full completion waits for recovery.<Button size="sm" variant="outline" onClick={()=>void command('partial_package')}>Prepare available coverage</Button></p>:null}
-        {view==='notes'?<><details ref={transcriptDetailsRef} data-font-scale={policy.transcriptFontScale} onToggle={event=>{if(event.currentTarget.open&&!policy.autoScrollLock&&!cueNavigationPending.current)window.requestAnimationFrame(()=>transcriptEndRef.current?.scrollIntoView({block:'nearest'}));}}><summary>Transcript · {snapshot.transcript.length} passages loaded</summary><div className={styles.transcriptBody}>{snapshot.transcript.map(segment=><p id={`class-transcript-${segment.id}`} tabIndex={-1} key={segment.id}><small>{formatCueTime(segment.startMs)}</small> {segment.normalizedText||segment.rawText}</p>)}<div ref={transcriptEndRef}/></div>{snapshot.transcriptHasMore?<Button size="sm" variant="outline" disabled={transcriptPageBusy} onClick={()=>void loadMoreTranscript()}>{transcriptPageBusy?'Loading transcript…':'Load more transcript'}</Button>:null}</details>{outputs.filter(o=>o.kind==='notes').map(output)}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open saved class note</Button></>:null}
+        {view==='notes'?<><details ref={transcriptDetailsRef} data-font-scale={policy.transcriptFontScale} onToggle={event=>{if(event.currentTarget.open&&!policy.autoScrollLock&&!cueNavigationPending.current)window.requestAnimationFrame(()=>transcriptEndRef.current?.scrollIntoView({block:'nearest'}));}}><summary>Transcript · {snapshot.transcript.length} passages loaded</summary><div className={styles.transcriptBody}>{snapshot.transcript.map(segment=><div id={`class-transcript-${segment.id}`} tabIndex={-1} key={segment.id}><ClassTranscriptPassage classId={snapshot.session.id} segment={segment} onCorrected={saved=>setSnapshot(current=>current?{...current,transcript:current.transcript.map(value=>value.id===saved.segmentId?{...value,normalizedText:saved.wording,speaker:saved.speakerRole,normalizationVersion:saved.revision}:value)}:current)}/></div>)}<div ref={transcriptEndRef}/></div>{snapshot.transcriptHasMore?<Button size="sm" variant="outline" disabled={transcriptPageBusy} onClick={()=>void loadMoreTranscript()}>{transcriptPageBusy?'Loading transcript…':'Load more transcript'}</Button>:null}</details>{outputs.filter(o=>o.kind==='notes'&&(!snapshot.session.features?.topicNotes||o.status!=='ready')).map(output)}<Button size="sm" variant="outline" onClick={()=>void actionRouter.dispatch({type:'open-note',noteId:snapshot.session.noteId})}>Open saved class note</Button></>:null}
         {view==='materials'?outputs.filter(o=>o.kind==='materials').map(output):null}
         {view==='practice'?outputs.filter(o=>['practice','flashcards'].includes(o.kind)).map(output):null}
         {view==='package'?<>{outputs.filter(o=>['summary','recall','revision_quiz'].includes(o.kind)).map(output)}{!snapshot.recording.captureComplete?<p>Summary, revision quiz and active recall are prepared after you stop.</p>:null}</>:null}
         {snapshot.outputHasMore?<Button size="sm" variant="outline" disabled={outputPageBusy} onClick={()=>void loadMoreOutputs()}>{outputPageBusy?'Loading earlier results…':'Load earlier class results'}</Button>:null}
         {!outputs.length?<p>Waiting for settled speech. Notes and practice appear quietly as coverage arrives.</p>:null}
       </div>
+      {snapshot.session.features?.buddy?<ClassBuddyPanel classId={snapshot.session.id} sessionId={snapshot.session.sessionId} anchorMs={classAnchorMs} version={snapshot.cursor} buddyName={buddies.snapshot?.profiles.find(buddy=>buddy.id===snapshot.session.buddyId)?.name}/>:null}
       {reference&&referenceOpen?<aside className={styles.referencePane} aria-label="Class reference" onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();setReferenceOpen(false);if(referenceOpener.current?.isConnected)referenceOpener.current.focus();else document.querySelector<HTMLButtonElement>('[aria-label="Class views"] button[aria-pressed="true"]')?.focus();}}}>
         <header><div><small>COURSE REFERENCE · PAGE {shownReferenceLabel}{shownReferenceLabel!==String(shownReferencePage+1)?` · PDF PAGE ${shownReferencePage+1}`:''}</small><h3>{reference.title}</h3></div><button type="button" aria-label="Close reference" onClick={()=>{setReferenceOpen(false);if(referenceOpener.current?.isConnected)referenceOpener.current.focus();else document.querySelector<HTMLButtonElement>('[aria-label="Class views"] button[aria-pressed="true"]')?.focus();}}>×</button></header>
         {activeReferenceManifest?.outline.length?<details className={styles.referenceOutline}><summary>Document contents</summary><nav aria-label="PDF contents">{activeReferenceManifest.outline.map((entry,index)=><button key={`${entry.pageIndex}:${index}`} type="button" onClick={()=>setReferencePageIndex(entry.pageIndex)} style={{paddingInlineStart:`${8+Math.min(entry.depth,10)*12}px`}}><span>{entry.title}</span><small>{entry.pageLabel}</small></button>)}</nav></details>:null}

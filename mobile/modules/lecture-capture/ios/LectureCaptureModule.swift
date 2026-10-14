@@ -5,6 +5,11 @@ public class LectureCaptureModule: Module {
   private let capture = SegmentedCapture()
   public func definition() -> ModuleDefinition {
     Name("LectureCapture")
+    Events("pcm")
+    OnCreate {self.capture.onPcm = { [weak self] data,rate,id in self?.sendEvent("pcm",["data":data.base64EncodedString(),"sampleRate":rate,"recordingId":id])}}
+    OnDestroy {self.capture.enableLive(false);self.capture.onPcm=nil}
+    AsyncFunction("setLivePcmEnabled") { (enabled:Bool) in self.capture.enableLive(enabled) }
+    AsyncFunction("ackPcm") { self.capture.ackPcm() }
     AsyncFunction("start") { (directory:String,id:String) in try self.capture.start(directory,id) }
     AsyncFunction("stop") { try self.capture.stop("stopped") }
     AsyncFunction("pause") { try self.capture.stop("paused") }
@@ -14,6 +19,11 @@ public class LectureCaptureModule: Module {
 }
 
 private final class SegmentedCapture {
+  var onPcm:((Data,Int,String)->Void)?
+  private var livePcmEnabled=false
+  private var pendingPcm=0
+  func enableLive(_ enabled:Bool){queue.async {self.livePcmEnabled=enabled;if !enabled {self.pendingPcm=0}}}
+  func ackPcm(){queue.async {self.pendingPcm=max(0,self.pendingPcm-1)}}
   private let queue = DispatchQueue(label:"openlearn.capture")
   private var engine:AVAudioEngine?
   private var folder:URL?
@@ -23,6 +33,7 @@ private final class SegmentedCapture {
   private var size=0
   private var rate=48000
   private var segmentStart=0
+  private var monotonicStart=ProcessInfo.processInfo.systemUptime
   private var observer:NSObjectProtocol?
   private func directory(_ value:String) throws -> URL {
     guard let url=URL(string:value),url.isFileURL else {throw NSError(domain:"capture",code:1)}
@@ -42,6 +53,7 @@ private final class SegmentedCapture {
     try queue.sync {
       guard engine==nil,journal["status"] as? String != "paused",id.range(of:"^rec_[a-f0-9]{32}$",options:.regularExpression) != nil else{throw NSError(domain:"capture",code:3)}
       folder=try directory(value);try FileManager.default.createDirectory(at:folder!,withIntermediateDirectories:true)
+      monotonicStart=ProcessInfo.processInfo.systemUptime
       guard !FileManager.default.fileExists(atPath:folder!.appendingPathComponent("capture.json").path) else{throw NSError(domain:"capture",code:4)}
       journal=["recordingId":id,"directory":folder!.absoluteString,"status":"recording","startedAtMs":now(),"durationMs":0,"interrupted":false,"segments":[[String:Any]]()]
       try persist();try begin();return journal
@@ -59,7 +71,9 @@ private final class SegmentedCapture {
       for i in 0..<Int(buffer.frameLength){var sample=Int16(max(-1,min(1,samples[i]))*32767).littleEndian;withUnsafeBytes(of:&sample){bytes.append(contentsOf:$0)}}
       self.queue.async {
         guard self.engine != nil else{return}
-        do {try self.file?.write(contentsOf:bytes);self.size+=bytes.count;if self.size>=self.rate*2*30 {try self.seal();try self.open()}}
+        do {try self.file?.write(contentsOf:bytes);self.size+=bytes.count;if self.size>=self.rate*2*30 {try self.seal();try self.open()}
+          if self.livePcmEnabled && self.pendingPcm<2,let listener=self.onPcm {self.pendingPcm+=1;listener(bytes,self.rate,self.journal["recordingId"] as? String ?? "")}
+        }
         catch {try? self.finish("interrupted")}
       }
     }
@@ -72,7 +86,7 @@ private final class SegmentedCapture {
     active=folder!.appendingPathComponent("active_\(segments.count).wav")
     FileManager.default.createFile(atPath:active!.path,contents:Data(count:44))
     file=try FileHandle(forWritingTo:active!);try file!.seekToEnd();size=0
-    segmentStart=now()-(journal["startedAtMs"] as! Int)
+      segmentStart=Int((ProcessInfo.processInfo.systemUptime-monotonicStart)*1000)
     journal["activeStartMs"]=segmentStart;journal["sampleRate"]=rate;try persist()
   }
   private func header(_ length:Int)->Data {
