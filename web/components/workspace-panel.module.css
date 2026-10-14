@@ -855,3 +855,7 @@
 
 /* Full-width (focus) mode: keep tool content at a readable width. */
 .focused .toolPage, .focused .practiceView, .focused .practiceBack { width: 100%; max-width: 760px; margin-inline: auto; }
+
+/* Unsaved local draft: a small toolbar control with a dot instead of a banner. */
+.draftIndicator { position: relative; color: var(--event-assignment) !important; }
+.draftIndicator::after { content: ""; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--event-assignment); box-shadow: 0 0 0 2px var(--background); }
