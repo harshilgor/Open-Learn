@@ -182,7 +182,10 @@ class BrowserbaseProvider:
         self.request('DELETE', 'contexts/' + identifier)
 
     def live_view(self, identifier):
-        return self.request('GET', f'sessions/{identifier}/debug?expiresIn=60')['debuggerFullscreenUrl']
+        link = self.request('GET', f'sessions/{identifier}/debug?expiresIn=60')['debuggerFullscreenUrl']
+        if not valid_live_view_url(link):
+            raise ValueError('Provider returned an unsupported browser view.')
+        return link
 
 
 def queue_context_cleanup(store, owner, connection):

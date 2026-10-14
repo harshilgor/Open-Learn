@@ -59,3 +59,7 @@ The Oregon rollback API was not updated in this release. Before routing traffic 
 ## Current delivery configuration
 
 In-app inbox and conversation delivery are active and passed the hosted synthetic probe. Email activation is deferred until the user owns a dedicated verified sender domain. Keep OPENLEARN_REMINDER_EMAIL_ENABLED disabled. Do not reuse the Morni integration key or sender. Preferences report emailAvailable=false until the flag, API key, sender, web origin and owner recipient are configured. Verify sender DNS before enabling email and qualify delivery to the opted-in user address.
+
+## Verified private-profile candidate
+
+PR #52 fixes current Browserbase Live View host compatibility. Isolated hosted candidate probe passed owner denial, profile persistence and clearing, termination, deletion, settlement and real signed-link expiry (old link denied after 65 seconds; new link connects to same session). Cost $0.008. Before Canvas qualification deploy the reviewed candidate, verify matching API/browser commits, and activate the private-profile readiness flag only against this evidence. Scheduled-browser enrollment stays off until the actual authenticated routine/restart acceptance passes. Obtain explicit consent to store the user's Canvas sign-in with Browserbase and let the user complete campus login/MFA; never request the password in chat.

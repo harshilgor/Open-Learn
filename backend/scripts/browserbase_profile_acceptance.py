@@ -127,31 +127,44 @@ def main():
                 with usage_scope(store, owner, 'profile-probe-' + str(index)):
                     started = connections.cloud_login(owner, connection['id'], connection['revision'])
                 connection = started['connection']
-                if index == 0:
-                    # Validate actual provider expiry, not merely the requested TTL.
-                    from urllib.parse import urlsplit, parse_qs
-                    import base64
-                    link_parts = urlsplit(started['liveViewUrl'])
-                    claims = None
-                    candidates=[value for values in parse_qs(link_parts.query).values() for value in values]
-                    for value in list(candidates):
-                        candidates.extend(v for values in parse_qs(urlsplit(value).query).values() for v in values)
-                    for value in candidates:
-                        pieces=value.split('.')
-                        if len(pieces)==3:
-                            try:
-                                claims=json.loads(base64.urlsafe_b64decode(pieces[1]+'='*(-len(pieces[1])%4)))
-                            except (ValueError,UnicodeDecodeError):
-                                continue
-                    checks['liveViewExpiryClaimBounded'] = bool(claims and isinstance(claims.get('exp'),(float,int)) and 0 < claims['exp']-time.time() <= 65)
-                    print(json.dumps({'liveViewQueryKeys':sorted(parse_qs(link_parts.query)), 'liveViewExpiryClaimBounded':checks['liveViewExpiryClaimBounded']}))
-                    if not checks['liveViewExpiryClaimBounded']:
-                        raise AssertionError('Provider Live View expiry cannot be established from issued link')
                 with store.engine.connect() as conn:
                     raw = connections.repo.read('site_connections', owner, connection['id'])
                     lease = conn.execute(text('SELECT * FROM browser_session_leases WHERE owner_id=:owner AND run_id=:run'),
                         {'owner':owner, 'run':'login:' + connection['id']}).mappings().one()
                 context_ids.add(raw['providerContextId'])
+                if index == 0:
+                    from urllib.parse import urlsplit
+                    debug_info=provider.request('GET','sessions/'+lease['provider_session']+'/debug?expiresIn=60')
+                    live_ws=debug_info.get('wsUrl','')
+                    if urlsplit(live_ws).scheme != 'wss':
+                        raise AssertionError('Provider returned no secure Live View websocket')
+                    print(json.dumps({'qualificationStage':'launch_local_validator'}))
+                    validator=playwright.chromium.launch(headless=True,args=['--no-sandbox','--disable-dev-shm-usage'])
+                    print(json.dumps({'qualificationStage':'validator_launched'}))
+                    try:
+                        check_page=validator.new_page()
+                        def opens(endpoint):
+                            return check_page.evaluate("""endpoint => new Promise(resolve => {
+                                const socket=new WebSocket(endpoint);
+                                const timer=setTimeout(()=>{socket.close();resolve(false)},10000);
+                                socket.onopen=()=>{clearTimeout(timer);socket.close();resolve(true)};
+                                socket.onerror=()=>{clearTimeout(timer);resolve(false)};
+                                socket.onclose=()=>{clearTimeout(timer);resolve(false)};
+                            })""",endpoint)
+                        if not opens(live_ws):
+                            raise AssertionError('Fresh Live View connection was rejected')
+                        print(json.dumps({'liveViewInitialConnection':True,'expiryWaitSeconds':65}))
+                        for _ in range(13):
+                            time.sleep(5)
+                        if opens(live_ws):
+                            raise AssertionError('Expired Live View link still permits connection')
+                        checks['liveViewExpiredConnectionDenied']=True
+                        fresh_ws=provider.request('GET','sessions/'+lease['provider_session']+'/debug?expiresIn=60')['wsUrl']
+                        if not opens(fresh_ws):
+                            raise AssertionError('Fresh replacement Live View connection was rejected')
+                        checks['freshLiveViewConnectionWorks']=True
+                    finally:
+                        validator.close()
                 sessions.append(lease['provider_session'])
                 endpoint = json.loads(lease['payload'])['connectUrl']
                 browser = playwright.chromium.connect_over_cdp(endpoint, timeout=20_000)
@@ -196,7 +209,7 @@ def main():
         print(json.dumps({'result':'passed','kind':'synthetic_private_profile_lifecycle',
             'checks':checks,'sessions':len(sessions),'costUsd':cost/1_000_000_000,
             'maximumReservedUsd':0.06,'productionFlagsChanged':False,
-            'authenticatedPortalQualified':False,'liveViewExpiryQualified':False}))
+            'authenticatedPortalQualified':False,'liveViewExpiryQualified':checks.get('liveViewExpiredConnectionDenied',False) and checks.get('freshLiveViewConnectionWorks',False)}))
     finally:
         with store.engine.connect() as conn:
             leases = conn.execute(text("SELECT * FROM browser_session_leases WHERE status<>'closed'")).mappings().all()
@@ -220,5 +233,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as exc:
+        import traceback
+        print(json.dumps({'errorFrames':[{'file':Path(f.filename).name,'line':f.lineno} for f in traceback.extract_tb(exc.__traceback__)][-6:]}))
         print(json.dumps({'result':'failed','errorType':type(exc).__name__,'errorCode':getattr(exc,'detail',{}).get('code') if isinstance(getattr(exc,'detail',None),dict) else None,'message':getattr(exc,'detail',{}).get('message') if isinstance(getattr(exc,'detail',None),dict) else None,'productionFlagsChanged':False}))
         raise SystemExit(1) from None

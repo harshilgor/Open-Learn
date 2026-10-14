@@ -89,7 +89,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
       - name: Isolated scheduled-browser recovery and PostgreSQL race checks
-        run: python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_scheduled_browser_jobs.py backend/tests/test_chat_reminders.py
+        run: python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_scheduled_browser_jobs.py backend/tests/test_chat_reminders.py backend/tests/test_browser_live_view_url.py
   backend-redis:
     # Cache-aside layer against a real Valkey server (other jobs use fakeredis).
     runs-on: ubuntu-24.04

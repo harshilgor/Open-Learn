@@ -245,3 +245,9 @@ Remaining: authenticated portal coverage, expired-login recovery, injected live 
 - Qualification helper added: backend/scripts/browserbase_profile_acceptance.py. It uses isolated SQLite and synthetic cookies, bounded sessions, owner-denial checks, deletion and usage settlement; never changes deployed flags. A candidate-only execution is not production activation.
 
 Live candidate lifecycle qualification passed: three synthetic sessions, cookie persistence and clearing, cross-owner denial, provider termination, profile deletion (GET returned 404), and usage settlement. Cost $0.006; maximum funded reservations $0.06. No deployed flags changed. Link-expiry enforcement and authenticated Canvas remain distinct pending gates.
+
+Candidate published as PR #52: https://github.com/harshilgor/Open-Learn/pull/52. Includes main PR #51 without including unrelated uncommitted assessment work. Local browser/control suite: 45 passed. Expanded frontend suite including compact chat: 19 passed. CI PostgreSQL recovery, frontend production build and Redis checks passed on initial candidate run 38614436399; full backend/desktop checks still running at this checkpoint.
+
+Initial PR #52 CI passed: 332 backend tests (one skipped), 28 isolated PostgreSQL/reminder tests, 34 Redis tests, frontend build. These counts refer to candidate 7a5654c; follow-up provider-URL hardening and expiry-helper changes require their own final candidate checks.
+
+Final candidate live-provider profile and link-expiry probe passed: original signed WebSocket connects, is denied after 65 seconds, and a fresh signed link connects to the same still-active session. Persistence, cookie clearing, cross-owner denial, termination, deletion and settlement all passed across three synthetic sessions. Cost $0.008, maximum funded reservations $0.06. Screenshot: outputs/cloud-profile-expiry-qualified.jpg. Authenticated Canvas is still pending; production flags were not changed by the probe.
