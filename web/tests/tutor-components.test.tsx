@@ -29,29 +29,30 @@ it('allows text sends during a response while retaining a separate stop control'
   click(button('Send message'));expect(send).toHaveBeenCalledOnce();
   click(button('Stop generating'));expect(stop).toHaveBeenCalledOnce();
   expect(button('Dictate message').disabled).toBe(true);
-  expect(button('Chat options and attachments').disabled).toBe(true);
+  expect(button('Attach files and chat options').disabled).toBe(true);
 });
 
 describe('composer preferences', () => {
-  it('keeps preferences outside the writing surface and changes all explanation depths', () => {
+  it('keeps mode and explanation depth in the + menu and shows only non-default choices', () => {
+    const onMode = vi.fn();
     function Preferences() {
       const [gear, setGear] = useState<'Quick' | 'Guided' | 'Deep'>('Quick');
-      return <ChatComposer value="Draft stays here" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={vi.fn()} busy={false} followup={false} gear={gear} onGearChange={setGear} mode="ask" onModeChange={vi.fn()}/>;
+      return <ChatComposer value="Draft stays here" onChange={vi.fn()} attachments={[]} onAttachmentsChange={vi.fn()} onSubmit={vi.fn()} busy={false} followup={false} gear={gear} onGearChange={setGear} mode="ask" onModeChange={onMode}/>;
     }
     render(<Preferences/>);
-    expect(button('Conversation mode').closest('form')).toBeNull();
-    const trigger = button('Explanation depth: Quick');
-    expect(trigger.closest('form')).toBeNull();
-    click(trigger);
+    expect(container.querySelector('[aria-label="Chat preferences"]')).toBeNull();
+    expect(button('Attach files and chat options').dataset.customized).toBeUndefined();
+    click(button('Attach files and chat options'));
     const find = (name: string) => [...document.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === name || item.getAttribute('aria-label') === name)!;
+    expect(document.querySelector('[aria-label="Explanation depth: Quick"]')).toBeTruthy();
     click(find('Deep'));
-    expect(button('Explanation depth: Deep')).toBeTruthy();
-    const range = document.querySelector<HTMLInputElement>('input[type="range"]')!;
-    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(range, '1'); range.dispatchEvent(new Event('change', { bubbles: true })); });
-    expect(button('Explanation depth: Guided')).toBeTruthy();
-    expect(range.getAttribute('aria-valuetext')).toBe('Guided');
-    click(find('Reset explanation depth to Quick'));
-    expect(button('Explanation depth: Quick')).toBeTruthy();
+    expect(document.querySelector('[aria-label="Explanation depth: Deep"]')).toBeTruthy();
+    expect(button('Attach files and chat options (Deep)').dataset.customized).toBe('true');
+    click(find('Guided'));
+    expect(button('Attach files and chat options (Guided)')).toBeTruthy();
+    const learn = [...document.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]')].find(item => item.textContent?.startsWith('Learn'))!;
+    click(learn);
+    expect(onMode).toHaveBeenCalledWith('learn');
     expect(container.querySelector('textarea')?.value).toBe('Draft stays here');
   });
 });
