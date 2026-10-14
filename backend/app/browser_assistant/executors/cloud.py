@@ -22,6 +22,16 @@ TERMINAL_SESSION_STATES = {'COMPLETED', 'TIMED_OUT', 'ERROR', 'RELEASED', 'STOPP
 OBSERVER = Path(__file__).resolve().parents[1] / 'observer.js'
 
 
+def valid_live_view_url(value):
+    """Accept exact provider hosts; reject credentials, alternate ports and lookalikes."""
+    try:
+        parsed = urlsplit(value)
+        return (parsed.scheme == 'https' and parsed.hostname in {'debug.browserbase.com', 'www.browserbase.com'}
+                and parsed.port in {None, 443} and not parsed.username and not parsed.password)
+    except (ValueError, TypeError):
+        return False
+
+
 def readiness():
     import importlib.util
     try:
@@ -172,7 +182,10 @@ class BrowserbaseProvider:
         self.request('DELETE', 'contexts/' + identifier)
 
     def live_view(self, identifier):
-        return self.request('GET', f'sessions/{identifier}/debug?expiresIn=60')['debuggerFullscreenUrl']
+        link = self.request('GET', f'sessions/{identifier}/debug?expiresIn=60')['debuggerFullscreenUrl']
+        if not valid_live_view_url(link):
+            raise ValueError('Provider returned an unsupported browser view.')
+        return link
 
 
 def queue_context_cleanup(store, owner, connection):

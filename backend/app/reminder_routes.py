@@ -40,6 +40,19 @@ class Preferences(BaseModel):
     emailOptIn: bool = False
 
 
+def email_available(owner: str) -> bool:
+    """Advertise only configured delivery, without exposing sender credentials."""
+    if os.getenv('OPENLEARN_REMINDER_EMAIL_ENABLED') != 'true':
+        return False
+    if not all(os.getenv(key) for key in ('RESEND_API_KEY', 'OPENLEARN_REMINDER_EMAIL_FROM', 'FORMA_WEB_ORIGIN')):
+        return False
+    try:
+        recipients = json.loads(os.getenv('OPENLEARN_REMINDER_EMAIL_RECIPIENTS', '{}'))
+    except (ValueError, TypeError):
+        return False
+    return isinstance(recipients, dict) and bool(recipients.get(owner))
+
+
 def build_reminder_router(get_store,provider_getter=lambda:None):
     router=APIRouter()
     def service(store=Depends(get_store)):return ReminderService(store)
@@ -69,7 +82,8 @@ def build_reminder_router(get_store,provider_getter=lambda:None):
     def snooze(identifier:str,body:Snooze,owner=Depends(material_owner),svc=Depends(service),key:str=Header(alias='Idempotency-Key')):return svc.snooze(owner,identifier,body.minutes,key)
 
     @router.get('/v1/reminder-preferences')
-    def preferences(owner=Depends(material_owner),svc=Depends(service)):return svc.preferences(owner)
+    def preferences(owner=Depends(material_owner),svc=Depends(service)):
+        return {**svc.preferences(owner),'emailAvailable':email_available(owner)}
 
     @router.patch('/v1/reminder-routines/{identifier}')
     def routine_control(identifier:str,body:RoutineControl,owner=Depends(material_owner),svc=Depends(service)):
@@ -87,7 +101,7 @@ def build_reminder_router(get_store,provider_getter=lambda:None):
         try:ZoneInfo(body.timezone)
         except (ValueError,KeyError):fail('invalid_timezone','Choose a valid IANA timezone.',422)
         if any(c not in {'inbox','push','desktop','expo','email'} for c in body.channels):fail('invalid_input','Unknown notification channel.',422)
-        if body.emailOptIn and os.getenv('OPENLEARN_REMINDER_EMAIL_ENABLED')!='true':fail('capability_unavailable','Email notifications are unavailable.',503)
+        if (body.emailOptIn or 'email' in body.channels) and not email_available(owner):fail('capability_unavailable','Email notifications are unavailable. Reminders are available in your Open Learn inbox and conversations.',503)
         svc.preferences(owner)
         with svc.store.transaction() as conn:
             conn.execute(text('INSERT INTO reminder_preferences(owner_id,payload) VALUES(:owner,:payload) ON CONFLICT(owner_id) DO UPDATE SET payload=excluded.payload'),{'owner':owner,'payload':body.model_dump_json()})

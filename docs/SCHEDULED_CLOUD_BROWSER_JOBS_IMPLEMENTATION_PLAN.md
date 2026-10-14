@@ -1,6 +1,6 @@
 # Open Learn: scheduled cloud browser jobs — technical execution handoff
 
-Date: October 14, 2026. Status: implementation in progress; local core flow verified, hosted activation pending.
+Date: October 14, 2026. Status: implementation in progress; implementation deployed; hosted worker handover complete; authenticated portal acceptance pending.
 
 ## Execution ledger
 
@@ -11,10 +11,10 @@ Date: October 14, 2026. Status: implementation in progress; local core flow veri
 | CJ03 | Implemented; local recovery verified | Browser admission and step binding are one transaction. Waiting/auth states persist, terminal reconciliation is filtered/ordered, completion CAS deduplicates continuation, cancellation fences task, overlap is skipped with audit reason. Isolated PostgreSQL 16 recovery and concurrent completion job passed in CI run 38538051411; hosted acceptance remains pending. |
 | CJ04 | Result projection implemented | Assignment fingerprints/checkpoints scoped by routine/connection/course; partial results do not advance checkpoint. Checkpoints retain at most 2,000 identities with a 90-day observation window; retention and unchanged recurring-result tests pass. Actual authenticated portal coverage remains pending. |
 | CJ05 | Implemented; partially verified | Shared loader for full/compact chat, scoped result query, separate attention identity, frozen idempotent Resend retry. Existing browser UI tests passed (10); four hook tests cover session switching, account changes, aborts and visible-only refresh. TypeScript passes. Real email/push/mobile acceptance remains pending. |
-| CJ06 | Configuration prepared | Dedicated roles, scoped overrides, heartbeats; two-worker Blueprint validated against Render schema. User approved up to $14/month incremental workers. Render worker form is prepared. Production credential access is approved and the scoped environment group has been created; worker creation, deploy and handover not completed. |
-| CJ07 | Local checks progressing | Initial 13 focused tests passed plus isolated API test; complete local suites: 22 backend tests passed, 18 browser/admission UI tests passed, TypeScript passed. Isolated PostgreSQL 16 recovery and concurrent completion checks passed in CI run 38538051411, along with frontend build and Redis checks. The full backend suite also passed 332 tests (one skipped) on the preceding code candidate. Authenticated live-provider acceptance still required. |
+| CJ06 | Hosted handover verified | Dedicated roles, scoped overrides, heartbeats; two-worker Blueprint validated against Render schema. User approved up to $14/month incremental workers. Credential group and both Virginia workers are created; deployed role/standby/commit verified from their shells. Actual API scoped overrides are external, global mode remains embedded, and both workers are running with standby=false and fresh heartbeats on commit 12c40b21. Blueprint automatic sync is disabled during controlled handover. |
+| CJ07 | CI and public hosted provider checks passed | Initial 13 focused tests passed plus isolated API test; complete local suites: 22 backend tests passed, 18 browser/admission UI tests passed, TypeScript passed. Isolated PostgreSQL 16 recovery and concurrent completion checks passed in CI run 38538051411, along with frontend build and Redis checks. The full backend suite also passed 332 tests (one skipped) on the preceding code candidate. Authenticated live-provider acceptance still required. |
 
-See `SCHEDULED_CLOUD_BROWSER_RELEASE_RUNBOOK.md` and `deploy/render-scheduled-browser.yaml`. No application changes are deployed and no worker subscriptions have been created. Do not equate the locally verified paths with the complete production acceptance case.
+See `SCHEDULED_CLOUD_BROWSER_RELEASE_RUNBOOK.md` and `deploy/render-scheduled-browser.yaml`. PR #50 is merged and production release 38541099134 succeeded at 12c40b21f332016c85a73fdbc600fc83a784a45f (schema 0091_class_evidence_indexes). Two approved Starter worker subscriptions have been provisioned, $14/month combined excluding usage/taxes. Do not equate the locally verified paths with the complete production acceptance case.
 
 Verification notes: API TestClient stalled because the sandbox blocked Windows event-loop socketpair creation; the same isolated test passed outside the sandbox. Vitest temporary-file creation was blocked inside the sandbox; outside it, all 10 existing browser-assistant tests passed. These were environment limitations, not discarded failed application assertions. Docker Desktop was started to prepare isolated PostgreSQL, but the engine query did not return; PostgreSQL qualification was subsequently completed in isolated GitHub CI (run 38538051411); local Docker is no longer a prerequisite.
 
@@ -217,3 +217,37 @@ Report each CJ package as implemented, locally verified, hosted verified, or blo
 The final proof is a scheduled, authenticated read-only portal check that completes with the app closed, survives an injected worker restart, recovers from expired authentication, publishes one summary in its original conversation, and retries notification delivery without rerunning the portal check.
 
 October 14 follow-up: shared result-loader tests passed (4), TypeScript passed, and the focused backend suite passed (13, one PostgreSQL-only test skipped locally). Candidate release preflight runs through GitHub using existing scoped credentials; no manual secret exports. Worker Blueprint will track main after the reviewed PR is merged; auto-deploy remains off. Concurrent untracked quiz work is excluded from this slice.
+
+## Hosted activation evidence — October 14, 2026
+
+- PR #50 merged; coordinated production release [38541099134](https://github.com/harshilgor/Open-Learn/actions/runs/38541099134) passed. API and frontend are at 12c40b21f332016c85a73fdbc600fc83a784a45f; schema 0091_class_evidence_indexes.
+- Final candidate quality run 38539669330: 24 PostgreSQL tests; 332 backend tests (one skipped), frontend/Redis checks passed. All three desktop packaging targets passed.
+- Render browser worker: srv-db7rkek9v7es73d3h76g. Notification worker: srv-db7rkek9v7es73d3h760. Both initially live on that commit with standby=true. Blueprint exs-db7kki2j9qps73cq2kag; environment group evg-db7k000473hc73dltn2g.
+- Hosted public Browserbase check passed on the preceding API image: two private-network subresources blocked; session closed; usage settled at $0.002 (maximum reservation $0.02). The isolated synthetic ledger excluded DATABASE_URL; production startup migration checks stayed enabled. This is not authenticated portal acceptance.
+- Database server max_connections=60; observed database connections=15 before worker provisioning. The prepared overlap envelope is 40.
+- The authorized account had no website connections. A school portal URL is still requested; email alone is insufficient. Resend is absent from deployed configuration. New scheduled-browser enrollment and private-profile qualification remain gated until their acceptance cases pass.
+- Runtime heartbeats are per role, so embedded API heartbeats can overwrite standby observations before handover. Verify role configuration inside each worker and inspect heartbeats after scoped API ownership is external.
+
+## In-app delivery and email deferral - October 14
+
+Live notification worker probe passed without an app connection: one inbox record, one conversation result, 4.152 seconds due-to-persisted-inbox, 5.362 seconds due-to-observed delivery, and zero provider usage events. Fire: reminder_6ebfa61f46a0c3d2f6970accd303b94e. This single synthetic observation is not a p95 benchmark or authenticated browser qualification.
+
+Resend has only morniuae.com verified and a Morni-managed Vercel key. The user chose a dedicated Open Learn domain but has not purchased one. Email activation is deferred; no credential created, DNS changed, or email sent. Preferences report per-owner email readiness and disable unavailable email selection. In-app delivery remains active.
+
+Remaining: authenticated portal coverage, expired-login recovery, injected live browser-worker restart, notification retry without a second portal check. Scheduled-browser enrollment remains disabled until qualification passes.
+
+## Remaining-work qualification - October 14 follow-up
+
+- Reminder settings now use server-reported per-owner email readiness, with safe in-app fallback. New frontend tests passed; TypeScript passed.
+- Expanded backend recovery suite: 27 passed, one PostgreSQL-only case skipped locally. Added real subprocess exits after persisted browser completion and routine reconciliation; recovery publishes once. Added 105 waiting-task starvation regression and retry-after-browser-completion checks. Provider execution remains synthetic in these tests.
+- UC Davis Canvas URL authorized: https://canvas.ucdavis.edu/. The regular browser requires UC Davis CAS authentication; no private courses read yet. Cloud worker needs its own user-controlled saved-login handoff.
+- Live provider diagnosis found Browserbase returns www.browserbase.com Live View URLs while the old application permits only debug.browserbase.com. Candidate validation now accepts exact HTTPS provider hosts, rejects credentials/alternate ports/lookalikes; 11 URL validation tests passed. Production private-login gate remains off pending lifecycle/link-expiry qualification.
+- Qualification helper added: backend/scripts/browserbase_profile_acceptance.py. It uses isolated SQLite and synthetic cookies, bounded sessions, owner-denial checks, deletion and usage settlement; never changes deployed flags. A candidate-only execution is not production activation.
+
+Live candidate lifecycle qualification passed: three synthetic sessions, cookie persistence and clearing, cross-owner denial, provider termination, profile deletion (GET returned 404), and usage settlement. Cost $0.006; maximum funded reservations $0.06. No deployed flags changed. Link-expiry enforcement and authenticated Canvas remain distinct pending gates.
+
+Candidate published as PR #52: https://github.com/harshilgor/Open-Learn/pull/52. Includes main PR #51 without including unrelated uncommitted assessment work. Local browser/control suite: 45 passed. Expanded frontend suite including compact chat: 19 passed. CI PostgreSQL recovery, frontend production build and Redis checks passed on initial candidate run 38614436399; full backend/desktop checks still running at this checkpoint.
+
+Initial PR #52 CI passed: 332 backend tests (one skipped), 28 isolated PostgreSQL/reminder tests, 34 Redis tests, frontend build. These counts refer to candidate 7a5654c; follow-up provider-URL hardening and expiry-helper changes require their own final candidate checks.
+
+Final candidate live-provider profile and link-expiry probe passed: original signed WebSocket connects, is denied after 65 seconds, and a fresh signed link connects to the same still-active session. Persistence, cookie clearing, cross-owner denial, termination, deletion and settlement all passed across three synthetic sessions. Cost $0.008, maximum funded reservations $0.06. Screenshot: outputs/cloud-profile-expiry-qualified.jpg. Authenticated Canvas is still pending; production flags were not changed by the probe.

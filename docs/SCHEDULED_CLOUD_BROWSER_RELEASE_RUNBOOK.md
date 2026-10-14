@@ -1,6 +1,6 @@
 # Scheduled cloud browser release runbook
 
-October 14, 2026. Prepared; not activated. Incremental two-worker budget approved up to $14/month. Render inventory showed the Virginia API and the Oregon rollback API, with no Open Learn background workers.
+October 14, 2026. Application release deployed; worker handover in progress. Incremental two-worker budget approved up to $14/month. Render inventory showed the Virginia API and the Oregon rollback API, with no Open Learn background workers.
 
 ## Stage and inspect
 
@@ -28,7 +28,7 @@ Disable new scheduled-browser enrollment first. Keep external workers and compat
 
 ## Pending external verification
 
-No workers purchased/provisioned yet. The browser connection recovered after the earlier usage-limit review failure. A worker creation form is prepared; production credential access is approved and the scoped environment group has been created. No API credentials were exposed or settings changed. Isolated PostgreSQL 16 recovery and concurrent completion checks passed in GitHub CI run 38538051411. Authenticated real-provider acceptance and hosted measurements remain pending.
+Historical pre-provisioning checkpoint, superseded below: no workers provisioned at that point. The browser connection recovered after the earlier usage-limit review failure. A worker creation form is prepared; production credential access is approved and the scoped environment group has been created. No API credentials were exposed or settings changed. Isolated PostgreSQL 16 recovery and concurrent completion checks passed in GitHub CI run 38538051411. Authenticated real-provider acceptance and hosted measurements remain pending.
 
 
 Local PostgreSQL qualification command (explicit disposable localhost database only): set `OPENLEARN_SCHEDULED_BROWSER_TEST_DATABASE_URL`, then run `python -m pytest backend/tests/test_scheduled_browser_jobs.py -q`. The fixture creates and drops a fresh random schema per case. Never point it at production. Without that variable, the PostgreSQL concurrency case is explicitly skipped and the ordinary suite uses isolated SQLite files.
@@ -36,7 +36,7 @@ Local PostgreSQL qualification command (explicit disposable localhost database o
 
 ## October 14 activation findings
 
-The approved `openlearn-cloud-workers` environment group was created in Render (`evg-db7k000473hc73dltn2g`). Five unrelated voice/media/metrics credentials were excluded; values were not copied into source or reports. No workers have been provisioned and there are no new worker charges.
+The approved `openlearn-cloud-workers` environment group was created in Render (`evg-db7k000473hc73dltn2g`). Five unrelated voice/media/metrics credentials were excluded; values were not copied into source or reports. At this historical checkpoint workers were not yet provisioned; the handover record below supersedes it.
 
 The implementation is published on `codex/scheduled-cloud-browser-jobs`, including current main through da89556. Live `/release` reported deployed commit ece49127d2ea678d6a06d04949677d0ad4ba85d3, actual/expected schema 0088_memory_sensitive_enable, embedded worker mode. Current main/release branch expects 0091_class_evidence_indexes. These intermediate migrations belong to earlier In-Class work; this browser slice adds no migration. Do not start workers from the new branch against schema 0088 and do not weaken startup schema checks. Qualify and perform the existing coordinated migration/API release first, then verify both workers on the same schema/commit. Standby prevents claiming jobs, but it does not bypass database compatibility.
 
@@ -45,3 +45,21 @@ Worker Blueprint defaults `OPENLEARN_CLOUD_WORKER_STANDBY=true`; after qualifica
 ## Scoped connection envelope
 
 Run `python -m backend.scripts.check_connection_budget --budget deploy/scheduled-browser-connection-budget.json --blueprint deploy/render-scheduled-browser.yaml` before syncing. The proposed workers use three steady pooled connections; allowing deployment overlap, two migration and two listener connections, and thirty reserved connections yields forty against the configured sixty-connection envelope. Verify the actual production database limit and current role pools before handover; this prepared envelope is not an observed database capacity measurement.
+
+## Provisioned topology and handover record
+
+Production release 38541099134 passed, deploying 12c40b21f332016c85a73fdbc600fc83a784a45f and schema 0091_class_evidence_indexes. The two approved Virginia Starter workers are browser srv-db7rkek9v7es73d3h76g and notifications srv-db7rkek9v7es73d3h760 ($14/month combined, excluding usage/taxes). Both passed live startup at that SHA in standby. Blueprint auto-sync is off; service auto-deploy is off.
+
+The bootstrap Blueprint deliberately retains standby=true. Active service overrides must be documented and reapplied deliberately after a manual Blueprint sync. Never sync the bootstrap file onto active owners without accounting for the resulting pause.
+
+Handover completed: API scoped overrides are external, global mode remains embedded, both worker runtimes have standby=false on commit 12c40b21, and fresh running heartbeats were verified.
+
+The Oregon rollback API was not updated in this release. Before routing traffic there, deploy a reviewed schema-compatible image; the old 0088 image is not a verified rollback against schema 0091. Do not weaken the schema gate.
+
+## Current delivery configuration
+
+In-app inbox and conversation delivery are active and passed the hosted synthetic probe. Email activation is deferred until the user owns a dedicated verified sender domain. Keep OPENLEARN_REMINDER_EMAIL_ENABLED disabled. Do not reuse the Morni integration key or sender. Preferences report emailAvailable=false until the flag, API key, sender, web origin and owner recipient are configured. Verify sender DNS before enabling email and qualify delivery to the opted-in user address.
+
+## Verified private-profile candidate
+
+PR #52 fixes current Browserbase Live View host compatibility. Isolated hosted candidate probe passed owner denial, profile persistence and clearing, termination, deletion, settlement and real signed-link expiry (old link denied after 65 seconds; new link connects to same session). Cost $0.008. Before Canvas qualification deploy the reviewed candidate, verify matching API/browser commits, and activate the private-profile readiness flag only against this evidence. Scheduled-browser enrollment stays off until the actual authenticated routine/restart acceptance passes. Obtain explicit consent to store the user's Canvas sign-in with Browserbase and let the user complete campus login/MFA; never request the password in chat.

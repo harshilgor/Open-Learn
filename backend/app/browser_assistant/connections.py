@@ -186,9 +186,8 @@ class Connections:
             if not isinstance(session, dict) or not session.get('id') or not session.get('connectUrl'):
                 raise ValueError('Browserbase returned an incomplete sign-in session.')
             link = provider.live_view(session['id'])
-            from urllib.parse import urlsplit
-            parsed = urlsplit(link)
-            if parsed.scheme != 'https' or parsed.hostname != 'debug.browserbase.com' or parsed.username or parsed.password:
+            from .executors.cloud import valid_live_view_url
+            if not valid_live_view_url(link):
                 raise ValueError('Browserbase returned an unsupported private browser link.')
             expires_at = started_at + SESSION_TTL_SECONDS
             payload['connectUrl'] = session['connectUrl']

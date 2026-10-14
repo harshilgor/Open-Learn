@@ -166,3 +166,34 @@ def test_push_gone_unsubscribes_without_duplicate_send(env,monkeypatch):
     worker=NotificationsWorker(store);worker.tick();worker.tick();worker.tick()
     assert len(calls)==1
     with store.engine.connect() as conn:assert not conn.execute(text("SELECT active FROM notification_subscriptions WHERE id='sub'")).scalar_one()
+
+
+def test_email_preferences_readiness_and_inapp_fallback(env, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from backend.app.reminder_routes import build_reminder_router
+    from backend.app.material_routes import material_owner
+    store, _ = env
+    app = FastAPI()
+    app.include_router(build_reminder_router(lambda: store))
+    app.dependency_overrides[material_owner] = lambda: 'alice'
+    for key in ('OPENLEARN_REMINDER_EMAIL_ENABLED', 'RESEND_API_KEY',
+                'OPENLEARN_REMINDER_EMAIL_FROM', 'OPENLEARN_REMINDER_EMAIL_RECIPIENTS'):
+        monkeypatch.delenv(key, raising=False)
+    with TestClient(app) as client:
+        assert client.get('/v1/reminder-preferences').json()['emailAvailable'] is False
+        assert client.put('/v1/reminder-preferences', json={'channels': ['inbox']}).status_code == 200
+        assert client.put('/v1/reminder-preferences', json={'channels': ['inbox', 'email']}).status_code == 503
+        monkeypatch.setenv('OPENLEARN_REMINDER_EMAIL_ENABLED', 'true')
+        monkeypatch.setenv('RESEND_API_KEY', 'synthetic-not-a-key')
+        monkeypatch.setenv('OPENLEARN_REMINDER_EMAIL_FROM', 'Open Learn <test@example.com>')
+        monkeypatch.setenv('FORMA_WEB_ORIGIN', 'https://example.com')
+        monkeypatch.setenv('OPENLEARN_REMINDER_EMAIL_RECIPIENTS', '{"bob":"bob@example.com"}')
+        assert client.get('/v1/reminder-preferences').json()['emailAvailable'] is False
+        monkeypatch.setenv('OPENLEARN_REMINDER_EMAIL_RECIPIENTS', 'invalid json')
+        assert client.get('/v1/reminder-preferences').json()['emailAvailable'] is False
+        monkeypatch.setenv('OPENLEARN_REMINDER_EMAIL_RECIPIENTS', '{"alice":"alice@example.com"}')
+        response = client.get('/v1/reminder-preferences').json()
+        assert response['emailAvailable'] is True
+        assert 'synthetic-not-a-key' not in json.dumps(response)
+        assert client.put('/v1/reminder-preferences', json={'channels': ['inbox', 'email'], 'emailOptIn': True}).status_code == 200
