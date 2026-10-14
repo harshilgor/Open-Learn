@@ -67,6 +67,13 @@ def main():
     for sig in (signal.SIGINT,signal.SIGTERM):signal.signal(sig,lambda *_:stop.set())
     store=Store(database_url())
     try:
+        if args.role in {'browser','notifications'} and os.getenv('OPENLEARN_CLOUD_WORKER_STANDBY')=='true':
+            from .cloud_worker_health import heartbeat
+            while not stop.is_set():
+                heartbeat(store,args.role,'standby')
+                if args.once:return
+                stop.wait(5)
+            return
         if args.role=='generation':
             from .generation_worker import GenerationWorker
             GenerationWorker(store, configured_lesson_provider).run(stop, args.once)
@@ -78,7 +85,7 @@ def main():
             NotificationsWorker(store,configured_lesson_provider).run(stop,args.once)
         elif args.role=='browser':
             from .browser_assistant.workers import AssistantWorker
-            AssistantWorker(store,configured_lesson_provider).run(stop,args.once)
+            AssistantWorker(store,configured_lesson_provider).run(stop,args.once,role='browser')
         elif args.role=='class':
             from .in_class_worker import InClassWorker
             InClassWorker(store,configured_lesson_provider).run(stop,args.once)

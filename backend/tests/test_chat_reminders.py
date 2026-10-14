@@ -135,8 +135,8 @@ def test_async_completion_resumes_once(env):
     from backend.app.browser_assistant.contracts import TaskCreate
     store,svc=env
     task=AssistantService(store).create('alice',TaskCreate(message='Read my deadlines'),'async-task')
-    reg=Registry();reg.register('assistant.website_task',lambda *args:{'jobId':task['id']})
-    fire=svc.create('alice',ReminderCreate(when='in 1 minute',message='Deadlines refreshed',actions=[{'type':'agent','skillId':'assistant.website_task','args':{'message':'Read my deadlines'}},{'type':'notify'}]),'async-fire')
+    reg=Registry();reg.register('digest.learning',lambda *args:{'jobId':task['id']})
+    fire=svc.create('alice',ReminderCreate(when='in 1 minute',message='Deadlines refreshed',actions=[{'type':'agent','skillId':'digest.learning','args':{'message':'Read my deadlines'}},{'type':'notify'}]),'async-fire')
     svc.tick(fire['dueAt']+1)
     jobs=WorkflowStore(store);job=jobs.claim(jobs.ready_ids('interactive',{'reminder_actions'})[0])
     runner=ReminderActionRunner(store,registry=reg);runner.execute(job)

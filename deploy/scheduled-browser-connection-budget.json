@@ -1,0 +1,20 @@
+{
+  "databaseConnectionLimit": 60,
+  "reservedConnections": 30,
+  "deploymentOverlapFactor": 2,
+  "migrationConnections": 2,
+  "listenerConnections": 2,
+  "roles": [
+    {
+      "role": "browser",
+      "replicas": 1,
+      "poolSize": 2
+    },
+    {
+      "role": "notifications",
+      "replicas": 1,
+      "poolSize": 1
+    }
+  ],
+  "notes": "Incremental worker envelope: reservedConnections includes 20 operator reserves plus 10 for two overlapping API processes at pool size 5. ListenerConnections reserves two shared notification listeners. Confirm actual production limits before handover."
+}

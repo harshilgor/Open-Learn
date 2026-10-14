@@ -46,6 +46,13 @@ export async function admitConversation(message: string, sessionId: string, cour
   const result: AdmissionReply & { message?: string } = admission;
   if (admission.directive?.kind === 'flashcards') {
     await routeFlashcardRequest(message, sessionId, courseId || undefined);
+  } else if (admission.directive?.kind === 'reminder') {
+    const reminder=await request<{handled:boolean;message:string}>('/v1/reminder-chat-command',{
+      method:'POST',headers:{'Idempotency-Key':pending.key+':reminder'},
+      body:JSON.stringify({message,sessionId,courseId:courseId||undefined,timezone:pending.body.timezone}),
+    });
+    result.message=reminder.message;
+    result.question=reminder.message;
   } else if (admission.directive?.kind === 'browser_control') {
     const task = await request<{ revision: number }>(`/v1/assistant/tasks/${admission.directive.taskId}`);
     await request(`/v1/assistant/tasks/${admission.directive.taskId}/commands`, {

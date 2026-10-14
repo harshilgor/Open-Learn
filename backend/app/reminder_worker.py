@@ -13,6 +13,8 @@ from .reminder_actions import ReminderActionRunner
 class NotificationsWorker:
     def __init__(self,store,provider_getter=lambda:None):self.store=store;self.provider_getter=provider_getter
     def tick(self):
+        from .cloud_worker_health import heartbeat
+        heartbeat(self.store,'notifications')
         from .calendar.google_writes import tick_google_writes
         tick_google_writes(self.store)
         from .calendar.google import tick_google_calendars
@@ -49,6 +51,11 @@ class NotificationsWorker:
             if once:return
             stop.wait(5)
     def dispatch(self,job):
+        with self.store.engine.connect() as conn:
+            channel=conn.execute(text('SELECT channel FROM notification_deliveries WHERE id=:id AND owner_id=:owner'),{'id':job['target_id'],'owner':job['owner_id']}).scalar_one_or_none()
+        if channel=='email':
+            from .scheduled_email import dispatch_email
+            return dispatch_email(self.store,job)
         jobs=WorkflowStore(self.store)
         with self.store.transaction() as conn:
             jobs.validate_lease(conn,job)

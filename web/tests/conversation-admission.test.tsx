@@ -49,3 +49,13 @@ it('returns ordinary tutoring to its existing workflow', async () => {
   expect((await admitConversation('explain gravity','session')).handled).toBe(false);
   expect(mocks.cards).not.toHaveBeenCalled();
 });
+
+it('dispatches a reminder directive with a retry-stable schedule key', async()=>{
+  mocks.send.mockResolvedValue({messageId:'one',handled:true,status:'requires_action',directive:{kind:'reminder'},references:[]});
+  mocks.request.mockImplementation(async(path:string)=>path==='/v1/reminder-chat-command'?{handled:true,message:'Scheduled for 6pm.'}:{ownerId:'alice'});
+  const result=await admitConversation('Every evening at 6pm check my portal','session');
+  expect(result.question).toBe('Scheduled for 6pm.');
+  const call=mocks.request.mock.calls.find(call=>call[0]==='/v1/reminder-chat-command')!;
+  expect(call[1].headers['Idempotency-Key']).toBe(mocks.send.mock.calls[0][1]+':reminder');
+  expect(JSON.parse(call[1].body)).toMatchObject({sessionId:'session',message:'Every evening at 6pm check my portal'});
+});
