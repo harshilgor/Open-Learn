@@ -82,13 +82,14 @@ OUTPUT_CONTRACTS: dict[TeachingOutput, str] = {
         "Return JSON only with this shape: "
         '{"blocks":[{"kind":"explanation","heading":"...","body":"..."}]}. '
         "Use 1-4 concise blocks. Render mathematics as LaTeX inside Markdown with $...$ inline and $$...$$ for display equations, "
-        "including matrices. Do not use \\[ \\] or raw HTML. Use fenced Markdown for code."
+        "including matrices. Do not use \\[ \\] or raw HTML. Write money with an escaped dollar sign (\\\\$1.25) so prices are never read as math. "
+        "Use fenced Markdown for code."
     ),
     "journey_markdown": (
         "When a visual materially helps, explain its pattern or mechanism before it appears and interpret it afterward. "
         "Keep the prose useful without the visual. Do not invent quantitative data. "
         "Render mathematics as LaTeX inside Markdown: use $...$ inline and $$...$$ on their own lines for display equations, "
-        "matrices, aligned steps, and cases. Do not use \\( \\), \\[ \\], raw HTML, or pre-rendered KaTeX. "
+        "matrices, aligned steps, and cases. Do not use \\( \\), \\[ \\], raw HTML, or pre-rendered KaTeX. Write money with an escaped dollar sign (\\$1.25) so prices are never read as math. "
         "Use fenced Markdown for code. Write a complete learner-facing response in Markdown. "
         "When sections help, use concise Markdown headings such as Example, Equation, Check, or Summary. "
         "Begin with the answer itself; do not add a generic Explanation heading. Headings describe content and are not application commands."

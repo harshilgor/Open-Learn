@@ -74,6 +74,13 @@
   --event-personal: #6f7670;
   --event-personal-soft: #f0f1ee;
 
+  /* Chat bubbles: a visible step off the page, with a hairline edge. */
+  --bubble-assistant: #eceee8;
+  --bubble-assistant-border: #dcdfd5;
+  --bubble-user: #e2e6dc;
+  --bubble-user-border: #d2d8ca;
+  --bubble-user-foreground: #1f2421;
+
   --font-sans: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -107,6 +114,11 @@
   --secondary-foreground: #eceee9;
   --muted: #212421;
   --muted-foreground: #a7ada2;
+  --bubble-assistant: #1d201d;
+  --bubble-assistant-border: #2f342e;
+  --bubble-user: #2c322a;
+  --bubble-user-border: #3b4238;
+  --bubble-user-foreground: #eef3ea;
   --accent: #283128;
   --accent-foreground: #eef3ea;
   --border: #2c302b;

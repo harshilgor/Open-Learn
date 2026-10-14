@@ -56,3 +56,9 @@
   .toolbar { gap: 10px; }
   .outline { margin-left: 0; width: 100%; }
 }
+
+/* Math: inline formulas sit at the text's visual size; display equations get their own calm block. */
+.rich p :global(.katex), .rich li :global(.katex) { font-size: 1.08em; }
+.rich :global(.katex-display) { margin: 14px 0; padding: 12px 16px; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--border); border-radius: var(--radius-control, 10px); background: var(--card); }
+.rich :global(.katex-display > .katex) { font-size: 1.12em; }
+.rich table, .rich td, .rich th { font-variant-numeric: tabular-nums; }
