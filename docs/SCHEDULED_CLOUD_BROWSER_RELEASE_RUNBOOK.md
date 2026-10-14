@@ -28,7 +28,7 @@ Disable new scheduled-browser enrollment first. Keep external workers and compat
 
 ## Pending external verification
 
-No workers purchased/provisioned yet. The browser connection recovered after the earlier usage-limit review failure. A worker creation form is prepared; production credential access is approved and the scoped environment group has been created. No API credentials were exposed or settings changed. Isolated PostgreSQL tests need a working local database (Docker Desktop launch did not provide a responsive engine); authenticated real-provider acceptance and hosted measurements remain pending.
+No workers purchased/provisioned yet. The browser connection recovered after the earlier usage-limit review failure. A worker creation form is prepared; production credential access is approved and the scoped environment group has been created. No API credentials were exposed or settings changed. Isolated PostgreSQL 16 recovery and concurrent completion checks passed in GitHub CI run 38538051411. Authenticated real-provider acceptance and hosted measurements remain pending.
 
 
 Local PostgreSQL qualification command (explicit disposable localhost database only): set `OPENLEARN_SCHEDULED_BROWSER_TEST_DATABASE_URL`, then run `python -m pytest backend/tests/test_scheduled_browser_jobs.py -q`. The fixture creates and drops a fresh random schema per case. Never point it at production. Without that variable, the PostgreSQL concurrency case is explicitly skipped and the ordinary suite uses isolated SQLite files.
@@ -41,3 +41,7 @@ The approved `openlearn-cloud-workers` environment group was created in Render (
 The implementation is published on `codex/scheduled-cloud-browser-jobs`, including current main through da89556. Live `/release` reported deployed commit ece49127d2ea678d6a06d04949677d0ad4ba85d3, actual/expected schema 0088_memory_sensitive_enable, embedded worker mode. Current main/release branch expects 0091_class_evidence_indexes. These intermediate migrations belong to earlier In-Class work; this browser slice adds no migration. Do not start workers from the new branch against schema 0088 and do not weaken startup schema checks. Qualify and perform the existing coordinated migration/API release first, then verify both workers on the same schema/commit. Standby prevents claiming jobs, but it does not bypass database compatibility.
 
 Worker Blueprint defaults `OPENLEARN_CLOUD_WORKER_STANDBY=true`; after qualification remove standby only during the owned handover. Disable API embedded browser and notification execution using the scoped overrides, preserve all other execution owners, then verify replacement heartbeats and claims. Keep scheduled-browser enrollment disabled until live authenticated acceptance passes.
+
+## Scoped connection envelope
+
+Run `python -m backend.scripts.check_connection_budget --budget deploy/scheduled-browser-connection-budget.json --blueprint deploy/render-scheduled-browser.yaml` before syncing. The proposed workers use three steady pooled connections; allowing deployment overlap, two migration and two listener connections, and thirty reserved connections yields forty against the configured sixty-connection envelope. Verify the actual production database limit and current role pools before handover; this prepared envelope is not an observed database capacity measurement.

@@ -36,6 +36,7 @@ jobs:
       - run: python -m backend.scripts.release_workflow_policy
       - run: python -m backend.scripts.actionlint_check
       - run: python -m backend.scripts.check_connection_budget --blueprint deploy/render-paid.yaml
+      - run: python -m backend.scripts.check_connection_budget --budget deploy/scheduled-browser-connection-budget.json --blueprint deploy/render-scheduled-browser.yaml
       - name: Backend feature and persistence regressions
         run: >-
           python -m pytest -vv -o faulthandler_timeout=60 backend/tests/test_performance.py backend/tests/test_release_gates.py backend/tests/test_release_preflight.py
