@@ -71,3 +71,22 @@ def test_release_managed_free_boot_checks_schema_without_migrating(monkeypatch):
     hosted_runtime.main()
     assert events == ['schema-check', 'serve']
     migrate.assert_not_called()
+
+
+def test_cloud_worker_standby_does_not_claim_tasks(monkeypatch):
+    from backend.app import storage,cloud_worker_health
+    monkeypatch.setattr(hosted_runtime,'configuration_errors',lambda:[])
+    monkeypatch.setattr(database,'database_url',lambda:'postgresql+psycopg://test')
+    store=MagicMock()
+    monkeypatch.setattr(storage,'Store',lambda url:store)
+    monkeypatch.setattr(sys,'argv',['hosted_runtime','browser','--once'])
+    monkeypatch.setenv('OPENLEARN_CLOUD_WORKER_STANDBY','true')
+    heartbeat=MagicMock()
+    monkeypatch.setattr(cloud_worker_health,'heartbeat',heartbeat)
+    from backend.app.browser_assistant.workers import AssistantWorker
+    run=MagicMock()
+    monkeypatch.setattr(AssistantWorker,'run',run)
+    hosted_runtime.main()
+    heartbeat.assert_called_once_with(store,'browser','standby')
+    run.assert_not_called()
+    store.close.assert_called_once()
