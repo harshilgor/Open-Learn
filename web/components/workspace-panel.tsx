@@ -75,7 +75,7 @@ export type WorkspaceTool = 'notes' | 'canvas' | 'practice' | 'class';
 /** Kept as an alias: layouts and events still call these "tabs". */
 export type WorkspaceTab = WorkspaceTool;
 export type PracticeView = 'home' | 'quiz' | 'flashcards';
-export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTool[]; activeTab: WorkspaceTool; practiceView?: PracticeView; focused?: boolean; pinned?: boolean; noteId?:string|null; noteTabs?: {key:string;noteId:string|null;title:string}[]; activeNoteKey?:string };
+export type WorkspacePanelLayout = { width: number; collapsed: boolean; tabs: WorkspaceTool[]; activeTab: WorkspaceTool; practiceView?: PracticeView; focused?: boolean; pinned?: boolean; noteId?:string|null };
 
 /** Map a tab saved by an earlier version (quiz, flashcards, sources, reminders) to today's tools. */
 export function workspaceToolFor(value: unknown): WorkspaceTool | null {
@@ -283,16 +283,16 @@ type NoteEditorProps = {
   seed: WorkspaceNoteSeed | null; onSeedConsumed: (id: string) => void; noteToOpen: string | null; onNoteOpenConsumed: (noteId: string) => void;
   quizToOpen?: WorkspaceQuizOpen | null; fullPage?: boolean; onRecordClass?: (folder: string | null) => void; onUseInChat?: () => void;
   listHost?: HTMLElement | null; courses?: CourseSummary[]; courseFilter?: string | null; onCourseFilter?: (id: string | null) => void;
-  listWhenIdle?: boolean; command?: NotesCommand | null; onNoteSelected?: (id: string | null) => void; onDiscuss?: (context: TutorChatContext) => void; onTitleChange?:(title:string)=>void; startEmpty?:boolean; recoveryKey?:string; onOpenNote?:(id:string)=>void;
+  listWhenIdle?: boolean; command?: NotesCommand | null; onNoteSelected?: (id: string | null) => void; onDiscuss?: (context: TutorChatContext) => void; recoveryKey?:string;
   /** Markdown to append to the open note (or a new note), e.g. a visual added from Canvas. */
   insertRequest?: NoteInsert | null; onInsertConsumed?: (id: string) => void;
 };
 export type NoteInsert = { id: string; markdown: string; title: string };
 
-function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss,onTitleChange, startEmpty=false, recoveryKey='', onOpenNote, insertRequest = null, onInsertConsumed }: NoteEditorProps) {
+function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseRequestHandled, onDirtyChange, seed, onSeedConsumed, noteToOpen, onNoteOpenConsumed, quizToOpen, fullPage = false, onRecordClass, listHost, courses, courseFilter = null, onCourseFilter, command, onNoteSelected, onDiscuss, recoveryKey='', insertRequest = null, onInsertConsumed }: NoteEditorProps) {
   const [notes, setNotes] = useState<WorkspaceNoteSummary[]>([]);
   const [courseNames, setCourseNames] = useState<Record<string, string>>({});
-  const [draft, setDraft] = useState<NoteDraft | null>(startEmpty ? blankDraft : null);
+  const [draft, setDraft] = useState<NoteDraft | null>(null);
   const [reading, setReading] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
@@ -311,7 +311,6 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   const imageInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
   const imageSelection = useRef<Range|null>(null);
-  useEffect(()=>{onTitleChange?.(draft?.title||'Notes');},[draft?.title,onTitleChange]);
   const [savedDraft, setSavedDraft] = useState<NoteDraft | null>(null);
   const [recoveryOwner,setRecoveryOwner] = useState<string|null>(null);
   const [recoveredDraft,setRecoveredDraft] = useState<NoteDraft|null>(null);
@@ -547,7 +546,6 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   }, [draft?.id, draft?.frontmatter.study_note, dirty, loadNote, query]);
 
   function openNote(noteId: string) {
-    if(onOpenNote){onOpenNote(noteId);return;}
     confirmBefore(() => { void loadNote(noteId); });
   }
 
@@ -1040,7 +1038,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`} onPointerDown={() => { if (listOverlay) setListCollapsedPersisted(true); }}>
       {draft || listHidden ? <div className={styles.editorTop}>
         {listHidden ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
-        {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" title="New note" onClick={()=>{if(onOpenNote)window.dispatchEvent(new CustomEvent('openlearn:new-note-tab'));else startBlank();}}><Plus size={16}/></Button> : null}
+        {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" title="New note" onClick={startBlank}><Plus size={16}/></Button> : null}
         <span className={styles.editorSpacer} />
         {draft ? <span className={styles.saveState} data-state={saveState === 'Saved' ? 'saved' : saveState === 'Not saved' ? 'error' : 'pending'} role="status">{saveState === 'Saved' ? <Check size={14} aria-hidden="true"/> : null}{saveState}</span> : null}
         {draft&&unresolvedRecoveredDraft?<DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" className={styles.draftIndicator} aria-label="Unsaved local draft available" title="An unsaved draft of this note is on this device"><History size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><p className="px-2 py-1.5 text-xs text-muted-foreground">An unsaved draft of this note is on this device.</p><DropdownMenuItem onSelect={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}><History size={15}/>Restore local draft</DropdownMenuItem><DropdownMenuItem onSelect={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}><X size={15}/>Discard local copy</DropdownMenuItem></DropdownMenuContent></DropdownMenu>:null}
@@ -1182,14 +1180,6 @@ export function NotesWorkspace({ compact = false, onRecordClass, noteToOpen = nu
   </div>;
 }
 
-function WorkspaceNoteDocument({item,active,closeRequest,onClosed,onCloseHandled,onChanged,onDirty,onOpen,insertRequest,onInsertConsumed}: {item:{key:string;noteId:string|null;title:string};active:boolean;closeRequest:boolean;onClosed:()=>void;onCloseHandled:()=>void;onChanged:(key:string,id:string|null|undefined,title?:string)=>void;onDirty:(key:string,dirty:boolean)=>void;onOpen:(id:string)=>void;insertRequest:NoteInsert|null;onInsertConsumed:(id:string)=>void}) {
-  const [handled,setHandled]=useState(false);
-  const selected=useCallback((id:string|null)=>onChanged(item.key,id),[item.key,onChanged]);
-  const title=useCallback((value:string)=>onChanged(item.key,undefined,value),[item.key,onChanged]);
-  const dirty=useCallback((value:boolean)=>onDirty(item.key,value),[item.key,onDirty]);
-  const consumed=useCallback(()=>setHandled(true),[]);
-  return <div hidden={!active} className={styles.preservedTab}><NoteEditor recoveryKey={item.key} startEmpty={!item.noteId} closeRequest={closeRequest} onClose={onClosed} onCloseRequestHandled={onCloseHandled} onDirtyChange={dirty} seed={null} onSeedConsumed={()=>{}} noteToOpen={handled?null:item.noteId} onNoteOpenConsumed={consumed} onNoteSelected={selected} onTitleChange={title} onOpenNote={onOpen} insertRequest={insertRequest} onInsertConsumed={onInsertConsumed}/></div>;
-}
 
 /** The four study tools. Earlier layouts also had quiz, flashcards, sources and reminders tabs. */
 const TOOLS: { id: WorkspaceTool; label: string; icon: typeof FileText }[] = [
@@ -1215,26 +1205,13 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
   onNoteSeedConsumed: (id: string) => void;
   onNoteOpenConsumed: (noteId: string) => void;
 }) {
-  const [noteTitle,setNoteTitle]=useState('Notes');
   const [noteInsert,setNoteInsert]=useState<NoteInsert|null>(null);
   const insertConsumed=useCallback((id:string)=>setNoteInsert(current=>current?.id===id?null:current),[]);
-  const [pickerQuery,setPickerQuery]=useState('');
-  const [pickerNotes,setPickerNotes]=useState<WorkspaceNoteSummary[]>([]);
   const [notesDirty, setNotesDirty] = useState(false);
-  const rememberNote=useCallback((id:string|null)=>onLayoutChange(current=>({...current,noteId:id})),[onLayoutChange]);
-  const [closingNote,setClosingNote]=useState<string|null>(null);
-  const [dirtyDocuments,setDirtyDocuments]=useState<Record<string,boolean>>({});
-  const updateDocument=useCallback((key:string,id:string|null|undefined,title?:string)=>onLayoutChange(current=>({...current,noteTabs:current.noteTabs?.map(item=>item.key===key?{...item,...(id!==undefined?{noteId:id}:{}),...(title?{title}:{})}:item)})),[onLayoutChange]);
-  const documentDirty=useCallback((key:string,value:boolean)=>setDirtyDocuments(current=>current[key]===value?current:{...current,[key]:value}),[]);
-  const openDocument=useCallback((id:string)=>{
-    onLayoutChange(current=>{const existing=current.noteTabs?.find(item=>item.noteId===id);const key=existing?.key||id;return {...current,collapsed:false,tabs:current.tabs.includes('notes')?current.tabs:[...current.tabs,'notes'],activeTab:'notes',activeNoteKey:key,noteTabs:existing?current.noteTabs:[...(current.noteTabs||[]),{key,noteId:id,title:'Loading note…'}]};});
-  },[onLayoutChange]);
-  const newNoteTab=useCallback(()=>{const key=crypto.randomUUID();onLayoutChange(current=>({...current,collapsed:false,tabs:current.tabs.includes('notes')?current.tabs:[...current.tabs,'notes'],activeTab:'notes',activeNoteKey:key,noteTabs:[...(current.noteTabs||[]),{key,noteId:null,title:'Untitled note'}]}));},[onLayoutChange]);
-  useEffect(()=>{if(!noteToOpen)return;openDocument(noteToOpen);onNoteOpenConsumed(noteToOpen);},[noteToOpen,openDocument,onNoteOpenConsumed]);
-  const closeDocument=(key:string)=>{onLayoutChange(current=>({...current,noteTabs:current.noteTabs?.filter(item=>item.key!==key),activeNoteKey:current.activeNoteKey===key?undefined:current.activeNoteKey}));setClosingNote(null);setDirtyDocuments(current=>{const next={...current};delete next[key];return next;});};
-  const requestCloseDocument=(key:string)=>{if(dirtyDocuments[key]){onLayoutChange(current=>({...current,activeTab:'notes',activeNoteKey:key}));setClosingNote(key);}else closeDocument(key);};
-  useEffect(()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:notesDirty||Object.values(dirtyDocuments).some(Boolean)}));return()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:false}));};},[notesDirty,dirtyDocuments]);
-  useEffect(()=>{window.addEventListener('openlearn:new-note-tab',newNoteTab);return()=>window.removeEventListener('openlearn:new-note-tab',newNoteTab);},[newNoteTab]);
+  // The panel shows one note at a time; the open note is remembered in the layout.
+  const rememberNote=useCallback((id:string|null)=>onLayoutChange(current=>current.noteId===id?current:{...current,noteId:id}),[onLayoutChange]);
+  useEffect(()=>{if(!noteToOpen)return;onLayoutChange(current=>({...current,collapsed:false,tabs:current.tabs.includes('notes')?current.tabs:[...current.tabs,'notes'],activeTab:'notes',noteId:noteToOpen}));onNoteOpenConsumed(noteToOpen);},[noteToOpen,onLayoutChange,onNoteOpenConsumed]);
+  useEffect(()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:notesDirty}));return()=>{window.dispatchEvent(new CustomEvent('openlearn:workspace-dirty',{detail:false}));};},[notesDirty]);
 
   // Tools stay mounted once opened so drafts and in-progress work survive switching.
   function openTab(tool: WorkspaceTool) {
@@ -1263,20 +1240,8 @@ export function WorkspacePanel({ canvasValue, flashcardLaunch, classId, quizSess
         <Button type="button" size="icon-sm" variant="ghost" onClick={() => { onLayoutChange(current => ({ ...current, collapsed: true })); onCollapse(); }} aria-label="Close study panel" title="Close panel · your work stays open"><PanelRightClose size={16} /></Button>
       </div>
     </header>
-    {active === 'notes' && layout.noteTabs?.length ? <div className={styles.docTabs}>
-      <div className={styles.docTabStrip} role="tablist" aria-label="Open notes" onKeyDown={moveTab}>
-        <div className={styles.tabItem} data-active={!layout.activeNoteKey}><button type="button" role="tab" aria-selected={!layout.activeNoteKey} onClick={() => onLayoutChange(current => ({ ...current, activeNoteKey: undefined }))}>{noteTitle}</button></div>
-        {layout.noteTabs?.map(item => <div key={item.key} className={styles.tabItem} data-active={layout.activeNoteKey === item.key}><button type="button" role="tab" aria-selected={layout.activeNoteKey === item.key} onClick={() => onLayoutChange(current => ({ ...current, activeNoteKey: item.key }))}>{item.title}</button><button type="button" aria-label={`Close ${item.title}`} title="Close tab" onClick={() => requestCloseDocument(item.key)}><X size={12}/></button></div>)}
-      </div>
-      <DropdownMenu onOpenChange={open=>{if(open)void learningApi.listWorkspaceNotesPage().then(page=>setPickerNotes(page.notes)).catch(()=>{});}}><DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label="Open a note in a new tab" title="Open a note in a new tab"><Plus size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuItem onSelect={newNoteTab}><Plus size={15}/>New note</DropdownMenuItem>
-        <input aria-label="Find a note to open" placeholder="Find a note…" value={pickerQuery} onChange={event=>setPickerQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} className="mx-1 my-1.5 w-[calc(100%-0.5rem)] rounded-[8px] border border-input bg-card px-2 py-1.5 text-sm"/>
-        {pickerNotes.filter(note=>note.title.toLowerCase().includes(pickerQuery.toLowerCase())).slice(0,8).map(note=><DropdownMenuItem key={note.id} onSelect={()=>openDocument(note.id)}><FileText size={15}/><span className="truncate">{note.title}</span></DropdownMenuItem>)}
-      </DropdownMenuContent></DropdownMenu>
-    </div> : null}
     <div className={styles.content}>
-      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'||!!layout.activeNoteKey} className={styles.preservedTab}><NoteEditor insertRequest={layout.activeNoteKey ? null : noteInsert} onInsertConsumed={insertConsumed} listWhenIdle onOpenNote={openDocument} onNoteSelected={rememberNote} onTitleChange={setNoteTitle} closeRequest={false} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => undefined} onClose={() => undefined} /></div> : null}
-      {layout.noteTabs?.map(item=><WorkspaceNoteDocument key={item.key} item={item} active={active==='notes'&&layout.activeNoteKey===item.key} closeRequest={closingNote===item.key} onClosed={()=>closeDocument(item.key)} onCloseHandled={()=>setClosingNote(null)} onChanged={updateDocument} onDirty={documentDirty} onOpen={openDocument} insertRequest={layout.activeNoteKey===item.key ? noteInsert : null} onInsertConsumed={insertConsumed}/>)}
+      {layout.tabs.includes('notes') ? <div hidden={active !== 'notes'} className={styles.preservedTab}><NoteEditor insertRequest={noteInsert} onInsertConsumed={insertConsumed} listWhenIdle onNoteSelected={rememberNote} closeRequest={false} onDirtyChange={setNotesDirty} seed={noteSeed} onSeedConsumed={onNoteSeedConsumed} noteToOpen={layout.noteId||null} onNoteOpenConsumed={()=>{}} onUseInChat={() => setWorkspacePanelCollapsed(true)} quizToOpen={quizToOpen} onCloseRequestHandled={() => undefined} onClose={() => undefined} /></div> : null}
       {layout.tabs.includes('practice') ? <div hidden={active !== 'practice'} className={styles.preservedTab}><PracticeTool sessionId={quizSessionId} conceptId={quizConceptId} view={layout.practiceView || 'home'} onView={setPracticeView} quizToOpen={quizToOpen} flashcardLaunch={flashcardLaunch}/></div> : null}
       {layout.tabs.includes('canvas') ? <div hidden={active!=='canvas'} className={styles.preservedTab}><div className={styles.toolPage}>
         <CanvasTool value={canvasValue} header={actions => <ToolHeader icon={Shapes} title="Canvas" description="Diagrams and interactive visuals from your conversation." action={actions}/>} onAddToNote={(markdown, title) => {
