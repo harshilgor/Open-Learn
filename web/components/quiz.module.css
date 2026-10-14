@@ -280,3 +280,30 @@
   .progressTrack { width: 100%; }
   .saved { align-items: flex-start; flex-wrap: wrap; }
 }
+
+/* Session header title next to the slim progress label. */
+.progressTitle { font-size: var(--type-ui); font-weight: 600; color: var(--foreground); }
+
+/* Results: score first, then what to revisit, then the next step. */
+.results { display: grid; gap: var(--space-2); }
+.results h2 { margin-bottom: 0; }
+.results .meta, .results p.meta { margin: 0; }
+.resultsScore { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-3); margin: var(--space-1) 0; }
+.resultsScore strong { font-size: 44px; font-weight: 650; line-height: 1; letter-spacing: -0.03em; color: var(--brand); font-variant-numeric: tabular-nums; }
+.resultsScore p { margin: 0; color: var(--muted-foreground); }
+.missed { display: grid; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-4); border-top: 1px solid var(--border); min-width: 0; }
+.missed h3 { display: flex; align-items: center; gap: var(--space-2); font-size: var(--type-ui); font-weight: 600; }
+.missed ol { display: grid; margin: 0; padding: 0; list-style: none; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-card); }
+.missed li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-2) var(--space-3); padding: var(--space-2) var(--space-3); min-width: 0; }
+.missed li + li { border-top: 1px solid var(--border); }
+.missedNumber { font-size: var(--type-meta); font-weight: 600; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.missedQuestion { min-width: 0; font-size: var(--type-caption); line-height: 1.5; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.missedQuestion :is(p, h1, h2, h3, h4) { margin: 0; font-size: inherit; font-weight: inherit; line-height: inherit; }
+.missedNone { margin: var(--space-2) 0 0; font-size: var(--type-caption); color: var(--muted-foreground); }
+.card[id^="quiz-review-"] { scroll-margin-top: var(--space-4); }
+@media (max-width: 600px) {
+  .missed li { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .missed li > :nth-child(3) { grid-column: 2; grid-row: 2; justify-self: start; }
+  .missed li > :nth-child(4) { grid-column: 3; grid-row: 1 / span 2; }
+  .resultsScore strong { font-size: 36px; }
+}

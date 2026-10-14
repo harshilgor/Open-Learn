@@ -1,0 +1,3 @@
+/* Additions to the Practice overview; base row styles live in workspace-panel.module.css. */
+.icon[data-kind="class"] { background: var(--event-reminder-soft); color: var(--event-reminder); }
+.icon[data-kind="weak"] { background: var(--event-exam-soft); color: var(--event-exam); }

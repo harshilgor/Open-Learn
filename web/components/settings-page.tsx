@@ -4,7 +4,7 @@ import { LearnerMemorySettings } from './learner-memory-settings';
 
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useTheme } from 'next-themes';
-import { ArrowLeft, Bell, BookOpen, Brain, CircleHelp, Database, Download, Gauge, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { ArrowLeft, Bell, BookOpen, Brain, CircleHelp, Database, Download, Gauge, Monitor, Moon, Search, Settings2, Sun } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ProviderSettings } from './provider-settings';
 import { UsageSettings } from './usage-settings';
@@ -17,17 +17,32 @@ import { DEFAULT_SETTINGS, readSettingsPreferences, saveSettingsPreferences, SET
 
 export type SettingsCategory = 'account' | 'websites' | 'general' | 'learning' | 'audio' | 'usage' | 'api-keys' | 'notifications' | 'memory' | 'data' | 'about' | 'updates';
 
-const CATEGORIES: { id: SettingsCategory; label: string; icon: typeof Settings2 }[] = [
-  { id: 'account', label: 'Account', icon: Monitor },
-  { id: 'general', label: 'Appearance', icon: Settings2 },
-  { id: 'learning', label: 'Learning', icon: BookOpen },
-  { id: 'usage', label: 'Usage', icon: Gauge },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
-  { id: 'memory', label: 'Memory', icon: Brain },
-  { id: 'data', label: 'Privacy & data', icon: Database },
-  { id: 'about', label: 'Help', icon: CircleHelp },
-  { id: 'updates', label: 'Updates', icon: Download },
+type CategoryInfo = { id: SettingsCategory; label: string; icon: typeof Settings2; description: string; keywords: string[] };
+
+const CATEGORIES: CategoryInfo[] = [
+  { id: 'account', label: 'Account', icon: Monitor, description: 'Your identity, linked devices and connected websites.', keywords: ['Profile', 'Linked devices', 'Link this device', 'Synchronization', 'Connected websites', 'Browser companion', 'Import history', 'Sign in'] },
+  { id: 'general', label: 'Appearance', icon: Settings2, description: 'Theme, accent, density and reading comfort for this device.', keywords: ['Theme', 'Light', 'Dark', 'System', 'Accent color', 'Interface density', 'Text size', 'Reduce motion'] },
+  { id: 'learning', label: 'Learning', icon: BookOpen, description: 'Default teaching style, quiz choices and class recording.', keywords: ['Default teaching gear', 'Quick', 'Guided', 'Deep', 'Quiz defaults', 'Questions', 'Difficulty', 'Practice mode', 'Time limit', 'Recording defaults', 'Note detail', 'Keep class audio', 'Microphone'] },
+  { id: 'usage', label: 'Usage', icon: Gauge, description: 'Recorded tutor activity for your account, from provider reports where available.', keywords: ['Tokens', 'By model', 'By provider', 'Activity'] },
+  { id: 'notifications', label: 'Notifications', icon: Bell, description: 'Reminders that help you return to scheduled reviews and deadlines.', keywords: ['Review reminders', 'Quiet hours', 'Academic reminders', 'Reminder inbox'] },
+  { id: 'memory', label: 'Memory', icon: Brain, description: 'What your tutor remembers about you, and how to review or forget it.', keywords: ['Add a memory', 'Forget everything', 'Session summaries', 'Buddy settings', 'Sources'] },
+  { id: 'data', label: 'Privacy & data', icon: Database, description: 'Manage your account data and saved changes on this device.', keywords: ['Account data', 'Export', 'Delete', 'Drafts', 'Local data'] },
+  { id: 'about', label: 'Help', icon: CircleHelp, description: 'Service status, app version and troubleshooting.', keywords: ['AI service', 'Version', 'Platform', 'Troubleshooting', 'Diagnostics'] },
+  { id: 'updates', label: 'Updates', icon: Download, description: 'Keep your installed app current.', keywords: ['Version', 'Install update'] },
 ];
+const DESCRIPTIONS = Object.fromEntries(CATEGORIES.map(item => [item.id, item.description])) as Record<SettingsCategory, string>;
+
+/** Categories matching every word of the query, with the setting labels that matched. */
+function searchCategories(items: CategoryInfo[], query: string): { item: CategoryInfo; matches: string[] }[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return items.map(item => ({ item, matches: [] }));
+  return items.flatMap(item => {
+    const haystack = [item.label, item.description, ...item.keywords].join(' ').toLowerCase();
+    if (!words.every(word => haystack.includes(word))) return [];
+    const matches = item.keywords.filter(keyword => words.some(word => keyword.toLowerCase().includes(word)));
+    return [{ item, matches: item.label.toLowerCase().includes(words.join(' ')) ? [] : matches.slice(0, 3) }];
+  });
+}
 const CATEGORY_ALIASES: Partial<Record<SettingsCategory, SettingsCategory>> = { websites: 'account', audio: 'learning', 'api-keys': 'about' };
 
 function hasDesktopPreferences(): boolean {
@@ -50,12 +65,13 @@ function downloadDiagnostics(preferences: SettingsPreferences, appVersion: strin
  * already-supported product surfaces; add a category by extending
  * CATEGORIES and rendering its section below. No placeholder settings.
  */
-export function SettingsPage({ category, onCategoryChange, onBack }: {
+export function SettingsPage({ category: requestedCategory, onCategoryChange, onBack }: {
   category: SettingsCategory;
   onCategoryChange: (category: SettingsCategory) => void;
   onBack: () => void;
 }) {
-  category = CATEGORY_ALIASES[category] || category;
+  const category = CATEGORY_ALIASES[requestedCategory] || requestedCategory;
+  const [query, setQuery] = useState('');
   const [saved, setSaved] = useState(false);
   const [desktop, setDesktop] = useState(false);
   const [appVersion, setAppVersion] = useState('Web app');
@@ -78,6 +94,9 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
     window.addEventListener(SETTINGS_CHANGED_EVENT, refresh);
     return () => { window.clearTimeout(timer); window.removeEventListener(SETTINGS_CHANGED_EVENT, refresh); };
   }, []);
+  const available = CATEGORIES.filter(item => desktop || item.id !== 'updates');
+  const searching = query.trim().length > 0;
+  const results = searchCategories(available, query);
   const updatePreference = <K extends keyof SettingsPreferences>(key: K, value: SettingsPreferences[K]) => { setPreferences(saveSettingsPreferences({ [key]: value })); setSaved(true); };
 
   return (
@@ -87,26 +106,34 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           <ArrowLeft size={15} />Back to app
         </button>
         <h2 className={styles.navTitle}>Settings</h2>
-        <label className={styles.mobilePicker}>Section<select aria-label="Settings section" value={category} onChange={event=>onCategoryChange(event.target.value as SettingsCategory)}>{CATEGORIES.filter(item=>desktop||item.id!=='updates').map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
-        {CATEGORIES.filter(item=>desktop||item.id!=='updates').map(item => (
-          <button
-            key={item.id}
-            type="button"
-            aria-current={category === item.id ? 'page' : undefined}
-            className={styles.navItem + (category === item.id ? ' ' + styles.active : '')}
-            onClick={() => onCategoryChange(item.id)}
-          >
-            <item.icon size={16} />{item.label}
-          </button>
-        ))}
+        <div className={styles.search} role="search">
+          <Search size={15} aria-hidden="true" />
+          <input type="search" value={query} placeholder="Search settings" aria-label="Search settings" aria-controls="settings-search-results" onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); setQuery(''); } else if (event.key === 'Enter' && results[0]) { event.preventDefault(); onCategoryChange(results[0].item.id); } }} />
+        </div>
+        <label className={styles.mobilePicker}>Section<select aria-label="Settings section" value={category} onChange={event=>onCategoryChange(event.target.value as SettingsCategory)}>{available.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <div id="settings-search-results" className={styles.navList} data-searching={searching || undefined}>
+          {searching ? <p className={styles.srOnly} role="status">{results.length ? `${results.length} matching ${results.length === 1 ? 'section' : 'sections'}` : 'No matching settings'}</p> : null}
+          {results.map(({ item, matches }) => (
+            <button
+              key={item.id}
+              type="button"
+              aria-current={category === item.id ? 'page' : undefined}
+              className={styles.navItem + (category === item.id ? ' ' + styles.active : '')}
+              onClick={() => onCategoryChange(item.id)}
+            >
+              <item.icon size={16} />{matches.length ? <span className={styles.navMatch}>{item.label}<small>{matches.join(' · ')}</small></span> : item.label}
+            </button>
+          ))}
+          {searching && !results.length ? <div className={styles.searchEmpty}><p>No settings match “{query.trim()}”.</p><button type="button" onClick={() => setQuery('')}>Clear search</button></div> : null}
+        </div>
       </nav>
       <div className={styles.content}>
         <div className={styles.inner} data-density={preferences.density} style={{ '--settings-scale': preferences.textSize === 'large' ? 1.08 : 1 } as CSSProperties}>
-          {category === 'account' && <section><h1>Account</h1><p className={styles.lede}>Your identity, linked devices and connected websites.</p><div className={styles.card}><AccountSettings section="account" /></div><div className={styles.card}><SiteConnections compact /></div></section>}
+          {category === 'account' && <section><h1>Account</h1><p className={styles.lede}>{DESCRIPTIONS.account}</p><div className={styles.card}><AccountSettings section="account" /></div><div className={styles.card}><SiteConnections compact /></div></section>}
           {category === 'general' ? (
             <section aria-label="General settings">
               <h1>Appearance</h1>
-              <p className={styles.lede}>Set the appearance and reading comfort for this device.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.general}</p>
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Appearance</h2>
                 <p className={styles.preferenceHelp}>Choose a theme and accent. These preferences stay on this device.</p>
@@ -136,7 +163,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'learning' ? (
             <section aria-label="Learning preferences">
               <h1>Learning</h1>
-              <p className={styles.lede}>Choose your starting style. You can still change it any time in a lesson.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.learning} You can still change them any time in a lesson.</p>
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Default teaching gear</h2>
                 <p className={styles.preferenceHelp}>This sets the initial explanation depth for new tutor sessions.</p>
@@ -155,6 +182,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               </div>
               <div className={styles.card}>
                 <h2 className={styles.preferenceTitle}>Recording defaults</h2>
+                <p className={styles.preferenceHelp}>How detailed class notes are, and whether class audio is kept.</p>
                 <label className={styles.selectRow}>Default note detail<select value={preferences.lectureDepth} onChange={event => updatePreference('lectureDepth', event.target.value as SettingsPreferences['lectureDepth'])}><option value="concise">Concise</option><option value="standard">Standard</option><option value="detailed">Detailed</option></select></label>
                 <label className={styles.checkRow}><input type="checkbox" checked={preferences.keepLectureAudio} onChange={event => updatePreference('keepLectureAudio', event.target.checked)} /><span><strong>Keep class audio for playback</strong><small>When off, local recovery audio stays until upload and transcription finish; then the server copy is removed. Notes and transcript remain.</small></span></label>
                 <p className={styles.muted}>Microphone access is requested only when you start a recording. Use the recording note to review or remove audio kept for playback.</p>
@@ -164,7 +192,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'usage' ? (
             <section aria-label="Usage settings">
               <h1>Usage</h1>
-              <p className={styles.lede}>Recorded tutor activity for your account, measured from provider reports where available.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.usage}</p>
               <div className={styles.group}>
                 <div className={styles.card}>
                   <p className={styles.preferenceHelp}>Plan allowances are not configured yet. This page shows recorded activity, not a remaining allowance or a bill.</p><UsageSettings />
@@ -175,7 +203,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'notifications' ? (
             <section aria-label="Notification settings">
               <h1>Notifications</h1>
-              <p className={styles.lede}>Reminders that help you return to scheduled reviews.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.notifications}</p>
               <div className={styles.card}>
                 {desktop ? <ReviewNotificationSettings /> : null}
                 <AcademicReminderSettings />
@@ -186,13 +214,14 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'memory' ? (
             <section aria-label="Memory settings">
               <h1>What Open Learn remembers about you</h1>
+              <p className={styles.lede}>{DESCRIPTIONS.memory}</p>
               <div className={styles.card}><LearnerMemorySettings /></div>
             </section>
           ) : null}
           {category === 'data' ? (
             <section aria-label="Data and privacy settings">
               <h1>Privacy &amp; data</h1>
-              <p className={styles.lede}>Manage your account data and saved changes. Device drafts may remain until synchronized or discarded.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.data} Device drafts may remain until synchronized or discarded.</p>
               <div className={styles.card}><AccountSettings section="privacy" /></div>
               {(typeof window !== 'undefined' && (window as Window & {formaDesktop?:{serviceMode?:string}}).formaDesktop?.serviceMode === 'local') ? <div className={styles.card}><DataActionsSection /></div> : null}
             </section>
@@ -200,7 +229,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
           {category === 'about' ? (
             <section aria-label="About Open Learn">
               <h1>Help</h1>
-              <p className={styles.lede}>Your learning environment for guided study, practice, and review across devices.</p>
+              <p className={styles.lede}>{DESCRIPTIONS.about}</p>
               <div className={styles.card}><ProviderSettings /></div>
               <div className={styles.card}>
                 <div className={styles.aboutRow}><strong>Open Learn</strong><span>Your Open Learn account</span></div>
@@ -212,7 +241,7 @@ export function SettingsPage({ category, onCategoryChange, onBack }: {
               </div>
             </section>
           ) : null}
-          {category === 'updates' && <section><h1>Updates</h1><p className={styles.lede}>Keep your installed app current.</p><div className={styles.card}>{desktop?<UpdateSection />:<p>The web app updates automatically when you reload. Android and iOS updates are available in the installed app’s Settings.</p>}</div></section>}
+          {category === 'updates' && <section><h1>Updates</h1><p className={styles.lede}>{DESCRIPTIONS.updates}</p><div className={styles.card}>{desktop?<UpdateSection />:<p>The web app updates automatically when you reload. Android and iOS updates are available in the installed app’s Settings.</p>}</div></section>}
           {saved && <p className={styles.saved} role="status">Preferences saved on this device.</p>}
         </div>
       </div>

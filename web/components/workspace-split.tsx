@@ -8,11 +8,13 @@ import { WORKSPACE_NOTE_OPEN_EVENT, WORKSPACE_NOTE_SEED_EVENT, WORKSPACE_PANEL_S
 import styles from './workspace-split.module.css';
 import { DeferredWorkspace } from './deferred-workspace';
 import {WORKSPACE_FLASHCARDS_OPEN_EVENT} from '@/lib/workspace-events';
+import { START_CLASS_EVENT } from '@/lib/class-events';
 import {WORKSPACE_CANVAS_EVENT} from '@/lib/workspace-events';
 import {ACCOUNT_CHANGED} from '@/lib/account-session';
 import type {FlashcardView} from '@/lib/flashcards-client';
 import {CLASS_OPEN_EVENT,setActiveClassContext} from '@/lib/in-class';
 import { request } from '@/lib/api';
+import { BuddyAvatar, useBuddies } from './buddies';
 
 const STORAGE_KEY = 'forma-workspace-panel-v1';
 const DEFAULT_LAYOUT: WorkspacePanelLayout = { width: 35, collapsed: true, tabs: ['notes'], activeTab: 'notes', activeNoteKey:undefined };
@@ -21,13 +23,35 @@ export type WorkspaceSplitContextValue = {
   collapsed: boolean;
   setCollapsed: (collapsed: boolean) => void;
   toggle: () => void;
+  /** True while the chat floats over an expanded study panel. */
+  floating: boolean;
+  closeFloating: () => void;
 };
 
 export const WorkspaceSplitContext = createContext<WorkspaceSplitContextValue>({
   collapsed: true,
   setCollapsed: () => {},
   toggle: () => {},
+  floating: false,
+  closeFloating: () => {},
 });
+
+/** Split widths outside this range came from a drag towards an edge; reopen at an even split instead. */
+export const usableWidth = (width: number) => (width >= 25 && width <= 75 ? width : 50);
+
+/**
+ * Open the panel back into a split view, or close it. Reopening always leaves
+ * focus mode and uses the last usable width, so a panel closed by dragging the
+ * divider comes back as a split rather than a full-screen chat or panel.
+ */
+export function toggledLayout(current: WorkspacePanelLayout): WorkspacePanelLayout {
+  if (current.collapsed || current.focused) return { ...current, collapsed: false, focused: false, width: usableWidth(current.width) };
+  return { ...current, collapsed: true };
+}
+
+const FLOATING_KEY = 'openlearn-floating-chat-width';
+const FLOATING_MIN = 320;
+const floatingMax = () => Math.max(FLOATING_MIN, Math.min(760, Math.round(window.innerWidth * 0.6)));
 
 export function useWorkspacePanel() {
   return useContext(WorkspaceSplitContext);
@@ -52,6 +76,19 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   const [ready, setReady] = useState(false);
   const [layoutOwner,setLayoutOwner]=useState<string|null>(null);
   const [focusChatOpen,setFocusChatOpen]=useState(false);
+  const { active: activeBuddy } = useBuddies();
+  const [floatingWidth, setFloatingWidth] = useState(420);
+  const floatingDrag = useRef(false);
+  const floatingLoaded = useRef(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { try { const saved = Number(localStorage.getItem(FLOATING_KEY)); if (saved) setFloatingWidth(Math.min(floatingMax(), Math.max(FLOATING_MIN, saved))); } catch { /* Width preference is optional. */ } floatingLoaded.current = true; }, 0);
+    const move = (event: PointerEvent) => { if (!floatingDrag.current) return; setFloatingWidth(Math.min(floatingMax(), Math.max(FLOATING_MIN, Math.round(window.innerWidth - 24 - event.clientX)))); };
+    const stop = () => { floatingDrag.current = false; };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', stop); window.addEventListener('pointercancel', stop);
+    return () => { window.clearTimeout(timer); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); window.removeEventListener('pointercancel', stop); };
+  }, []);
+  // Save only after the stored width has been read, so the default never overwrites it.
+  useEffect(() => { if (!floatingLoaded.current) return; try { localStorage.setItem(FLOATING_KEY, String(floatingWidth)); } catch { /* Width preference is optional. */ } }, [floatingWidth]);
   const [compact, setCompact] = useState(false);
   const [noteSeed, setNoteSeed] = useState<WorkspaceNoteSeed | null>(null);
   const [noteToOpen, setNoteToOpen] = useState<string | null>(null);
@@ -71,6 +108,10 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     window.addEventListener('openlearn:workspace-dirty',dirty);
     return()=>{for(const type of events)window.removeEventListener(type,incoming,true);window.removeEventListener('openlearn:workspace-dirty',dirty);};
   },[]);
+  const panelHidden=useRef(hidePanel);
+  useEffect(()=>{panelHidden.current=hidePanel;},[hidePanel]);
+  // "Start class" opens the class tool when the panel is on screen; elsewhere the caller's own flow runs.
+  useEffect(()=>{const start=(event:Event)=>{if(panelHidden.current)return;event.preventDefault();setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(START_CLASS_EVENT,start);return()=>window.removeEventListener(START_CLASS_EVENT,start);},[]);
   useEffect(()=>{const focus=(event:Event)=>setLayout(current=>({...current,collapsed:false,focused:!!(event as CustomEvent).detail}));window.addEventListener('openlearn:workspace-focus',focus);return()=>window.removeEventListener('openlearn:workspace-focus',focus);},[]);
   useEffect(()=>{
     const open=(event:Event)=>{const detail=(event as CustomEvent<FlashcardView>).detail;if(!detail)return;setFlashcardLaunch(detail);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('practice')?current.tabs:[...current.tabs,'practice'],activeTab:'practice',practiceView:'flashcards'}));const url=new URL(window.location.href);url.searchParams.set('flashcards',detail.deckId||'library');if(detail.reviewSessionId)url.searchParams.set('flashcardReview',detail.reviewSessionId);else url.searchParams.delete('flashcardReview');window.history.replaceState({},'',url);};
@@ -81,6 +122,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
   useEffect(()=>{const open=(event:Event)=>{const detail=(event as CustomEvent<{classId:string}>).detail;if(!detail?.classId)return;setClassId(detail.classId);setActiveClassContext(detail.classId);setLayout(current=>({...current,collapsed:false,tabs:current.tabs.includes('class')?current.tabs:[...current.tabs,'class'],activeTab:'class'}));};window.addEventListener(CLASS_OPEN_EVENT,open);return()=>window.removeEventListener(CLASS_OPEN_EVENT,open);},[]);
   const groupRef = useRef<HTMLDivElement | null>(null);
   const resizing = useRef(false);
+  const dragStartWidth = useRef(50);
   const collapseTarget=useRef<'chat'|'workspace'|null>(null);
   const [collapsePreview,setCollapsePreview]=useState<'chat'|'workspace'|null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -135,9 +177,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     return () => window.removeEventListener(WORKSPACE_QUIZ_OPEN_EVENT, receiveQuiz);
   }, []);
   useEffect(() => {
-    const handleToggle = () => {
-      setLayout(current => ({ ...current, collapsed: !current.collapsed }));
-    };
+    const handleToggle = () => setLayout(toggledLayout);
     const handleSet = (event: Event) => {
       const collapsed = (event as CustomEvent<boolean>).detail;
       setLayout(current => ({ ...current, collapsed }));
@@ -174,7 +214,7 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
       collapseTarget.current=target;setCollapsePreview(target);
       if(!target)setLayout(current => ({ ...current, collapsed: false, width: Math.round(Math.min(80, Math.max(20, width))) }));
     };
-    const stop = () => { if(!resizing.current)return;resizing.current = false;const target=collapseTarget.current;if(target)setLayout(current=>({...current,collapsed:target==='workspace',focused:target==='chat'}));collapseTarget.current=null;setCollapsePreview(null); };
+    const stop = () => { if(!resizing.current)return;resizing.current = false;const target=collapseTarget.current;if(target)setLayout(current=>({...current,collapsed:target==='workspace',focused:target==='chat',width:dragStartWidth.current}));collapseTarget.current=null;setCollapsePreview(null); };
     const cancel=()=>{resizing.current=false;collapseTarget.current=null;setCollapsePreview(null);};
     window.addEventListener('pointermove', resize);
     window.addEventListener('pointerup', stop);
@@ -187,11 +227,14 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     window.addEventListener(WORKSPACE_CANVAS_EVENT, receive); return () => window.removeEventListener(WORKSPACE_CANVAS_EVENT, receive);
   }, []);
 
+  const floating = !!layout.focused && !layout.collapsed && !hidePanel && !compact;
   const contextValue = useMemo<WorkspaceSplitContextValue>(() => ({
     collapsed: layout.collapsed,
     setCollapsed: (collapsed: boolean) => setLayout(current => ({ ...current, collapsed })),
-    toggle: () => setLayout(current => ({ ...current, collapsed: !current.collapsed })),
-  }), [layout.collapsed]);
+    toggle: () => setLayout(toggledLayout),
+    floating,
+    closeFloating: () => setFocusChatOpen(false),
+  }), [layout.collapsed, floating]);
 
   const panel = <WorkspacePanel key={accountGeneration} canvasValue={canvasValue} flashcardLaunch={flashcardLaunch} classId={classId} quizSessionId={quizSessionId} quizConceptId={quizConceptId} quizToOpen={quizToOpen} layout={layout} onLayoutChange={setLayout} noteSeed={noteSeed} noteToOpen={noteToOpen} onNoteSeedConsumed={id => setNoteSeed(current => current?.id === id ? null : current)} onNoteOpenConsumed={noteId => setNoteToOpen(current => current === noteId ? null : current)}
     onCollapse={() => setLayout(current => ({ ...current, collapsed: true }))}
@@ -201,11 +244,16 @@ export function WorkspaceSplit({ children, quizSessionId, quizConceptId, hidePan
     {pendingItem ? <div className={styles.pendingResult} role="status">New workspace item ready <button onClick={()=>{if(protection.current.dirty)return;bypassProtection.current=true;try{window.dispatchEvent(new CustomEvent(pendingItem.type,{detail:pendingItem.detail}));setPendingItem(null);}finally{bypassProtection.current=false;}}} disabled={workspaceDirty}>{workspaceDirty?'Save current edits first':'Open'}</button><button aria-label="Dismiss ready item notice" onClick={()=>setPendingItem(null)}>×</button></div> : null}
     <div ref={groupRef} className={compact ? styles.compact : styles.group}>
       {collapsePreview?<div className={styles.collapsePreview} data-side={collapsePreview} role="status">Release to close {collapsePreview==='chat'?'Buddy chat':'workspace'}</div>:null}
-      {layout.focused && !layout.collapsed && !hidePanel && !compact ? <button className={styles.focusChatToggle} aria-label={focusChatOpen?'Minimize floating Buddy chat':'Open floating Buddy chat'} onClick={()=>setFocusChatOpen(value=>!value)}>{focusChatOpen?'Minimize chat':'Chat with Buddy'}</button> : null}
-      <div hidden={!!layout.focused && !layout.collapsed && !hidePanel && !focusChatOpen} className={layout.focused && !layout.collapsed && !hidePanel ? styles.floatingMain : styles.main} inert={compact && !layout.collapsed && !hidePanel}>{children}</div>
+      {floating && !focusChatOpen ? <button type="button" className={styles.focusChatToggle} aria-label="Open Buddy chat" title="Open Buddy chat" onClick={()=>setFocusChatOpen(true)}>{activeBuddy ? <BuddyAvatar buddy={activeBuddy}/> : null}<span>{activeBuddy?.name || 'Buddy'}</span></button> : null}
+      <div hidden={!!layout.focused && !layout.collapsed && !hidePanel && !focusChatOpen} className={layout.focused && !layout.collapsed && !hidePanel ? styles.floatingMain : styles.main} style={floating ? { '--floating-width': `${floatingWidth}px` } as CSSProperties : undefined} inert={compact && !layout.collapsed && !hidePanel}>
+        {floating ? <div className={styles.floatingHandle} role="separator" aria-orientation="vertical" aria-label="Resize Buddy chat" title="Drag to resize" aria-valuemin={FLOATING_MIN} aria-valuenow={floatingWidth} tabIndex={0}
+          onPointerDown={event => { event.preventDefault(); floatingDrag.current = true; }}
+          onKeyDown={event => { if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return; event.preventDefault(); setFloatingWidth(width => Math.min(floatingMax(), Math.max(FLOATING_MIN, width + (event.key === 'ArrowLeft' ? 24 : -24)))); }}/> : null}
+        {children}
+      </div>
       {!compact && !hidePanel && !layout.collapsed && !layout.focused && (
         <div className={styles.handle} role="separator" aria-orientation="vertical" aria-label="Resize study panel" title="Drag to resize · double-click to reset" aria-valuemin={20} aria-valuemax={80} aria-valuenow={layout.width} tabIndex={0}
-          onPointerDown={event => { event.preventDefault(); resizing.current = true; }}
+          onPointerDown={event => { event.preventDefault(); dragStartWidth.current = usableWidth(layout.width); resizing.current = true; }}
           onDoubleClick={() => setLayout(current => ({ ...current, collapsed: false, width: DEFAULT_LAYOUT.width }))}
           onKeyDown={event => { if(event.key==='Home'||event.key==='End'){event.preventDefault();setLayout(current=>({...current,focused:event.key==='Home',collapsed:event.key==='End'}));}else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const change = event.key === 'ArrowLeft' ? 2 : -2; setLayout(current => ({ ...current, collapsed: false, width: Math.max(20, Math.min(80, current.width + change)) })); } }} />
       )}

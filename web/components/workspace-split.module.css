@@ -129,3 +129,16 @@
   .compact > .panel { box-shadow: -16px 0 40px rgb(20 24 21 / 0.18); }
 }
 @keyframes study-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Floating Buddy chat (study panel expanded): resizable from its left edge. */
+.floatingMain { width: var(--floating-width, 420px); max-width: calc(100vw - 48px); height: min(640px, calc(100dvh - 104px)); border-radius: var(--radius-panel, 18px); box-shadow: var(--shadow-lg); }
+.floatingHandle { position: absolute; left: 0; top: 0; bottom: 0; z-index: 6; width: 10px; cursor: col-resize; touch-action: none; }
+.floatingHandle::after { content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 40px; margin-top: -20px; border-radius: 4px; background: var(--border); opacity: 0; transition: opacity .15s, background .15s; }
+.floatingMain:hover .floatingHandle::after, .floatingHandle:focus-visible::after { opacity: 1; }
+.floatingHandle:hover::after, .floatingHandle:focus-visible::after { background: var(--brand); }
+.floatingHandle:focus-visible { outline: none; }
+
+/* Launcher shown while the floating chat is closed: Buddy's face and name. */
+.focusChatToggle { display: inline-flex; align-items: center; gap: 8px; bottom: 24px; padding: 6px 16px 6px 6px; border-radius: 999px; background: var(--card); box-shadow: var(--shadow-md); font-size: 14px; font-weight: 600; color: var(--foreground); }
+.focusChatToggle:hover { box-shadow: var(--shadow-lg); }
+.focusChatToggle :global(.buddy-avatar) { width: 30px; height: 30px; }

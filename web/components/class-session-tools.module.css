@@ -1,0 +1,102 @@
+/* Live class session bar, quick markers, and the after-class summary.
+   Lives inside the study panel (360–700px) and on mobile. */
+
+.live { margin: -20px -20px 12px; }
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: grid;
+  gap: var(--space-2);
+  padding: 10px 20px 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--background) 94%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+.barStatus { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.barCopy { display: grid; flex: 1; min-width: 0; gap: 1px; }
+.barCopy strong { font-size: var(--type-caption); font-weight: 600; line-height: 1.3; }
+.barCopy span { overflow: hidden; color: var(--muted-foreground); font-size: var(--type-meta); line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.timer { font-variant-numeric: tabular-nums; }
+.barControls { display: flex; flex: none; gap: 2px; }
+
+.dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--muted-foreground); }
+.dot[data-state='recording'] { background: var(--event-exam); box-shadow: 0 0 0 4px color-mix(in srgb, var(--event-exam) 18%, transparent); animation: class-live-pulse 1.6s ease-in-out infinite; }
+.dot[data-state='remote'] { background: var(--brand); box-shadow: 0 0 0 4px var(--brand-soft); }
+@keyframes class-live-pulse { 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--event-exam) 6%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .dot[data-state='recording'] { animation: none; } }
+
+.actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--type-meta);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.actions button svg { width: 15px; height: 15px; flex: none; color: var(--brand); }
+.actions button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--brand) 45%, var(--border)); background: var(--brand-soft); }
+.actions button[data-kind='confused'] svg { color: var(--event-assignment); }
+.actions button[data-kind='confused']:hover:not(:disabled) { border-color: color-mix(in srgb, var(--event-assignment) 45%, var(--border)); background: var(--event-assignment-soft); }
+.actions button:focus-visible, .timeline button:focus-visible, .transcriptHead button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.actions button:disabled { opacity: .5; cursor: default; }
+
+.status { min-height: 0; margin: 0 !important; color: var(--muted-foreground); font-size: var(--type-meta) !important; line-height: 1.4 !important; }
+.status:empty { display: none; }
+
+.transcript { display: grid; gap: 4px; margin: 10px 20px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--muted); }
+.transcriptHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.transcriptHead button { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px; border-radius: 6px; color: var(--brand); font-size: var(--type-meta); font-weight: 600; }
+.transcriptHead button svg { width: 14px; height: 14px; }
+.transcript p { display: flex; gap: 8px; margin: 0 !important; font-size: var(--type-caption) !important; line-height: 1.5 !important; }
+.transcript time { flex: none; padding-top: 1px; color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
+.interim { color: var(--muted-foreground); font-style: italic; }
+
+.summary { display: grid; gap: var(--space-3); margin: 0 0 16px; padding: 16px; }
+.summaryHead { display: grid; gap: 2px; }
+.summaryHead h2 { margin: 2px 0 0; font-size: 18px !important; line-height: 1.3; }
+.summaryHead p { margin: 0 !important; color: var(--muted-foreground); font-size: var(--type-caption) !important; }
+
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.stats > div { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border-radius: var(--radius-control); background: var(--muted); }
+.stats dt { display: flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; color: var(--muted-foreground); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.stats dt svg { width: 13px; height: 13px; flex: none; color: var(--brand); }
+.stats > div[data-kind='confused'] dt svg { color: var(--event-assignment); }
+.stats dd { margin: 0; font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.timeline { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-control); }
+.timeline > li { padding: 0; }
+.timeline button { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 40px; padding: 8px 12px; text-align: left; font-size: var(--type-caption); }
+.timeline button:hover { background: var(--muted); }
+.timeline button svg { width: 15px; height: 15px; flex: none; color: var(--brand); }
+.timeline button[data-kind='confused'] svg { color: var(--event-assignment); }
+.timeline button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline time { flex: none; color: var(--muted-foreground); font-size: var(--type-meta); font-variant-numeric: tabular-nums; }
+
+.muted { margin: 0 !important; color: var(--muted-foreground); font-size: var(--type-caption) !important; }
+
+.summaryActions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.flashcards { display: contents; }
+
+@container study-panel (max-width: 420px) {
+  .actions button { flex-direction: column; gap: 2px; min-height: 48px; padding: 6px 4px; font-size: 11px; }
+  .summaryActions > * { flex: 1 1 100%; }
+}
+@media (max-width: 420px) {
+  .actions button { flex-direction: column; gap: 2px; min-height: 48px; padding: 6px 4px; font-size: 11px; }
+  .summaryActions > * { flex: 1 1 100%; }
+}

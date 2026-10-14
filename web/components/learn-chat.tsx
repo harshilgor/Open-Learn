@@ -58,6 +58,7 @@ import { VerificationBadge, type MessageVerification } from './message-action-ba
 import {useBrowserAssistant} from '@/lib/browser-assistant';
 import {BrowserTaskDock} from './browser-task-dock';
 import {ExecutionPanel} from './assistant/execution-panel';
+import {CitationList} from './assistant/citation-chip';
 import {parseClassReferenceOpenRequest,requestClassReferenceOpen} from '@/lib/in-class';
 
 type NoteContextReceipt = { label: string; notes: { noteId: string; title: string; revision: number; startOffset?: number | null; endOffset?: number | null }[]; totalCharacters: number };
@@ -1478,7 +1479,7 @@ export function LearnChat({
             : null}
         </div> : null}
         {filed?.noteId ? <div className={styles.lessonReceipt}><span>Lesson saved in your study workspace</span><strong>{filed.heading}</strong><Button type="button" variant="outline" size="sm" onClick={() => openWorkspaceNote(filed.noteId)}><GraduationCap size={15}/>Open lesson</Button></div> : null}
-        {filed?.noteId ? <details className={styles.originalResponse}><summary>Read original response here</summary><LessonReader id={turn.lesson!.id} lessonId={turn.lesson!.id} blocks={turn.lesson!.blocks.filter(block=>block.kind!=='source_note')} onSelect={(block, raw)=>setSelection({blockId:block.id,selectedText:raw.slice(0,1200),lessonId:turn.lesson?.id,sessionId:turn.sessionId})} onConceptSelect={term=>setSelectedConcept({id:term,title:term})}/></details> : (turn.lesson || turn.stream || turn.answer) ? <LessonReader id={turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}
+        {filed?.noteId ? <details className={styles.originalResponse}><summary>Read original response here</summary><LessonReader id={turn.lesson!.id} lessonId={turn.lesson!.id} collapsible blocks={turn.lesson!.blocks.filter(block=>block.kind!=='source_note')} onSelect={(block, raw)=>setSelection({blockId:block.id,selectedText:raw.slice(0,1200),lessonId:turn.lesson?.id,sessionId:turn.sessionId})} onConceptSelect={term=>setSelectedConcept({id:term,title:term})}/></details> : (turn.lesson || turn.stream || turn.answer) ? <LessonReader id={turn.lesson?.id || turn.stream?.id || `material-${turnIndex}`}
           lessonId={turn.lesson?.id}
           redundantHeading={turn.question}
           blocks={turn.lesson ? turn.lesson.blocks.filter(block => block.kind !== 'source_note') : turn.stream ? turn.stream.blocks.map((block, index) => ({
@@ -1486,9 +1487,10 @@ export function LearnChat({
             visualizations: (turn.stream?.visualizations || []).filter(value => parseVisualization(value)?.blockIndex === index),
           })) : (turn.answer?.blocks || []).map((block, index) => ({ ...block, id: `block-${index}` }))}
           visualPending={Boolean(turn.stream?.visualPending)}
+          collapsible={!showLiveStatus && (Boolean(turn.lesson) || Boolean(turn.answer) || turn.stream?.status === 'completed')}
           hideHtmlSource={Boolean(turn.stream?.visualRequested) || /\b(?:visual|visuali[sz]e|diagram|chart|graph|calculator|simulation|interactive|draw)\b/i.test(turn.question)}
           onSelect={(block, raw) => setSelection({ blockId: block.id, selectedText: raw.slice(0, 1200), lessonId: turn.lesson?.id, sessionId: turn.sessionId })} onConceptSelect={term => setSelectedConcept({ id: term, title: term })} /> : null}
-        {turn.answer && <><p className={styles.hint}>{turn.answer.message}</p>{turn.answer.sources.length > 0 && <details className={styles.sources}><summary>{turn.answer.sources.length} passages from your materials</summary><p className={styles.hint}>Coverage is limited to these selected passages.</p>{turn.answer.sources.map(source => <button type="button" className={styles.sourceChip} key={source.spanId} onClick={() => openWorkspaceSource(source)}>{source.title} · Page {source.pageIndex + 1}</button>)}</details>}</>}
+        {turn.answer && <><p className={styles.hint}>{turn.answer.message}</p>{turn.answer.sources.length > 0 && <div className={styles.sources}><p className={styles.hint}>{turn.answer.sources.length} passages from your materials · coverage is limited to these passages.</p><CitationList label="Cited passages from your materials" sources={turn.answer.sources} /></div>}</>}
         {turn.noteContext?.notes.length ? <div className={styles.noteContextReceipt}><span>Learner note context · {turn.noteContext.totalCharacters} characters</span>{turn.noteContext.notes.map(note => <button type="button" key={note.noteId} onClick={() => openWorkspaceNote(note.noteId)}>@{note.title}</button>)}</div> : null}
         {turn.visualError ? <p className={styles.hint} role="status">{turn.visualError}</p> : null}
         <VerificationBadge verification={turn.verification}/>

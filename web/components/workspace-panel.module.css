@@ -855,3 +855,62 @@
 
 /* Full-width (focus) mode: keep tool content at a readable width. */
 .focused .toolPage, .focused .practiceView, .focused .practiceBack { width: 100%; max-width: 760px; margin-inline: auto; }
+
+/* Unsaved local draft: a small toolbar control with a dot instead of a banner. */
+.draftIndicator { position: relative; color: var(--event-assignment) !important; }
+.draftIndicator::after { content: ""; position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--event-assignment); box-shadow: 0 0 0 2px var(--background); }
+
+/* ---------- Note editor: quiet chrome, document layout ---------- */
+.editor { --reading-width: 680px; --reading-size: var(--type-body); --reading-leading: 1.7; min-height: 0; }
+.editorTop { gap: 4px; min-height: 48px; padding: 8px 12px; }
+.editorSpacer { flex: 1; }
+.saveState { display: inline-flex; flex: none; align-items: center; gap: 4px; margin-right: 4px; color: var(--muted-foreground); font-size: var(--type-meta); white-space: nowrap; }
+.saveState[data-state="saved"] svg { color: var(--brand); }
+.saveState[data-state="error"] { color: var(--destructive); }
+.askBuddy { gap: 6px; color: var(--foreground); }
+.askBuddy svg { color: var(--brand); }
+
+/* Formatting stays one click away but recedes until you're writing. */
+.formatBar { min-height: 38px; margin: 0; padding: 2px 10px; border-top: 0; opacity: .55; transition: opacity 160ms ease; }
+.editor:focus-within .formatBar, .formatBar:hover { opacity: 1; }
+.formatBar > span { font-size: var(--type-meta); white-space: nowrap; }
+.formatBar kbd { padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--muted); font: inherit; font-size: 11px; }
+
+.docScroll { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; scroll-padding-top: 16px; }
+.docHead { width: min(100%, calc(var(--reading-width) + 64px)); margin: 0 auto; padding: 26px clamp(18px, 3vw, 32px) 4px; }
+.docTitle { width: 100%; border: 0; outline: 0; background: transparent; color: var(--foreground); font-family: var(--font-sans); font-size: var(--type-title); font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; }
+.docTitle::placeholder { color: var(--muted-foreground); opacity: .6; }
+.docMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; margin: 8px 0 0; color: var(--muted-foreground); font-size: var(--type-meta); }
+.docMeta > span + span::before { content: "·"; margin: 0 7px; color: var(--border); }
+.docCourse { color: var(--foreground); font-weight: 550; }
+.docPinned { display: inline-flex; align-items: center; gap: 3px; }
+.docScroll .bodyWrap { flex: 1 0 auto; min-height: 240px; }
+.docScroll .notePreview { overflow: visible; padding-top: 14px; padding-bottom: 40px; }
+.docScroll .writingSurface { min-height: inherit; }
+.notePreview li:empty, .notePreview li > p:empty { min-height: 1.7em; }
+.lessonEditor { overflow: hidden; }
+.lessonEditor .docScroll .bodyWrap { min-height: 320px; }
+
+/* One floating bar for a selection: formatting first, then Buddy. */
+.selectionBar { position: absolute; z-index: 20; display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; align-items: center; gap: 1px; max-width: calc(100% - 16px); padding: 3px; border: 1px solid var(--border); border-radius: 10px; background: var(--popover); color: var(--popover-foreground); box-shadow: var(--shadow-lg); animation: ol-fade-up 120ms ease-out; }
+.selectionBar button { display: inline-flex; align-items: center; gap: 5px; min-width: 30px; height: 30px; justify-content: center; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: inherit; font-size: var(--type-caption); font-weight: 500; white-space: nowrap; cursor: pointer; }
+.selectionBar button:hover { background: var(--muted); }
+.selectionBar button svg { color: var(--muted-foreground); }
+.selectionBar button:hover svg { color: var(--foreground); }
+.selectionDivider { width: 1px; height: 18px; margin: 0 4px; background: var(--border); }
+
+/* Note list filters. */
+.noteFilters { display: flex; gap: 4px; padding: 0 10px 6px; overflow-x: auto; scrollbar-width: none; }
+.noteFilters button { flex: none; padding: 3px 10px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted-foreground); font-size: var(--type-meta); font-weight: 500; cursor: pointer; }
+.noteFilters button:hover { color: var(--foreground); }
+.noteFilters button[aria-checked="true"] { border-color: var(--border); background: var(--card); color: var(--foreground); box-shadow: var(--shadow-sm); }
+.noteItem small { display: flex; align-items: center; gap: 6px; }
+.noteItem small .noteCourse { margin-left: 0; }
+
+@container study-panel (max-width: 440px) {
+  .askBuddy { padding-inline: 8px; }
+  .saveState { display: none; }
+  .docHead { padding-top: 18px; }
+  .docTitle { font-size: var(--type-heading); }
+  .formatBar > span { display: none; }
+}

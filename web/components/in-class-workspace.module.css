@@ -83,3 +83,4 @@
 .buddyContainer>button{margin-bottom:8px}
 .buddyContainer :global(.class-buddy-panel){position:static}
 @container class-workspace (max-width:700px){.stage[data-buddy-open=false]{grid-template-columns:minmax(0,1fr)}.buddyContainer{position:static}}
+.launchBack{display:inline-flex;align-items:center;gap:6px;justify-self:start;margin-top:4px;padding:6px 2px;border-radius:6px;color:var(--muted-foreground);font-size:12px;font-weight:600}.launchBack:hover{color:var(--foreground)}.launchBack:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
