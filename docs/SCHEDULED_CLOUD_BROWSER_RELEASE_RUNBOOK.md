@@ -32,3 +32,12 @@ No workers purchased/provisioned yet. The browser connection recovered after the
 
 
 Local PostgreSQL qualification command (explicit disposable localhost database only): set `OPENLEARN_SCHEDULED_BROWSER_TEST_DATABASE_URL`, then run `python -m pytest backend/tests/test_scheduled_browser_jobs.py -q`. The fixture creates and drops a fresh random schema per case. Never point it at production. Without that variable, the PostgreSQL concurrency case is explicitly skipped and the ordinary suite uses isolated SQLite files.
+
+
+## October 14 activation findings
+
+The approved `openlearn-cloud-workers` environment group was created in Render (`evg-db7k000473hc73dltn2g`). Five unrelated voice/media/metrics credentials were excluded; values were not copied into source or reports. No workers have been provisioned and there are no new worker charges.
+
+The implementation is published on `codex/scheduled-cloud-browser-jobs`, including current main through da89556. Live `/release` reported deployed commit ece49127d2ea678d6a06d04949677d0ad4ba85d3, actual/expected schema 0088_memory_sensitive_enable, embedded worker mode. Current main/release branch expects 0091_class_evidence_indexes. These intermediate migrations belong to earlier In-Class work; this browser slice adds no migration. Do not start workers from the new branch against schema 0088 and do not weaken startup schema checks. Qualify and perform the existing coordinated migration/API release first, then verify both workers on the same schema/commit. Standby prevents claiming jobs, but it does not bypass database compatibility.
+
+Worker Blueprint defaults `OPENLEARN_CLOUD_WORKER_STANDBY=true`; after qualification remove standby only during the owned handover. Disable API embedded browser and notification execution using the scoped overrides, preserve all other execution owners, then verify replacement heartbeats and claims. Keep scheduled-browser enrollment disabled until live authenticated acceptance passes.
