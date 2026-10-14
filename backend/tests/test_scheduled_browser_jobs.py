@@ -237,6 +237,17 @@ def test_explicit_portal_schedule_routes_to_reminder():
     assert plan_message('Open YouTube').kind=='browser'
 
 
+def test_checkpoint_retention_is_bounded():
+    from backend.app.scheduled_browser import retained_assignments, CHECKPOINT_MAX_ASSIGNMENTS
+    prior = {'assignments': {'old':'a', 'recent':'b'}, 'observedAt': {'old':1, 'recent':9_000_000}}
+    kept, seen = retained_assignments(prior, {'new':'c'}, 10_000_000)
+    assert kept == {'new':'c', 'recent':'b'}
+    assert seen['new'] == 10_000_000
+    current = {str(i):str(i) for i in range(CHECKPOINT_MAX_ASSIGNMENTS + 10)}
+    kept, seen = retained_assignments({}, current, 10_000_000)
+    assert len(kept) == len(seen) == CHECKPOINT_MAX_ASSIGNMENTS
+
+
 @pytest.mark.skipif(not os.getenv('OPENLEARN_SCHEDULED_BROWSER_TEST_DATABASE_URL'),reason='Requires explicit isolated local PostgreSQL URL')
 def test_postgres_two_completion_reconcilers_publish_once(setup):
     from concurrent.futures import ThreadPoolExecutor

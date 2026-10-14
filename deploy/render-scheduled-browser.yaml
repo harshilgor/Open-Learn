@@ -8,7 +8,7 @@ services:
     region: virginia
     plan: starter
     repo: https://github.com/harshilgor/Open-Learn
-    branch: codex/scheduled-cloud-browser-jobs
+    branch: main
     dockerfilePath: deploy/Dockerfile
     dockerContext: .
     dockerCommand: python -m backend.app.hosted_runtime browser
@@ -38,7 +38,7 @@ services:
     region: virginia
     plan: starter
     repo: https://github.com/harshilgor/Open-Learn
-    branch: codex/scheduled-cloud-browser-jobs
+    branch: main
     dockerfilePath: deploy/Dockerfile
     dockerContext: .
     dockerCommand: python -m backend.app.hosted_runtime notifications

@@ -6,6 +6,21 @@ from sqlalchemy import text
 from .identity import fail
 from .workflow_store import WorkflowStore, encoded
 
+CHECKPOINT_MAX_ASSIGNMENTS = 2000
+CHECKPOINT_RETENTION_SECONDS = 90 * 86400
+
+
+def retained_assignments(previous, current, now):
+    """Bound each checkpoint, retaining the most recently observed identities first."""
+    observations = previous.get('observedAt', {})
+    retained = {key: value for key, value in previous.get('assignments', {}).items()
+                if now - observations.get(key, previous.get('checkedAt', 0)) < CHECKPOINT_RETENTION_SECONDS}
+    retained.update(current)
+    seen = {key: now if key in current else observations.get(key, previous.get('checkedAt', 0))
+            for key in retained}
+    newest = sorted(retained, key=lambda key: seen[key], reverse=True)[:CHECKPOINT_MAX_ASSIGNMENTS]
+    return {key: retained[key] for key in newest}, {key: seen[key] for key in newest}
+
 
 def browser_actions(actions):
     return [a for a in actions if (a.get('skillId') if isinstance(a, dict) else a.skillId) == 'assistant.website_task']
@@ -64,7 +79,8 @@ def project_result(conn, store, ledger, task, status):
             continue  # Unidentified facts cannot support a reliable novelty claim.
         digest = hashlib.sha256(encoded({k:fact.get(k) for k in ('title','date','conflict')}).encode()).hexdigest()
         fingerprints[identity] = digest
-    baseline = previous.get('assignments', {})
+    now = time.time()
+    baseline, _ = retained_assignments(previous, {}, now)
     additions = [key for key in fingerprints if key not in baseline]
     changes = [key for key in fingerprints if key in baseline and fingerprints[key] != baseline[key]]
     summary = task.get('summary') or 'The website check finished. Open the task to review its results.'
@@ -75,8 +91,9 @@ def project_result(conn, store, ledger, task, status):
     if status == 'completed' and previous.get('checkedAt') and fingerprints and not additions and not changes:
         summary='No newly observed or changed assignments in the covered results. '+summary
     if status == 'completed':
+        retained, observed = retained_assignments(previous, fingerprints, now)
         WorkflowStore(store).put(conn, ledger['owner_id'], 'scheduled_portal_checkpoint',
-            {'id':checkpoint_id, 'version':1, 'assignments':{**baseline,**fingerprints}, 'checkedAt':time.time(), 'taskId':ledger['job_id']}, expected=prior_row['revision'] if prior_row else None)
+            {'id':checkpoint_id, 'version':1, 'assignments':retained, 'observedAt':observed, 'checkedAt':now, 'taskId':ledger['job_id']}, expected=prior_row['revision'] if prior_row else None)
     return {'summary':summary[:2000], 'body':summary[:2000], 'coverage':task.get('coverage', []),
             'browserTaskId':ledger['job_id'], 'deepLink':'/s/'+task['sessionId'] if task.get('sessionId') else '/chat?view=reminders'}
 

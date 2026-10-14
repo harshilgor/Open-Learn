@@ -14,11 +14,11 @@ export function useScheduledMessages(sessionId:string|null) {
     let pending=false;
     const controller=new AbortController();
     const load=async()=>{
-      if(pending||document.visibilityState==='hidden')return;
+      if(!live||pending||document.visibilityState==='hidden')return;
       pending=true;
       try {
         const result=await request<{messages:ScheduledMessage[]}>('/v1/reminder-messages?sessionId='+encodeURIComponent(sessionId),{signal:controller.signal});
-        if(live)setMessages(result.messages);
+        if(live&&Array.isArray(result.messages))setMessages(result.messages);
       } catch {/* Persisted results recover on the next visible refresh. */}
       finally {pending=false;}
     };
