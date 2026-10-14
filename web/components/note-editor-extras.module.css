@@ -138,3 +138,5 @@
 .connectionsBlock li button > span { display: inline-flex; color: var(--muted-foreground); }
 .connectionsBlock li strong { min-width: 0; overflow: hidden; font-size: var(--type-ui); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .connectionsBlock li small { margin-left: auto; flex: none; color: var(--muted-foreground); font-size: var(--type-meta); }
+.templates button.recordStart { display: inline-flex; align-items: center; gap: 5px; border-color: color-mix(in srgb, var(--event-exam) 35%, var(--border)); color: var(--event-exam); }
+.templates button.recordStart:hover { background: var(--event-exam-soft); border-color: var(--event-exam); }

@@ -914,3 +914,10 @@
   .docTitle { font-size: var(--type-heading); }
   .formatBar > span { display: none; }
 }
+.recordingNotice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 12px 8px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--muted); color: var(--muted-foreground); font-size: var(--type-caption); }
+.recordingNotice > span { min-width: 0; flex: 1; }
+
+/* Note body and in-note cards share the title's reading column at any width. */
+.docScroll .notePreview { width: min(100%, calc(var(--reading-width) + 64px)); max-width: none; margin-inline: auto; padding-inline: clamp(18px, 3vw, 32px); }
+.docScroll .recordingPlayer { width: min(calc(100% - 28px), calc(var(--reading-width) + 64px - 2 * clamp(18px, 3vw, 32px))); margin: 8px auto 4px; }
+.docScroll .recordingPlayer button { justify-self: start; }

@@ -17,6 +17,7 @@ import { NoteConnections, NoteQuickSwitcher, NoteTemplatePicker, SlashMenu, type
 import { NOTE_FILTERS, markdownShortcut, matchSlashCommands, matchesNoteFilter, noteWordCount, relativeTime, slashQuery, type NoteFilter, type SlashCommandId } from '@/lib/note-editing';
 import { PracticeOverview } from './practice-overview';
 import { CanvasTool } from './canvas-tool';
+import { NoteRecordingBar, recordingSupported, useNoteRecorder, type NoteRecording } from './note-recorder';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -174,7 +175,7 @@ function RecordingPlayer({ recordingId, noteId, duration, markersMs = [], onRead
   }, [noteId, onReady, status]);
   async function retry() { setRetrying(true); setProcessingError(''); readyNotified.current = false; try { if (status === 'awaiting_upload') { const audio = await getClassRecording(recordingId); if (!audio) throw new Error('The saved audio is unavailable on this device.'); const result = await learningApi.uploadClassRecording(noteId, audio, duration || 0, markersMs); await saveClassRecording(result.id, audio); if (result.id !== recordingId) await deleteClassRecording(recordingId); setStatus(result.status); } else { const result = await learningApi.retryClassRecording(noteId); setStatus(result.status); } } catch (cause) { setProcessingError(cause instanceof Error ? cause.message : 'Could not retry processing.'); } finally { setRetrying(false); } }
   const statusLabel = status === 'completed' ? 'Transcript and study guide ready' : status === 'processing' ? 'Transcribing and creating study guide…' : status === 'queued' ? 'Waiting to process…' : status === 'failed' ? 'Processing needs attention' : status === 'awaiting_upload' ? 'Recording saved locally; upload pending' : 'Processing status unavailable';
-  return <section className={styles.recordingPlayer}><div><Mic size={17} /><strong>Class recording</strong><small>{duration ? `${Math.ceil(duration / 60000)} min` : ''}</small></div>{url ? <audio controls preload="metadata" src={url} aria-label="Class recording" /> : <p>Recording unavailable on this device.</p>}<p>{statusLabel}</p>{processingError ? <p role="alert">{processingError}</p> : null}{status === 'failed' || status === 'awaiting_upload' ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>{retrying ? 'Retrying…' : status === 'awaiting_upload' ? 'Upload recording' : 'Retry processing'}</Button> : null}</section>;
+  return <section className={styles.recordingPlayer}><div><Mic size={17} /><strong>Recording</strong><small>{duration ? `${Math.ceil(duration / 60000)} min` : ''}</small></div>{url ? <audio controls preload="metadata" src={url} aria-label="Class recording" /> : <p>Recording unavailable on this device.</p>}<p>{statusLabel}</p>{processingError ? <p role="alert">{processingError}</p> : null}{status === 'failed' || status === 'awaiting_upload' ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>{retrying ? 'Retrying…' : status === 'awaiting_upload' ? 'Upload recording' : 'Retry processing'}</Button> : null}</section>;
 }
 
 /** Shared heading for every study tool: icon, title, one line of context, optional action. */
@@ -258,6 +259,12 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState('');
   const [imageBusy, setImageBusy] = useState(false);
+  const [uploadingRecording, setUploadingRecording] = useState(false);
+  const [unsentRecording, setUnsentRecording] = useState<NoteRecording | null>(null);
+  const publishRecordingRef = useRef<(recording: NoteRecording) => Promise<void>>(async () => undefined);
+  const recorder = useNoteRecorder(useCallback((recording: NoteRecording) => { void publishRecordingRef.current(recording); }, []));
+  const recordingRef = useRef(false);
+  recordingRef.current = recorder.active;
   const [noteFilter, setNoteFilter] = useState<NoteFilter>('all');
   const [slash, setSlash] = useState<{ query: string; x: number; y: number; index: number } | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
@@ -328,6 +335,8 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     return () => window.clearTimeout(timer);
   }, [fullPage]);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  savingRef.current = saving;
   const [error, setError] = useState('');
   const [listRefreshError, setListRefreshError] = useState('');
   const [notesCursor, setNotesCursor] = useState<string | null>(null);
@@ -429,6 +438,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   }, [courses]);
 
   const confirmBefore = useCallback((action: () => void) => {
+    if (recordingRef.current) { setError('Stop or discard the recording before leaving this note.'); return; }
     if (!dirty) { action(); return; }
     setPendingAction(() => action);
   }, [dirty]);
@@ -519,7 +529,8 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     return () => window.clearTimeout(timer);
   }, [confirmBefore, draft?.id, loadNote, loadNotes, noteToOpen, onNoteOpenConsumed, query]);
 
-  async function save(): Promise<boolean> {
+  /** Saves the draft; resolves to the saved note's id, or false. */
+  async function save(): Promise<string | false> {
     if (!draft || saving) return false;
     const title = draft.title.trim();
     if (!title) { setError('Give this note a title before saving.'); return false; }
@@ -560,7 +571,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
       // The note write is authoritative. A separate list refresh failure must
       // not turn a successful save into a red save error or invite duplicate work.
       await loadNotes(query, true);
-      return true;
+      return saved.id;
     } catch (cause) {
       if (cause instanceof LearningApiError && (cause.code === 'revision_conflict' || cause.code === 'external_change_conflict')) {
         setError(`${cause.message} Your unsaved draft is still in the editor.`);
@@ -575,6 +586,56 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
     if(!draft?.id||dirty||saving)return;
     setSaving(true);setError('');
     try{const history=await learningApi.getWorkspaceNoteVersions(draft.id);const previous=history.versions[0];if(!previous){setError('No previous saved version is available.');return;}const restored=await learningApi.updateWorkspaceNote(draft.id,{title:previous.title,body:previous.body,expectedRevision:draft.revision!});setDraft(toDraft(restored));setSavedDraft(toDraft(restored));setEditorEpoch(value=>value+1);await loadNotes(query);}catch(cause){setError(cause instanceof Error?cause.message:'Could not undo the last save.');}finally{setSaving(false);}
+  }
+
+  const saveRef = useRef(save);
+  saveRef.current = save;
+
+  /** A stopped recording goes into this note: save the note if needed, upload, then show its progress. */
+  async function publishRecording(recording: NoteRecording) {
+    setUploadingRecording(true); setUnsentRecording(null); setError('');
+    try {
+      for (let wait = 0; wait < 40 && savingRef.current; wait++) await new Promise(resolve => window.setTimeout(resolve, 150));
+      let noteId = draftRef.current?.id || null;
+      if (!noteId) { const saved = await saveRef.current(); if (!saved) throw new Error('Save this note, then retry the upload.'); noteId = saved; }
+      const uploaded = await learningApi.uploadClassRecording(noteId, recording.blob, recording.durationMs, recording.markersMs);
+      await saveClassRecording(uploaded.id, recording.blob).catch(() => undefined);
+      // The upload marks the note on the server; adopt that revision and keep any typing.
+      const fresh = await learningApi.getWorkspaceNote(noteId);
+      setSavedDraft(current => current?.id === noteId || !current ? toDraft(fresh) : current);
+      setDraft(current => current && current.id === noteId ? { ...current, revision: fresh.revision, frontmatter: fresh.frontmatter } : current);
+      setError('');
+      void loadNotes(query, true);
+    } catch (cause) {
+      setUnsentRecording(recording);
+      setError(cause instanceof Error ? `The recording was not uploaded: ${cause.message}` : 'The recording was not uploaded.');
+    } finally { setUploadingRecording(false); }
+  }
+  publishRecordingRef.current = publishRecording;
+
+  function downloadRecording(recording: NoteRecording) {
+    const url = URL.createObjectURL(recording.blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = `${(draft?.title || 'recording').replace(/[\\/:*?"<>|]/g, '-').slice(0, 80)}.${recording.blob.type.includes('mp4') ? 'm4a' : 'webm'}`;
+    link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /**
+   * Processing finished: bring the generated notes into the editor. Typing done
+   * meanwhile is kept by appending what the server added to the last saved body.
+   */
+  async function recordingReady(noteId: string) {
+    const fresh = await learningApi.getWorkspaceNote(noteId).catch(() => null);
+    const current = draftRef.current, baseline = savedDraftRef.current;
+    if (!fresh || !current || current.id !== noteId) return;
+    const edited = !baseline || current.body !== baseline.body || current.title !== baseline.title;
+    if (!edited) { setDraft(toDraft(fresh)); setSavedDraft(toDraft(fresh)); setEditorEpoch(value => value + 1); return; }
+    const base = (baseline?.body || '').trimEnd();
+    if (!fresh.body.startsWith(base)) { setError('Your recording notes are ready. Save or discard your edits, then reopen the note to see them.'); return; }
+    const added = fresh.body.slice(base.length);
+    setSavedDraft(toDraft(fresh));
+    setDraft(value => value && value.id === noteId ? { ...value, revision: fresh.revision, frontmatter: fresh.frontmatter, body: value.body.trimEnd() + added } : value);
+    setEditorEpoch(value => value + 1);
   }
 
   useEffect(() => {
@@ -896,6 +957,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   );
 
   const words = draft ? noteWordCount(draft.body) : 0;
+  const canRecord = recordingSupported();
   const saveState = !draft ? '' : saving || (dirty && !error) ? 'Saving…' : error && dirty ? 'Not saved' : draft.id ? 'Saved' : 'Draft';
   const draftCourse = draft && typeof draft.frontmatter.course_id === 'string' ? draft.frontmatter.course_id : null;
   const draftSummary = draft?.id ? notes.find(note => note.id === draft.id) : undefined;
@@ -928,12 +990,13 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
         {draft ? <span className={styles.saveState} data-state={saveState === 'Saved' ? 'saved' : saveState === 'Not saved' ? 'error' : 'pending'} role="status">{saveState === 'Saved' ? <Check size={14} aria-hidden="true"/> : null}{saveState}</span> : null}
         {draft&&unresolvedRecoveredDraft?<DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-xs" variant="ghost" className={styles.draftIndicator} aria-label="Unsaved local draft available" title="An unsaved draft of this note is on this device"><History size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-60"><p className="px-2 py-1.5 text-xs text-muted-foreground">An unsaved draft of this note is on this device.</p><DropdownMenuItem onSelect={()=>confirmBefore(()=>{setDraft(unresolvedRecoveredDraft);setSavedDraft(null);setRecoveredDraft(null);setError('');setEditorEpoch(value=>value+1);})}><History size={15}/>Restore local draft</DropdownMenuItem><DropdownMenuItem onSelect={()=>{setRecoveredDraft(null);if(recoveryOwner)localStorage.removeItem(`workspace-note-draft:${recoveryOwner}${recoveryKey?':'+recoveryKey:''}`);}}><X size={15}/>Discard local copy</DropdownMenuItem></DropdownMenuContent></DropdownMenu>:null}
         {draft ? <Button type="button" size="sm" variant="ghost" className={styles.askBuddy} onClick={discussNote} title="Discuss this note with Buddy"><Sparkles size={15} aria-hidden="true"/>Ask Buddy</Button> : null}
-        {draft && fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Record a class" title="Record a class" onClick={() => onRecordClass?.(activeFolder)}><Mic size={16} /></Button> : null}
+        {draft && !recorder.active && canRecord ? <Button type="button" size="icon-sm" variant="ghost" aria-label="Record audio into this note" title="Record · notes are written into this note when you stop" disabled={uploadingRecording} onClick={() => void recorder.start()}><Mic size={16} /></Button> : null}
         {draft ? <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="icon-sm" variant="ghost" aria-label="More note actions" title="More"><MoreHorizontal size={16}/></Button></DropdownMenuTrigger><DropdownMenuContent align="end" className="w-56">
           <DropdownMenuItem onSelect={() => { setReading(false); setFindOpen(true); }}><Search size={15}/>Find in note</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setReading(value => !value)}><BookOpen size={15}/>{reading ? 'Edit note' : 'Reading mode'}</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => setSwitcherOpen(true)}><FileText size={15}/>Go to note…<DropdownMenuShortcut>Ctrl P</DropdownMenuShortcut></DropdownMenuItem>
           <DropdownMenuItem disabled={reading || imageBusy} onSelect={pickImage}><ImagePlus size={15}/>Insert image</DropdownMenuItem>
+          {fullPage && onRecordClass ? <DropdownMenuItem onSelect={() => onRecordClass(activeFolder)}><AudioLines size={15}/>Start an In-Class session</DropdownMenuItem> : null}
           {draft.id ? <>
             <DropdownMenuSeparator/>
             <DropdownMenuItem onSelect={() => togglePinned({ id: draft.id!, frontmatter: draft.frontmatter })}>{pinnedNote ? <PinOff size={15}/> : <Pin size={15}/>}{pinnedNote ? 'Unpin' : 'Pin to top'}</DropdownMenuItem>
@@ -959,6 +1022,13 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
       ) : <>
         {!reading ? <div className={styles.formatBar} data-note-toolbar role="toolbar" aria-label="Note formatting"><div className={styles.formatTools}>{noteTools.map(({ format, label, icon: Icon }) => <button key={format} type="button" title={label} aria-label={label} onMouseDown={event => event.preventDefault()} onClick={() => applyFormat(format)}><Icon size={16} /></button>)}<button type="button" aria-label="Attach image" title="Attach image" disabled={imageBusy} onMouseDown={event=>event.preventDefault()} onClick={pickImage}><ImagePlus size={16}/></button></div><span>{imageBusy?'Adding image…':<>Type <kbd>/</kbd> for blocks</>}</span></div> : null}
         <div className={styles.docScroll}>
+          {recorder.active ? <NoteRecordingBar recorder={recorder}/> : null}
+          {uploadingRecording || unsentRecording || recorder.error ? <div className={styles.recordingNotice} role="status">
+            <Mic size={15} aria-hidden="true"/>
+            <span>{uploadingRecording ? 'Uploading your recording…' : unsentRecording ? 'Your recording is still on this device.' : recorder.error}</span>
+            {unsentRecording && !uploadingRecording ? <><Button type="button" size="sm" variant="outline" onClick={() => void publishRecording(unsentRecording)}>Retry upload</Button><Button type="button" size="sm" variant="ghost" onClick={() => downloadRecording(unsentRecording)}>Download audio</Button></> : null}
+            {!uploadingRecording && !unsentRecording ? <Button type="button" size="icon-xs" variant="ghost" aria-label="Dismiss" onClick={recorder.clearError}><X size={14}/></Button> : null}
+          </div> : null}
           <header className={styles.docHead}>
             <input ref={titleInput} className={styles.docTitle} value={draft.title} onChange={event => setDraft(current => current ? { ...current, title: event.target.value } : current)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); richBody.current?.focus(); } }} aria-label="Note title" placeholder="Untitled" />
             <p className={styles.docMeta}>
@@ -971,7 +1041,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
           </header>
           <StudyNoteBar draft={draft} onChanged={(revision, frontmatter) => { const apply = (current: NoteDraft | null): NoteDraft | null => current && current.id ? { ...current, revision, frontmatter } : current; setDraft(apply); setSavedDraft(apply); }} />
           {(() => { const sid = sessionIds[0]; const noteId = draft.id; return noteId && draft.frontmatter?.study_note === true && typeof sid === 'string' ? <NoteProposalList sessionId={sid} refreshKey={0} onChanged={() => void loadNote(noteId)} /> : null; })()}
-          {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void loadNote(draft.id); }} /> : null}
+          {typeof draft.frontmatter?.class_recording_id === 'string' && draft.id ? <RecordingPlayer recordingId={draft.frontmatter.class_recording_id} noteId={draft.id} duration={typeof draft.frontmatter.class_recording_duration_ms === 'number' ? draft.frontmatter.class_recording_duration_ms : undefined} markersMs={Array.isArray(draft.frontmatter.class_recording_markers_ms) ? draft.frontmatter.class_recording_markers_ms as number[] : []} onReady={() => { if (draft.id) void recordingReady(draft.id); }} /> : null}
           {typeof draft.frontmatter?.lecture_recording_id === 'string' && draft.id ? <LectureNotesView recordingId={draft.frontmatter.lecture_recording_id} /> : null}
           <input ref={imageInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden multiple onChange={event=>{void insertImages(Array.from(event.target.files||[]));event.target.value='';}}/>
           <div ref={bodyWrap} className={styles.bodyWrap} onMouseUp={inspectSelection} onKeyUp={() => { inspectSelection(); updateSlash(); }} onKeyDown={editorKeyDown} onInput={updateSlash} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setSlash(null); }}>
@@ -990,7 +1060,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
               <button type="button" aria-label="Ask in side chat" title="Ask in side chat" onClick={()=>{const start=selectedExcerpt.start;openSideChat({id:crypto.randomUUID(),title:draft.title,excerpt:selectedExcerpt.text,...(start>=0&&draft.id&&draft.revision?{note:{noteId:draft.id,expectedRevision:draft.revision,startOffset:start,endOffset:start+selectedExcerpt.text.length}}:{})});setSelectedExcerpt(null);}}><MessagesSquare size={15}/></button>
             </div> : null}
           </div>
-          {!draft.id && !draft.body.trim() && !reading ? <NoteTemplatePicker onPick={applyTemplate}/> : null}
+          {!draft.id && !draft.body.trim() && !reading && !recorder.active ? <NoteTemplatePicker onPick={applyTemplate} onRecord={canRecord ? () => void recorder.start() : undefined}/> : null}
           {draft.id && draft.frontmatter?.study_note === true && typeof sessionIds[0] === 'string' ? <LessonPractice noteId={draft.id} sessionId={sessionIds[0]} noteTitle={draft.title} launch={quizToOpen?.lessonNoteId === draft.id ? quizToOpen : null} /> : null}
           {draft.id && draft.body.trim() ? <NoteConnections links={connections} related={related} actions={canStudy ? <>
             <Button type="button" size="sm" variant="outline" onClick={() => setPendingAsk('Quiz me on this note')}><ListChecks size={15}/>Quiz me</Button>

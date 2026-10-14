@@ -280,6 +280,31 @@ def test_legacy_class_recording_uses_openrouter_for_transcription(monkeypatch, l
     assert "The lecture covered cells." in notes.get("alice", note.id).body
 
 
+def test_recording_into_an_existing_note_keeps_the_learners_writing_first(monkeypatch, lecture):
+    store, _, _ = lecture
+    notes = WorkspaceNoteService(store)
+    note = notes.create("alice", WorkspaceNoteCreate(title="Biology", body="My own notes about cells.", frontmatter={}))
+
+    class Transcriber:
+        def transcribe_chunk(self, audio, mime, duration_ms):
+            return SimpleNamespace(spans=[SimpleNamespace(text="Mitochondria make ATP.")])
+
+    class TextProvider:
+        def _complete(self, prompt, max_tokens):
+            return [SimpleNamespace(heading="Energy", body="Mitochondria produce ATP.")]
+
+    monkeypatch.setattr("backend.app.class_recording_service.configured_transcription_provider", lambda: Transcriber())
+    service = ClassRecordingService(store, TextProvider())
+    recorded = service.upload("alice", note.id, b"\x1a\x45\xdf\xa3audio", "audio/webm", 8000, [1200])
+    assert notes.get("alice", note.id).frontmatter["class_recording_id"] == recorded["id"]
+    with usage_scope(store, "alice", recorded["id"]):
+        service.process(recorded["id"], "alice")
+    body = notes.get("alice", note.id).body
+    assert service.get("alice", recorded["id"])["status"] == "completed"
+    assert body.index("My own notes about cells.") < body.index("## Study guide") < body.index("## Transcript")
+    assert "Mitochondria make ATP." in body
+
+
 def test_legacy_notes_and_user_body_survive_generation(lecture):
     store, service, created = lecture
     rid = created["id"]

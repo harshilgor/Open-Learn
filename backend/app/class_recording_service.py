@@ -64,8 +64,8 @@ class ClassRecordingService:
         media_type = media_type.split(";", 1)[0].strip().lower()
         if media_type not in SUPPORTED_AUDIO:
             raise ClassRecordingError("unsupported_audio", "This audio format cannot be transcribed. Record as WebM or MP4.", 415)
-        if not isinstance(note.frontmatter, dict) or not note.frontmatter.get("class_recording_id"):
-            raise ClassRecordingError("not_class_note", "The selected note is not a class recording.", 409)
+        # Any note the learner owns can hold a recording: the Notes tab records
+        # straight into the open note, and this upload marks it as a recording.
         rid = "rec_" + uuid4().hex
         path = self._path(owner, rid)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +165,10 @@ class ClassRecordingService:
             if not generated:
                 raise ClassRecordingError("study_guide_failed", "The transcript is saved on the server, but the model returned an empty study guide. Retry processing to try again.", 502)
             notes = note_service.get(owner, row["note_id"])
-            body = "## Study guide\n\n" + generated + "\n\n" + notes.body.lstrip()
+            guide = "## Study guide\n\n" + generated + "\n\n"
+            # The learner's own writing stays first; the guide sits just above its transcript.
+            at = notes.body.rfind(transcript_section)
+            body = notes.body[:at] + guide + notes.body[at:] if at >= 0 else guide + notes.body.lstrip()
             note_service.update(owner, row["note_id"], WorkspaceNoteUpdate(expected_revision=notes.revision, body=body, frontmatter={"class_recording_status": "completed"}))
             with self.store.transaction() as conn:
                 conn.execute(text("UPDATE class_recordings SET status='completed',transcript=:transcript,error=NULL,updated_at=:now WHERE id=:id"), {"transcript": transcript, "now": time.time(), "id": rid})
