@@ -80,7 +80,7 @@ def build_reminder_router(get_store,provider_getter=lambda:None):
         from .material_service import MaterialService
         from .workflow_store import WorkflowStore
         MaterialService(svc.store).session(owner,sessionId)
-        return {'messages':[r for r in WorkflowStore(svc.store).listing(owner,'reminder_message') if r.get('sessionId')==sessionId]}
+        return {'messages':sorted(WorkflowStore(svc.store).listing_by_parent(owner,'reminder_message',sessionId),key=lambda r:r.get('createdAt',0))}
 
     @router.put('/v1/reminder-preferences')
     def save_preferences(body:Preferences,owner=Depends(material_owner),svc=Depends(service)):
@@ -114,12 +114,13 @@ def build_reminder_router(get_store,provider_getter=lambda:None):
         if not configured or not hmac.compare_digest(configured,secret):fail('permission_denied','Invalid cron credentials.',403)
         with svc.store.engine.connect() as conn:
             row=conn.execute(text("SELECT * FROM reminder_runtime WHERE id='scheduler'")).mappings().first()
+            workers=conn.execute(text("SELECT id,last_tick,payload FROM reminder_runtime WHERE id IN ('worker_browser','worker_notifications')")).mappings().all()
             states=dict(conn.execute(text('SELECT status,count(*) FROM reminders GROUP BY status')).all())
             overdue=conn.execute(text("SELECT count(*) FROM reminders WHERE status='pending' AND due_at<:now"),{'now':time.time()-120}).scalar_one()
         lag=time.time()-row['last_tick'] if row else None
         terminal=states.get('delivered',0)+states.get('failed',0)
         failures=states.get('failed',0)/terminal if terminal else 0
-        return {'lastSuccessfulTick':row['last_tick'] if row else None,'tickLagSeconds':lag,'overdue':overdue,'failureRate':failures,'counts':states,'lastTick':json.loads(row['payload']) if row else None,'attentionRequired':lag is None or lag>120 or overdue>0 or failures>.05}
+        return {'workers':[{**json.loads(w['payload']),'lagSeconds':time.time()-w['last_tick']} for w in workers],'lastSuccessfulTick':row['last_tick'] if row else None,'tickLagSeconds':lag,'overdue':overdue,'failureRate':failures,'counts':states,'lastTick':json.loads(row['payload']) if row else None,'attentionRequired':lag is None or lag>120 or overdue>0 or failures>.05}
     return router
 
 
@@ -127,7 +128,7 @@ def execute_chat_command(body, owner, svc, key, provider_getter=lambda: None):
     try:ZoneInfo(body.timezone)
     except (ValueError,KeyError):fail('invalid_timezone','Choose a valid IANA timezone.',422)
     message=body.message.strip().rstrip('.!?')
-    if not re.match(r'^(?:remind me|quiz me (?:every|weekdays)|every\b|schedule\b|show my reminders|list (?:my )?reminders|cancel .*reminder|snooze)',message,re.I):return {'handled':False}
+    if not (re.search(r'\b(check|monitor|browse|visit)\b.*\b(tomorrow|every|tonight|at \d)\b',message,re.I) or re.match(r'^(?:remind me|quiz me (?:every|weekdays)|every\b|schedule\b|show my reminders|list (?:my )?reminders|cancel .*reminder|snooze)',message,re.I)):return {'handled':False}
     if os.getenv('OPENLEARN_CHAT_REMINDERS')!='true':return {'handled':True,'message':'Chat reminders are not enabled on this server yet.'}
     if re.match(r'^(show|list)',message,re.I):
         items=svc.listing(owner,'pending')['reminders']
@@ -145,9 +146,24 @@ def execute_chat_command(body, owner, svc, key, provider_getter=lambda: None):
             svc.snooze(owner,matches[0]['id'],int(duration[1])*(60 if duration[2].lower().startswith('hour') else 1),key);reply='Snoozed that reminder.'
         return {'handled':True,'message':reply}
     pref=svc.preferences(owner)
+    from .reminder_admission import cached, freeze
+    previous=cached(svc.store,owner,body,key)
+    if previous:
+        result=svc.create(owner,ReminderCreate.model_validate(previous),key)
+        return {'handled':True,'reminder':result,'message':'Scheduled: '+result['title']+'. Your saved schedule is unchanged.'}
     args={'timezone':body.timezone,'sessionId':body.sessionId,'buddyId':body.buddyId,'courseId':body.courseId,'channels':pref['channels'],'quietStart':pref['quietStart'],'quietEnd':pref['quietEnd']}
+    from .browser_assistant.store import AssistantStore
+    args['connections']=[{k:c.get(k) for k in ('id','label','aliases','executor')} for c in AssistantStore(svc.store).list('site_connections',owner) if c.get('executor')=='cloud' and c.get('status')!='revoked']
+    execute_website=bool(re.search(r'\b(check|browse|visit|download|monitor)\b',message,re.I)) and not bool(re.search(r'\bremind me (?:to|.+? to) (?:check|browse|visit|download|monitor)\b',message,re.I))
     recurring=re.fullmatch(r'(?:remind me|quiz me)\s+(every day|every weekday|weekdays|every (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s+(?:to|about|on)\s+(.+))?',message,re.I)
-    if recurring:
+    if execute_website:
+        from .reminder_intent import compile_reminder
+        try:compiled=compile_reminder(message,args,provider_getter())
+        except Exception:compiled=None
+        if not compiled:return {'handled':True,'message':'Choose a connected website and an exact time for the scheduled check.'}
+        if compiled.get('clarification'):return {'handled':True,'message':compiled['clarification']}
+        args.update(compiled)
+    elif recurring:
         recurrence,hour,minute,suffix,content=recurring.groups();hour=int(hour);minute=int(minute or 0)
         if suffix:
             if not 1<=hour<=12:fail('invalid_time','Use hours 1–12 with AM or PM.',422)
@@ -168,7 +184,10 @@ def execute_chat_command(body, owner, svc, key, provider_getter=lambda: None):
             if not compiled:return {'handled':True,'message':'Tell me what and when, for example: remind me tomorrow at 3pm to call Sam.'}
             if compiled.get('clarification'):return {'handled':True,'message':compiled['clarification']}
             args.update(compiled)
-    result=svc.create(owner,ReminderCreate.model_validate(args),key)
+    args.pop('connections',None)
+    command=ReminderCreate.model_validate(args)
+    frozen=freeze(svc.store,owner,body,key,command.model_dump())
+    result=svc.create(owner,ReminderCreate.model_validate(frozen),key)
     exact=datetime.fromtimestamp(result['dueAt'],ZoneInfo(body.timezone)).strftime('%A, %B %d at %I:%M %p %Z')
     plan=', '.join(a.get('skillId') or a['type'] for a in args.get('actions',[]))
     return {'handled':True,'reminder':result,'message':f"Scheduled: {result['title']}. {'Activities: '+plan+'. ' if plan else ''}Next reminder: {exact}. Channels: {', '.join(args['channels'])}."}

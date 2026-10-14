@@ -670,11 +670,15 @@ class AssistantWorker:
     def run(self, stop, once=False, role='all'):
         if role == 'notifications': return self.notifications(stop,once)
         notification_thread = None
-        if role == 'all' and not once:
+        from ..agent_execution.config import worker_mode
+        if role == 'all' and not once and worker_mode('notifications') != 'external':
             notification_thread = threading.Thread(target=self.notifications,args=(stop,),daemon=True)
             notification_thread.start()
         while not stop.is_set():
-            try: busy = self.tick(3, KINDS - {'reminder_dispatch'} if not once else KINDS)
+            try:
+                from ..cloud_worker_health import heartbeat
+                heartbeat(self.store,'browser')
+                busy = self.tick(3, KINDS - {'reminder_dispatch'} if not once else KINDS)
             except Exception as exc:
                 log.warning('Assistant worker iteration failed (%s)', type(exc).__name__); busy = False
             if once: return

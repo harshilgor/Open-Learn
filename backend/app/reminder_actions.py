@@ -165,6 +165,9 @@ def build_registry(store, provider=None):
     def website(owner,args,key,ctx):
         from .browser_assistant.service import AssistantService
         from .browser_assistant.contracts import TaskCreate
+        from .scheduled_browser import validate_actions
+        with store.engine.connect() as conn:
+            validate_actions(conn,owner,[{'skillId':'assistant.website_task','args':args}],ctx.get('sessionId'))
         result=AssistantService(store).create(owner,TaskCreate.model_validate(args),key)
         return {'jobId':result['id'],'jobKind':'assistant'}
     reg.register('assistant.website_task',website)
@@ -217,6 +220,23 @@ class ReminderActionRunner:
                 if ledger and ledger['status']=='waiting':
                     jobs.finish(conn,job,{'status':'waiting'}); return
                 conn.execute(text("INSERT INTO reminder_action_runs(fire_id,step_id,owner_id,skill_id,status,started_at) VALUES(:fire,:step,:owner,:skill,'running',:now) ON CONFLICT(fire_id,step_id) DO UPDATE SET status='running',attempt=reminder_action_runs.attempt+1"),{'fire':row['id'],'step':index,'owner':row['owner_id'],'skill':action.skillId or action.type,'now':time.time()})
+                if action.skillId=='assistant.website_task':
+                    # Admission, ledger binding and routine-job completion share
+                    # one commit. No model or browser calls occur here.
+                    from .scheduled_browser import validate_actions
+                    from .browser_assistant.service import AssistantService
+                    from .browser_assistant.contracts import TaskCreate
+                    conn.execute(text('UPDATE reminders SET payload=payload WHERE id=:id'),{'id':row['id']})
+                    state=conn.execute(text('SELECT status FROM reminders WHERE id=:id'),{'id':row['id']}).scalar_one()
+                    if state!='delivering':
+                        jobs.finish(conn,job,{'status':state});return
+                    validate_actions(conn,row['owner_id'],[action],context.get('sessionId'))
+                    key=hashlib.sha256(f"{row['owner_id']}:{row['id']}:{index}:{row['due_at']}".encode()).hexdigest()
+                    task=AssistantService(self.store).create(row['owner_id'],TaskCreate.model_validate(action.args),key,connection=conn)
+                    result={'jobId':task['id'],'jobKind':'assistant'}
+                    conn.execute(text("UPDATE reminder_action_runs SET status='waiting',job_id=:task,artifacts_json=:payload WHERE fire_id=:fire AND step_id=:step"),{'task':task['id'],'payload':encoded(result),'fire':row['id'],'step':index})
+                    jobs.finish(conn,job,{'status':'waiting'})
+                    return
             key=hashlib.sha256(f"{row['owner_id']}:{row['id']}:{index}:{row['due_at']}".encode()).hexdigest()
             try:
                 if action.type in {'notify','buddy_message'}:
@@ -227,6 +247,14 @@ class ReminderActionRunner:
                 status='waiting' if waiting else 'completed'
                 with self.store.transaction() as conn:
                     jobs.validate_lease(conn,job)
+                    conn.execute(text('UPDATE reminders SET payload=payload WHERE id=:id'), {'id':row['id']})
+                    current=conn.execute(text('SELECT status FROM reminders WHERE id=:id'), {'id':row['id']}).scalar_one()
+                    if current!='delivering' and result.get('jobKind')=='assistant':
+                        from .scheduled_browser import cancel_tasks
+                        conn.execute(text("UPDATE reminder_action_runs SET status='waiting',job_id=:task WHERE fire_id=:fire AND step_id=:step"),{'task':result['jobId'],'fire':row['id'],'step':index})
+                        cancel_tasks(conn,self.store,row['owner_id'],[row['id']])
+                        jobs.finish(conn,job,{'status':current})
+                        return
                     conn.execute(text('UPDATE reminder_action_runs SET status=:status,job_id=:job,artifacts_json=:artifacts,finished_at=:now WHERE fire_id=:fire AND step_id=:step'),{'status':status,'job':result.get('jobId'),'artifacts':encoded(result),'now':time.time(),'fire':row['id'],'step':index})
                 context.update(result)
                 if waiting:
@@ -256,16 +284,22 @@ class ReminderActionRunner:
             WorkflowStore(self.store).finish(conn,job,{'status':status})
 
     def resume(self, fire_id, job_id, job_status, job_payload):
-        if job_status not in {'completed','completed_partial','failed','cancelled','waiting_for_user','waiting'}: return
+        if job_status not in {'completed','completed_partial','failed','cancelled'}: return
         with self.store.transaction() as conn:
+            conn.execute(text('UPDATE reminders SET payload=payload WHERE id=:id'), {'id':fire_id})
             row=conn.execute(text("SELECT a.* FROM reminder_action_runs a JOIN reminders r ON r.id=a.fire_id AND r.owner_id=a.owner_id WHERE a.fire_id=:fire AND a.job_id=:job AND a.status='waiting' AND r.status='delivering'"),{'fire':fire_id,'job':job_id}).mappings().first()
             if not row:return
+            assert_owner_active(conn,row['owner_id'])
             result=json.loads(row['artifacts_json'])
             if job_status in {'completed','completed_partial'}:
-                result.update({k:v for k,v in job_payload.items() if k in {'deckId','quizId','summary','sessionId'}})
+                result.update({k:v for k,v in job_payload.items() if k in {'deckId','quizId','summary','sessionId','coverage'}})
+                if result.get('jobKind') == 'assistant' and row['skill_id'] == 'assistant.website_task':
+                    from .scheduled_browser import project_result
+                    result.update(project_result(conn, self.store, row, job_payload, job_status))
                 if result.get('deckId'):result['deepLink']='/chat?flashcards='+result['deckId']
                 result.pop('jobId',None)
-                conn.execute(text("UPDATE reminder_action_runs SET status='completed',artifacts_json=:payload,finished_at=:now WHERE fire_id=:fire AND step_id=:step AND status='waiting'"),{'fire':fire_id,'step':row['step_id'],'payload':encoded(result),'now':time.time()})
+                changed=conn.execute(text("UPDATE reminder_action_runs SET status='completed',artifacts_json=:payload,finished_at=:now WHERE fire_id=:fire AND step_id=:step AND status='waiting'"),{'fire':fire_id,'step':row['step_id'],'payload':encoded(result),'now':time.time()}).rowcount
+                if not changed:return
                 WorkflowStore(self.store).enqueue(row['owner_id'],fire_id,'reminder_actions',{},f"reminder-resume:{fire_id}:{row['step_id']}",connection=conn)
             else:
                 payload=json.loads(conn.execute(text('SELECT payload FROM reminders WHERE id=:fire AND owner_id=:owner'),{'fire':fire_id,'owner':row['owner_id']}).scalar_one())

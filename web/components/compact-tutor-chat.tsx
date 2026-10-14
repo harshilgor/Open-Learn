@@ -17,6 +17,7 @@ import {ExecutionPanel} from './assistant/execution-panel';
 import { useBuddies } from './buddies';
 import {useVoice} from './voice/voice-provider';
 import {reportVoiceFocus,VOICE_REFRESH} from '@/lib/voice/client';
+import { useScheduledMessages } from '@/lib/scheduled-messages';
 import { BuddyReplyStatus } from './buddy-reply-status';
 
 /** A shared context boundary for note discussions and future concept explanations. */
@@ -34,6 +35,7 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
   const {active:buddy} = useBuddies();
   const voice=useVoice();
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const scheduledMessages=useScheduledMessages(sessionId);
   const browserAssistant = useBrowserAssistant(sessionId, context.courseId);
   const [revision, setRevision] = useState(1);
   const [turns, setTurns] = useState<Journey['turns']>([]);
@@ -146,6 +148,7 @@ export function CompactTutorChat({ context, onClose }: { context: TutorChatConte
       {!turns.length && !pending ? <p className={styles.empty}>Ask about an idea, an example, or something unclear in this note.</p> : null}
       {turns.map((turn, index) => <div className={styles.turn} key={`${turn.generationId || index}`}><p className={styles.question}>{turn.question}</p>{turn.lesson?<LessonReader id={turn.lesson.id} lessonId={turn.lesson.id} blocks={turn.lesson.blocks}/>:null}</div>)}
       {pending ? <div className={styles.turn}><p className={styles.question}>{pending.question}</p>{pending.blocks.length ? <LessonReader id="side-chat-stream" blocks={pending.blocks.map((block,index)=>({...block,visualizations:(pending.visualizations||[]).filter(value=>parseVisualArtifact(value)?.blockIndex===index)}))}/> : null}</div> : null}
+      {scheduledMessages.map(message=><article key={message.id} className={styles.turn}><strong>{message.title}</strong><p>{message.body}</p><a href={message.url}>Open activity</a></article>)}
       <ExecutionPanel showTools={false} sessionId={sessionId} courseId={context.courseId} onSession={id => { setSessionId(id); try { localStorage.setItem(storageKey, id); } catch { /* Durable server state remains available. */ } }} />
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
     </div>

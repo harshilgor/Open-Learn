@@ -78,7 +78,7 @@ def main():
             NotificationsWorker(store,configured_lesson_provider).run(stop,args.once)
         elif args.role=='browser':
             from .browser_assistant.workers import AssistantWorker
-            AssistantWorker(store,configured_lesson_provider).run(stop,args.once)
+            AssistantWorker(store,configured_lesson_provider).run(stop,args.once,role='browser')
         elif args.role=='class':
             from .in_class_worker import InClassWorker
             InClassWorker(store,configured_lesson_provider).run(stop,args.once)
