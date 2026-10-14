@@ -20,8 +20,10 @@ from .mode_transition_routing import classify_mode_for_session
 
 
 from .usage.context import usage_job
+from .assessment_timing import execution_scope, span, emit
 
 @usage_job
+@execution_scope
 def run_job(store, provider, job_id):
     from sqlalchemy import text
     with store.engine.connect() as conn:
@@ -43,6 +45,9 @@ def run_job(store, provider, job_id):
     synthesis = StudyNoteService(store, provider)
     operation_started = time.monotonic()
     operation_status = "failed"
+    if kind in {"create", "next", "quiz_prefetch", "answer", "quiz_finish"}:
+        emit("queue_age", max(0, time.time() - job.get("created_at", time.time())) * 1000,
+            command=kind, attempt=job.get("attempt_count"))
     try:
         prepared = None
         if kind == 'voice_teach':
@@ -61,7 +66,7 @@ def run_job(store, provider, job_id):
         elif kind == "adjudicate":
             from .assessment_adjudication import ChallengeService
             prepared = ChallengeService(store, provider).prepare(owner, target)
-        with store.transaction() as conn:
+        with span("publication"), store.transaction() as conn:
             records.validate_lease(conn, job)
             records.validate_input(conn, job)
             if kind == 'voice_teach':
@@ -123,6 +128,8 @@ def run_job(store, provider, job_id):
     finally:
         heartbeat.close()
         if kind in {"create", "next", "quiz_prefetch", "answer", "quiz_finish"}:
+            emit("command", (time.monotonic() - operation_started) * 1000,
+                command=kind, status=operation_status, attempt=job.get("attempt_count"))
             logging.getLogger(__name__).info("assessment_command", extra={
                 "assessment_command_kind": kind, "assessment_command_status": operation_status,
                 "assessment_execution_ms": round((time.monotonic() - operation_started) * 1000),
