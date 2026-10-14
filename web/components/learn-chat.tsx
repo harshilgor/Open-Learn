@@ -1243,7 +1243,11 @@ export function LearnChat({
     if (fromOutbox && sessionId && canUseTutorFastPath(text, chatMode,
       !!(attachments.length || noteMentions.length || passageContext || browserAssistant.replyTarget))) {
       setClassActionReply(''); setError('');
-      return await streamTurn({ action: 'message', message: text, question: text, classContext:frozenClassContext }, sessionId, undefined, 'ask', clientMessageId, onAccepted, true);
+      // A message re-sent after the learner declined a mode switch carries that
+      // decision, so the server answers in Ask instead of offering the switch again.
+      const declinedSwitch = classificationBypass.current;
+      classificationBypass.current = null;
+      return await streamTurn({ action: 'message', message: text, question: text, classContext:frozenClassContext }, sessionId, declinedSwitch, 'ask', clientMessageId, onAccepted, true);
     }
     setClassActionReply('');
     if(onInClass && !attachments.length && /^(?:please\s+)?(?:start (?:taking notes|listening|recording)(?: for (?:this|my) class)?|start (?:an? )?in[- ]class (?:mode|session))\s*[.!]?$/i.test(text)){clearSubmittedDraft();onInClass();return;}

@@ -843,9 +843,11 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
   // On small screens the notes destination is list-first: the list fills the view until a note is open.
   const idleList = listWhenIdle && !fullPage && !draft;
   const listHidden = listCollapsed && !idleList;
+  // In the study panel an open list slides over the note; working in the note puts it away.
+  const listOverlay = !fullPage && !idleList && !listCollapsed;
   const courseLabel = (note: { frontmatter: Record<string, unknown> }) => typeof note.frontmatter.course_id === 'string' ? courseNames[note.frontmatter.course_id] || 'Course' : '';
   const noteList = (
-    <div className={styles.noteList}>
+    <div className={styles.noteList} onKeyDown={event => { if (listOverlay && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); setListCollapsedPersisted(true); } }}>
       <div className={styles.noteListTop}>
         {!fullPage && !idleList ? <button type="button" className={styles.listToggle} title="Hide note list" aria-label="Hide note list" aria-expanded="true" onClick={() => setListCollapsedPersisted(true)}><PanelLeftClose size={15} /></button> : null}
         <div className={styles.search}><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search notes" aria-label="Search notes" /></div>
@@ -918,7 +920,7 @@ function NoteEditor({ listWhenIdle = false, closeRequest, onClose, onCloseReques
 
   return <section className={`${styles.notes} ${fullPage ? styles.notesHome + " " + styles.unifiedNotes : ""} ${!fullPage && listHidden ? styles.listCollapsed : ""} ${idleList ? styles.idleList : ""}`} aria-label="Notes workspace" onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'p') { event.preventDefault(); setSwitcherOpen(true); } }}>
     {fullPage ? (listHost ? createPortal(noteList, listHost) : null) : noteList}
-    <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`}>
+    <div className={`${styles.editor} ${draft?.frontmatter?.study_note === true ? styles.lessonEditor : ''}`} onPointerDown={() => { if (listOverlay) setListCollapsedPersisted(true); }}>
       {draft || listHidden ? <div className={styles.editorTop}>
         {listHidden ? <button type="button" className={styles.listToggle} title="Show note list" aria-label="Show note list" aria-expanded="false" onClick={() => setListCollapsedPersisted(false)}><PanelLeft size={15} /></button> : null}
         {draft && !fullPage ? <Button type="button" size="icon-sm" variant="ghost" aria-label="New note" title="New note" onClick={()=>{if(onOpenNote)window.dispatchEvent(new CustomEvent('openlearn:new-note-tab'));else startBlank();}}><Plus size={16}/></Button> : null}
