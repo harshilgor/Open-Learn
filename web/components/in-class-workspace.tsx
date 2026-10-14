@@ -11,7 +11,10 @@ import { uploadMaterialParts } from '@/lib/material-upload';
 import {ClassPdfReader} from './class-pdf-reader';
 import {ClassYoutubeSearch} from './class-youtube-search';
 import {LearningApiError,learningApi,request,type CourseSummary} from '@/lib/api';
-import {AudioLines,ArrowRight,BookOpen,Clock3,Mic2} from 'lucide-react';
+import {AudioLines,ArrowLeft,ArrowRight,BookOpen,Clock3,Mic2} from 'lucide-react';
+import {START_CLASS_EVENT,clearPendingStartClass,peekPendingStartClass,type StartClassDetail} from '@/lib/class-events';
+import {lectureCapture} from '@/lib/lecture-capture';
+import {ClassSessionTools} from './class-session-tools';
 
 const mergeSnapshot=(current:ClassSnapshot|null,next:ClassSnapshot)=>typeof mergeClassSnapshot==='function'?mergeClassSnapshot(current,next):next;
 const ACTIVE_INTAKE_STATUSES=new Set(['queued','fetching','uploading','processing']);
@@ -35,14 +38,41 @@ function transcriptionStatus(snapshot:ClassSnapshot){
 }
 async function stableIntakeCommandId(classId:string,needId:string,source:string){const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(source)));const fingerprint=Array.from(digest,byte=>byte.toString(16).padStart(2,'0')).join('');const key=`openlearn.class-intake-command:${encodeURIComponent(classId)}:${encodeURIComponent(needId)}:${fingerprint}`;const saved=localStorage.getItem(key);if(saved)return {commandId:saved,key};const commandId=crypto.randomUUID().replaceAll('-','');localStorage.setItem(key,commandId);return {commandId,key};}
 async function fingerprintFile(file:File){const chunks:string[]=[];const chunkBytes=1024*1024;for(let offset=0;offset<file.size;offset+=chunkBytes){const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',await file.slice(offset,Math.min(file.size,offset+chunkBytes)).arrayBuffer()));chunks.push(Array.from(digest,byte=>byte.toString(16).padStart(2,'0')).join(''));}const final=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(chunks.join(':'))));return Array.from(final,byte=>byte.toString(16).padStart(2,'0')).join('');}
+function captureActive(){return ['recording','paused','finalizing'].includes(lectureCapture.phase);}
 function forgetIntakeCommand(commandId:string){for(let index=localStorage.length-1;index>=0;index--){const key=localStorage.key(index);if(key?.startsWith('openlearn.class-intake-command:')&&localStorage.getItem(key)===commandId)localStorage.removeItem(key);}}
 
-export function InClassWorkspace({classId}:{classId:string|null}){
+export function InClassWorkspace({classId,initialCourseId}:{classId:string|null;initialCourseId?:string|null}){
   const buddies=useBuddies();
   const [courses,setCourses]=useState<CourseSummary[]>([]);
   const [coursesLoading,setCoursesLoading]=useState(true);
   const [coursesError,setCoursesError]=useState('');
-  const [courseChoice,setCourseChoice]=useState('');
+  const [courseChoice,setCourseChoice]=useState(()=>peekPendingStartClass()?.courseId??initialCourseId??'');
+  const [initialCourseSync,setInitialCourseSync]=useState(initialCourseId);
+  if(initialCourseSync!==initialCourseId){setInitialCourseSync(initialCourseId);if(initialCourseId)setCourseChoice(initialCourseId);}
+  const [launchFocusRequest,setLaunchFocusRequest]=useState(()=>peekPendingStartClass()?1:0);
+  const [launchOverClassId,setLaunchOverClassId]=useState<string|null>(()=>peekPendingStartClass()&&classId&&!captureActive()?classId:null);
+  const launchButtonRef=useRef<HTMLButtonElement|null>(null);
+  const showLaunch=!classId||launchOverClassId===classId;
+  useEffect(()=>{clearPendingStartClass();},[]);
+  useEffect(()=>{
+    const receive=(event:Event)=>{
+      const detail=(event as CustomEvent<StartClassDetail|undefined>).detail;
+      clearPendingStartClass();
+      if(detail?.courseId)setCourseChoice(detail.courseId);
+      if(!captureActive())setLaunchOverClassId(activeClassIdRef.current);
+      setLaunchFocusRequest(value=>value+1);
+    };
+    window.addEventListener(START_CLASS_EVENT,receive);
+    return()=>window.removeEventListener(START_CLASS_EVENT,receive);
+  },[]);
+  useEffect(()=>{
+    if(!launchFocusRequest||!showLaunch)return;
+    let frame=0,tries=0;
+    // The class tool may still be revealing itself; retry briefly until the action is focusable.
+    const attempt=()=>{const button=launchButtonRef.current;if(button){button.focus({preventScroll:false});if(document.activeElement===button)return;}if(++tries<60)frame=window.requestAnimationFrame(attempt);};
+    attempt();
+    return()=>window.cancelAnimationFrame(frame);
+  },[launchFocusRequest,showLaunch]);
   const [launchTitle,setLaunchTitle]=useState('');
   useEffect(()=>{let live=true;void learningApi.listCourses().then(value=>{if(live)setCourses(value.filter(course=>!course.archivedAt));}).catch(cause=>{if(live)setCoursesError(cause instanceof Error?cause.message:'Courses could not be loaded.');}).finally(()=>{if(live)setCoursesLoading(false);});return()=>{live=false;};},[]);
   const activeClassIdRef=useRef(classId);activeClassIdRef.current=classId;
@@ -266,7 +296,8 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     void classApi.referencePdfManifest(classId,reference.versionId).then(manifest=>{if(live&&referenceRequestEpoch.current===epoch)setReferenceManifest(manifest);}).catch(()=>{if(live&&referenceRequestEpoch.current===epoch)setReferenceManifest(null);});
     return()=>{live=false;};
   },[classId,reference?.versionId]);
-  if(!classId){
+  if(!classId||showLaunch){
+    const selectedCourse=coursesLoading||courses.some(course=>course.id===courseChoice)?courseChoice:'';
     const recent=[...(buddies.snapshot?.classes||[])].filter(item=>item.classId).sort((a,b)=>b.startedAt-a.startedAt).slice(0,3);
     return <section className={styles.classLaunch} aria-labelledby="class-launch-title">
       <div className={styles.launchIntro}>
@@ -276,21 +307,22 @@ export function InClassWorkspace({classId}:{classId:string|null}){
       </div>
       <div className={styles.launchForm}>
         <label htmlFor="class-course-choice">Save this class in</label>
-        <select id="class-course-choice" value={courseChoice} onChange={event=>setCourseChoice(event.target.value)} disabled={coursesLoading}>
+        <select id="class-course-choice" value={selectedCourse} onChange={event=>setCourseChoice(event.target.value)} disabled={coursesLoading}>
           <option value="">General class · No course</option>
           {courses.map(course=><option key={course.id} value={course.id}>{course.name}</option>)}
         </select>
         {coursesError?<small className={styles.launchError} role="status">{coursesError} You can still start a general class.</small>:null}
         <label htmlFor="class-launch-title-input">Class title <span>Optional</span></label>
-        <input id="class-launch-title-input" value={launchTitle} onChange={event=>setLaunchTitle(event.target.value)} placeholder={courseChoice?courses.find(course=>course.id===courseChoice)?.name||'Add a title':'Class session'} maxLength={160}/>
-        <Button className={styles.launchAction} onClick={()=>window.dispatchEvent(new CustomEvent(CLASS_SETUP_REQUEST_EVENT,{detail:{courseId:courseChoice||null,title:launchTitle.trim()}}))}>
+        <input id="class-launch-title-input" value={launchTitle} onChange={event=>setLaunchTitle(event.target.value)} placeholder={selectedCourse?courses.find(course=>course.id===selectedCourse)?.name||'Add a title':'Class session'} maxLength={160}/>
+        <Button ref={launchButtonRef} className={styles.launchAction} onClick={()=>window.dispatchEvent(new CustomEvent(CLASS_SETUP_REQUEST_EVENT,{detail:{courseId:selectedCourse||null,title:launchTitle.trim()}}))}>
           <Mic2 size={16}/> Continue to setup <ArrowRight size={15}/>
         </Button>
         <p className={styles.launchPrivacy}><span/> You’ll review recording permission before capture begins.</p>
+        {classId?<button type="button" className={styles.launchBack} onClick={()=>setLaunchOverClassId(null)}><ArrowLeft size={14}/> Back to the open class</button>:null}
       </div>
       {recent.length?<div className={styles.recentClasses}>
         <div className={styles.recentHeading}><div><span>YOUR LIBRARY</span><h2>Recent classes</h2></div><Clock3 size={17}/></div>
-        {recent.map(item=><button type="button" key={item.id} onClick={()=>openClassWorkspace(item.classId!)}>
+        {recent.map(item=><button type="button" key={item.id} onClick={()=>{setLaunchOverClassId(null);openClassWorkspace(item.classId!);}}>
           <span className={styles.recentIcon}><BookOpen size={15}/></span><span className={styles.recentCopy}><strong>{item.title}</strong><small>{item.courseId?courses.find(course=>course.id===item.courseId)?.name||'Course class':'General class'} · {new Date(item.startedAt*1000).toLocaleDateString()}</small></span><ArrowRight size={15}/>
         </button>)}
       </div>:null}
@@ -298,6 +330,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   }
   if(!snapshot||snapshot.session.id!==classId)return <div className={styles.empty} role="status">{error||'Connecting to your class… Audio saved on this device continues uploading when connected.'}</div>;
   const outputs=snapshot.outputs;
+  const courseName=snapshot.session.courseId?courses.find(course=>course.id===snapshot.session.courseId)?.name||'Course class':'General class';
   const transcriptState=transcriptionStatus(snapshot);
   const markers=snapshot.recording.markersMs.filter(marker=>Number.isFinite(marker)&&marker>=0);
   const cueSegments=snapshot.transcript.slice(-5);
@@ -460,6 +493,16 @@ export function InClassWorkspace({classId}:{classId:string|null}){
     if(!nearest){setCueStatus(`Marker ${index+1} at ${formatCueTime(markerMs)}. No transcript passage is loaded yet.`);return;}
     jumpToTranscript(nearest.id,`Marker ${index+1} at ${formatCueTime(markerMs)}. Showing the nearest loaded passage at ${formatCueTime(nearest.startMs)}.`);
   }
+  function jumpToMoment(markerMs:number,label:string){
+    const nearest=(snapshot?.transcript??[]).reduce<ClassSnapshot['transcript'][number]|null>((best,segment)=>!best||Math.abs(segment.startMs-markerMs)<Math.abs(best.startMs-markerMs)?segment:best,null);
+    if(!nearest){setCueStatus(`${label} No transcript passage is loaded yet.`);return;}
+    jumpToTranscript(nearest.id,`${label} Showing the nearest loaded passage at ${formatCueTime(nearest.startMs)}.`);
+  }
+  function showLatestTranscript(){
+    const last=snapshot?.transcript[snapshot.transcript.length-1];
+    if(last){jumpToTranscript(last.id,`Showing the latest transcript passage at ${formatCueTime(last.startMs)}.`);return;}
+    setView('notes');window.requestAnimationFrame(()=>{transcriptDetailsRef.current?.setAttribute('open','');transcriptDetailsRef.current?.scrollIntoView({block:'nearest'});});
+  }
   function output(item:ClassOutput){
     const needForWindow=item.kind==='materials'?snapshot!.session.needInfo?.find(entry=>entry.windowId===item.windowId):undefined;
     const need=needForWindow?.status==='open'?needForWindow:undefined;
@@ -523,6 +566,7 @@ export function InClassWorkspace({classId}:{classId:string|null}){
   }
   return <section className={styles.workspace} aria-label="In-Class workspace">
       <p className={styles.srOnly} role="status" aria-live="polite">{followStatus} {cueStatus}</p>
+    <ClassSessionTools snapshot={snapshot} courseName={courseName} interim={liveCaptions&&liveCaptions.recordingId===snapshot.session.recordingId&&liveCaptions.status!=='stopped'?liveCaptions.interim:undefined} onJump={jumpToMoment} onShowTranscript={showLatestTranscript} dispatch={action=>actionRouter.dispatch(action)}/>
     <header>{buddies.snapshot?.profiles.filter(buddy=>buddy.id===snapshot.session.buddyId).map(buddy=><div key={buddy.id}><BuddyAvatar buddy={buddy}/><strong>{buddy.name}</strong></div>)}<h2>{snapshot.session.title}</h2><p>{snapshot.session.processing.replaceAll('-',' ')} · {snapshot.recording.captureComplete?'Capture stopped':'Capture remains on its recording device'} · {snapshot.recording.chunks.transcribed} slices transcribed</p><div className={styles.transcriptionStatus} data-state={transcriptState.state} role="status" aria-live="polite" aria-atomic="true" aria-label={`Transcription status: ${transcriptState.label}`}><strong>{transcriptState.label}</strong><span>{transcriptState.detail}</span></div><small>Recording controls stay in the workspace shell. Opening this class never starts a microphone.</small></header>
     <nav aria-label="Class views" className={styles.tabs}>{['notes','materials','practice','package'].map(tab=><button type="button" aria-pressed={view===tab} key={tab} onClick={()=>setView(tab)}>{tab==='package'?'Revision':tab[0].toUpperCase()+tab.slice(1)}{tab==='practice'?` (${outputs.filter(o=>['practice','flashcards'].includes(o.kind)&&o.status==='ready').length})`:''}</button>)}</nav>
     <details className={styles.preferences}>

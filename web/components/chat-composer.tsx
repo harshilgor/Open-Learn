@@ -3,14 +3,14 @@ import { useVoice } from './voice/voice-provider';
 import { AudioLines } from 'lucide-react';
 
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronDown, Mic, CircleHelp, FileText, GraduationCap, MessageCircle, MessageCircleQuestion, Plus, Square, X, Upload, type LucideIcon } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, Mic, CircleHelp, FileText, GraduationCap, MessageCircle, MessageCircleQuestion, Paperclip, Plus, Square, X, Upload, Zap, type LucideIcon } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import styles from './learn-chat.module.css';
-import { ExplanationDepth } from './explanation-depth';
 import { useDictation } from '@/hooks/use-dictation';
 import { insertDictation } from '@/lib/dictation';
 import { learningApi, type Gear, type WorkspaceNoteSummary } from '@/lib/api';
@@ -85,6 +85,50 @@ export function ChatModeSelector({ mode, onModeChange, disabled, conversation, o
   );
 }
 
+const DEPTHS: Array<{ value: Gear; hint: string }> = [
+  { value: 'Quick', hint: 'Short, direct answers' },
+  { value: 'Guided', hint: 'Step-by-step with checks' },
+  { value: 'Deep', hint: 'Thorough, with worked detail' },
+];
+
+/**
+ * The composer's "+" menu: attach material, choose how Buddy helps (mode) and how
+ * much it explains (depth). Keeping these here leaves the input a single row.
+ */
+function ComposerMenu({ open, onOpenChange, mode, onModeChange, conversation, onConversation, onInClass, gear, onGearChange, onAttach, attachments, disabled }: {
+  open: boolean; onOpenChange: (open: boolean) => void;
+  mode: ChatMode; onModeChange?: (mode: ChatMode) => void; conversation?: boolean; onConversation?: () => void; onInClass?: () => void;
+  gear: Gear; onGearChange: (gear: Gear) => void; onAttach: () => void; attachments: number; disabled?: boolean;
+}) {
+  const isConversation = mode === 'ask' && conversation;
+  const current = CHAT_MODES.find(option => option.value === mode) ?? CHAT_MODES[0];
+  // Show what is selected only when it differs from the everyday default, so the row stays quiet.
+  const modeLabel = isConversation || (mode === 'ask' && !onConversation) ? '' : current.label;
+  const summary = [modeLabel, gear !== 'Quick' ? gear : ''].filter(Boolean).join(' · ');
+  const choose = (action: () => void) => { action(); onOpenChange(false); };
+  return <Popover open={open} onOpenChange={onOpenChange}>
+    <PopoverTrigger asChild>
+      <button type="button" disabled={disabled} className={styles.mobileOptionsButton} data-customized={summary ? 'true' : undefined} aria-label={`Attach files and chat options${summary ? ` (${summary})` : ''}${attachments ? `, ${attachments} attached` : ''}`} title={summary ? `Attach files and chat options · ${summary}` : 'Attach files, choose a mode or explanation depth'}><Plus size={22}/>{attachments > 0 ? <span className={styles.attachCount}>{attachments}</span> : null}</button>
+    </PopoverTrigger>
+    <PopoverContent side="top" align="start" sideOffset={10} className={styles.composerMenu} aria-label="Chat options">
+      {summary ? <p className={styles.menuSummary}>Using <strong>{summary}</strong></p> : null}
+      <button type="button" className={styles.menuRow} onClick={() => choose(onAttach)}><span className={styles.modeTile}><Paperclip size={15}/></span><span><strong>Attach files or images</strong><small>PDF, text, Markdown or images</small></span></button>
+      <div className={styles.menuSection} role="group" aria-label="Conversation mode">
+        <span className={styles.menuLabel}>Mode</span>
+        {onConversation ? <button type="button" role="menuitemradio" aria-checked={!!isConversation} className={styles.menuRow} onClick={() => choose(onConversation)}><span className={styles.modeTile}><MessageCircle size={15}/></span><span><strong>Conversation</strong><small>Talk, plan your day, and prepare together</small></span>{isConversation ? <Check size={15} className={styles.menuCheck}/> : null}</button> : null}
+        {CHAT_MODES.map(option => { const Icon = option.icon; const selected = option.value === mode && !isConversation; return <button type="button" role="menuitemradio" aria-checked={selected} key={option.value} className={styles.menuRow} onClick={() => choose(() => onModeChange?.(option.value))}><span className={styles.modeTile} style={{ background: option.tileBg, color: option.accent }}><Icon size={15}/></span><span><strong>{option.label}</strong><small>{option.description}</small></span>{selected ? <Check size={15} className={styles.menuCheck}/> : null}</button>; })}
+        {onInClass ? <button type="button" className={styles.menuRow} onClick={() => choose(onInClass)}><span className={styles.modeTile}><AudioLines size={15}/></span><span><strong>In-Class</strong><small>Set up class recording</small></span></button> : null}
+      </div>
+      <div className={styles.menuSection} role="group" aria-label={`Explanation depth: ${gear}`}>
+        <span className={styles.menuLabel}><Zap size={13} aria-hidden="true"/>Explanation depth</span>
+        <div className={styles.depthSwitch}>{DEPTHS.map(depth => <button type="button" key={depth.value} aria-pressed={gear === depth.value} title={depth.hint} onClick={() => onGearChange(depth.value)}>{depth.value}</button>)}</div>
+        <small className={styles.menuHint}>{DEPTHS.find(depth => depth.value === gear)?.hint}</small>
+      </div>
+      <p className={styles.menuFoot}>Type @ to mention a note.</p>
+    </PopoverContent>
+  </Popover>;
+}
+
 export type ChatAttachment = { id: string; name: string; file: File; versionId?: string; materialId?: string; uploadPath?: string; resumableUploadPath?: string; uploadSessionUrl?: string; uploadComplete?: boolean };
 export type ChatNoteMention = { noteId: string; title: string; revision: number; startOffset: number; endOffset: number; excerpt: string };
 
@@ -147,6 +191,7 @@ export function ChatComposer({ value, onChange, onPasteText, attachments, onAtta
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [noteMatches, setNoteMatches] = useState<WorkspaceNoteSummary[]>([]);
   const mentionMatch = value.match(/(?:^|\s)@([^\s@]*)$/);
   const noteQuery = mentionMatch?.[1] ?? null;
@@ -196,7 +241,8 @@ export function ChatComposer({ value, onChange, onPasteText, attachments, onAtta
     {contextConcept ? <div className={styles.contextRow}><span>Asking about: {contextConcept.title}<button type="button" aria-label={`Remove ${contextConcept.title} context`} onClick={onRemoveContext}><X size={13}/></button></span></div> : null}
     {noteMentions.length > 0 ? <div className={styles.noteReceipt} aria-label="Learner note context"><AnimatePresence initial={false}>{noteMentions.map(note => <motion.span key={note.noteId} layout={!reduceMotion} initial={reduceMotion ? false : { opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} exit={reduceMotion ? undefined : { opacity: 0, scale: 0.96 }} transition={{ duration: 0.16 }}><button type="button" onClick={() => onOpenNoteMention?.(note.noteId)} title="Open note in workspace">Using: {note.title}</button><details><summary>{note.endOffset - note.startOffset} characters</summary><pre>{note.excerpt}</pre></details><button type="button" aria-label={`Remove ${note.title} from context`} onClick={() => onRemoveNoteMention?.(note.noteId)}><X size={12} /></button></motion.span>)}</AnimatePresence><p>Learner-provided context only. It is not a verified source.</p></div> : null}
     <label htmlFor={messageId} className="sr-only">Message your tutor</label>
-    <button type="button" className={styles.mobileOptionsButton} aria-label="Chat options and attachments" onClick={() => setOptionsOpen(true)} disabled={busy || dictationLocked}><Plus size={22}/></button>
+    {variant === 'main' ? <ComposerMenu open={menuOpen} onOpenChange={setMenuOpen} mode={mode} onModeChange={onModeChange} conversation={conversation} onConversation={onConversation} onInClass={onInClass} gear={gear} onGearChange={onGearChange} onAttach={() => input.current?.click()} attachments={attachments.length} disabled={busy || dictationLocked}/>
+      : <button type="button" className={styles.mobileOptionsButton} aria-label="Chat options and attachments" onClick={() => setOptionsOpen(true)} disabled={busy || dictationLocked}><Plus size={22}/></button>}
     {variant === 'compact' && (mode !== 'ask' || gear !== 'Quick') ? <button type="button" className={styles.mobileModeBadge} onClick={() => setOptionsOpen(true)}>{CHAT_MODES.find(option => option.value === mode)?.label} · {gear}</button> : null}
     <textarea ref={textarea} readOnly={dictationLocked} id={messageId} value={value} maxLength={4000}
       placeholder={
@@ -228,5 +274,5 @@ export function ChatComposer({ value, onChange, onPasteText, attachments, onAtta
     </div> : null}
     {hasLink && <p className={styles.composerNote}>Public links are imported as readable source material when you send.</p>}
     {error && <p className={styles.error} role="alert">{error}</p>}
-  </form>{variant === 'main' ? <div className={styles.composerFooter} aria-label="Chat preferences"><ExplanationDepth gear={gear} onChange={onGearChange} disabled={busy || dictationLocked}/><ChatModeSelector onInClass={onInClass} conversation={conversation} onConversation={onConversation} mode={mode} onModeChange={onModeChange} disabled={busy || dictationLocked}/></div> : null}<Sheet open={optionsOpen} onOpenChange={setOptionsOpen}><SheetContent side="bottom" className={styles.mobileOptionsSheet}><SheetHeader><SheetTitle>Chat options</SheetTitle><SheetDescription>Choose how your Buddy helps, or attach material.</SheetDescription></SheetHeader><div className={styles.mobileOptionsContent}><Button variant="outline" disabled={busy || dictationLocked} onClick={() => { setOptionsOpen(false); input.current?.click(); }}><Plus size={18}/>Attach a file or image</Button><div><span>Conversation mode</span><ChatModeSelector conversation={conversation} onConversation={() => { onConversation?.(); setOptionsOpen(false); }} mode={mode} onModeChange={next => { onModeChange?.(next); setOptionsOpen(false); }} disabled={busy || dictationLocked}/></div><div><span>Explanation depth</span><Select value={gear} onValueChange={next => onGearChange(next as Gear)} disabled={busy || dictationLocked}><SelectTrigger aria-label="Mobile explanation depth"><SelectValue/></SelectTrigger><SelectContent>{(['Quick','Guided','Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><p>Use @ in your message to mention a note.</p></div></SheetContent></Sheet></>;
+  </form><Sheet open={optionsOpen} onOpenChange={setOptionsOpen}><SheetContent side="bottom" className={styles.mobileOptionsSheet}><SheetHeader><SheetTitle>Chat options</SheetTitle><SheetDescription>Choose how your Buddy helps, or attach material.</SheetDescription></SheetHeader><div className={styles.mobileOptionsContent}><Button variant="outline" disabled={busy || dictationLocked} onClick={() => { setOptionsOpen(false); input.current?.click(); }}><Plus size={18}/>Attach a file or image</Button><div><span>Conversation mode</span><ChatModeSelector conversation={conversation} onConversation={() => { onConversation?.(); setOptionsOpen(false); }} mode={mode} onModeChange={next => { onModeChange?.(next); setOptionsOpen(false); }} disabled={busy || dictationLocked}/></div><div><span>Explanation depth</span><Select value={gear} onValueChange={next => onGearChange(next as Gear)} disabled={busy || dictationLocked}><SelectTrigger aria-label="Mobile explanation depth"><SelectValue/></SelectTrigger><SelectContent>{(['Quick','Guided','Deep'] as Gear[]).map(option => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent></Select></div><p>Use @ in your message to mention a note.</p></div></SheetContent></Sheet></>;
 }

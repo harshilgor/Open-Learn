@@ -215,3 +215,17 @@ Existing data: `GET /v1/quizzes` (status, origin), review sessions and the learn
 5. Phases 2 and 3 in parallel with the above, screen by screen.
 6. Phase 5.4, Phase 6, Phase 8.
 7. Phases 4.4, 9 and 10.
+
+---
+
+## Part 3 build-out (done)
+
+- [x] **Notes:** quiet toolbar (save status · Ask Buddy · ⋯ menu with find, reading mode, go to note, insert image, pin, move, history, undo, export, delete); 28px inline title with course · edited · word-count line; fixed reading width; formatting strip that recedes until you write.
+- [x] **Notes:** list filters (All / Mine / Lessons / Classes), pinned section, relative dates; templates on a blank note (Lecture notes, Cornell, Summary, Problem set).
+- [x] **Notes:** `/` block menu and Markdown shortcuts (`#`, `##`, `-`, `1.`, `[]`, `>`); one selection bar with formatting plus Explain / Visualize / Add to chat / side chat; Ctrl/⌘+P quick switcher; "Study and connections" section (Quiz me, Visualize, Make flashcards, original conversations, course, related notes).
+- [x] **Visuals in notes:** visuals render inline as atomic blocks (` ```visualization-ref ` and the new ` ```visual-artifact `); code-fence languages now survive editing.
+- [x] **Canvas:** clickable example prompts, recent-visuals strip, Add to note, full screen, download as image (diagram/chart visuals), "Ask Buddy to change this visual".
+- [x] **Practice:** quiz keys 1–N / Enter, flashcard Space / 1–4, slim progress bar, results screen with questions to revisit, "Practice weak spots" and "Make flashcards from mistakes"; "From your classes" and "Weak spots" in the overview.
+- [x] **Class:** course preselect (`startClass()` in `lib/class-events.ts`), sticky session bar with Mark moment / I'm confused / Key point, after-class summary with follow-up actions.
+- [x] **Dashboard / Course / Settings / Calendar / Chat:** Next up card; course header with section navigation; settings descriptions and search; calendar drag-to-create, drag-to-move, mini month and natural-language quick add; citation chips and collapsible long answers.
+- [ ] Still open: block editor (TipTap), live Q&A during class, server-side mixed review, syncing class marker types across devices, linking `[web:W1]`-style citation aliases to openable passages.

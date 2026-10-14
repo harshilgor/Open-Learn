@@ -1,0 +1,50 @@
+.loading { padding: 24px; color: var(--muted-foreground); font-size: var(--type-caption); }
+
+.history { display: flex; gap: 6px; margin-bottom: 12px; overflow-x: auto; scrollbar-width: thin; }
+.history button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.history button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history button:hover { color: var(--foreground); }
+.history button[aria-selected="true"] { border-color: var(--brand); background: var(--brand-soft); color: var(--foreground); }
+
+.stage { border-radius: var(--radius-card); background: var(--background); }
+.stage:fullscreen { overflow: auto; padding: 32px; }
+
+.edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 4px 4px 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+.edit:focus-within { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 20%, transparent); }
+.edit input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--foreground); font-size: var(--type-ui); }
+.notice { margin: 8px 2px 0; color: var(--muted-foreground); font-size: var(--type-meta); }
+
+.examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 4px; }
+.examples button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--type-caption);
+  cursor: pointer;
+}
+.examples button:hover { border-color: var(--ring); background: var(--brand-soft); }

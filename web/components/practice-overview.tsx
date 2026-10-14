@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronRight, Layers, ListChecks, RotateCcw } from 'lucide-react';
+import { ChevronRight, GraduationCap, Layers, ListChecks, RotateCcw, Target } from 'lucide-react';
 import { learningApi, request, type ReviewDashboard } from '@/lib/api';
 import { flashcardsApi, type FlashcardSummary } from '@/lib/flashcards-client';
 import { openReview, openWorkspaceFlashcards, openWorkspaceQuiz } from '@/lib/workspace-events';
 import type { QuizHistoryItem } from './quiz-workspace';
 import styles from './workspace-panel.module.css';
+import own from './practice-overview.module.css';
 
 type Overview = { quizzes: QuizHistoryItem[]; flashcards: FlashcardSummary | null; review: ReviewDashboard | null };
 
@@ -39,7 +40,10 @@ export function PracticeOverview() {
   const openCardSessions = (data.flashcards?.sessions || []).filter(session => session.status !== 'completed' && session.cursor < session.total).slice(0, 2);
   const cardsDue = data.flashcards?.dueCount || 0;
   const conceptsDue = (data.review?.dueCount || 0) + (data.review?.weakCount || 0);
-  const history = data.quizzes.filter(quiz => !unfinished(quiz)).slice(0, 5);
+  // Class quizzes get their own shelf; anything already under Continue or the shelf is not repeated below.
+  const fromClass = data.quizzes.filter(quiz => quiz.origin === 'in_class' && !openQuizzes.includes(quiz)).slice(0, 4);
+  const weakCount = data.review?.weakCount || 0;
+  const history = data.quizzes.filter(quiz => !unfinished(quiz) && !fromClass.includes(quiz)).slice(0, 5);
   const hasContinue = openQuizzes.length > 0 || openCardSessions.length > 0 || !!data.review?.unfinishedSessionId;
 
   if (!loaded) return <div className={styles.practiceSkeleton} aria-hidden="true"><span/><span/></div>;
@@ -79,6 +83,26 @@ export function PracticeOverview() {
       </div>
       {!cardsDue && !conceptsDue ? <p className={styles.practiceHint}>You’re caught up. Make a quiz or flashcards below to keep going.</p> : null}
     </section>
+
+    {weakCount > 0 ? <section className={styles.practiceSection} aria-labelledby="practice-weak">
+      <h3 id="practice-weak">Weak spots</h3>
+      <div className={styles.practiceList}>
+        <button type="button" className={styles.practiceRow} onClick={() => openReview()}>
+          <span className={`${styles.practiceIcon} ${own.icon}`} data-kind="weak"><Target size={16}/></span>
+          <span className={styles.practiceRowMain}><strong>{weakCount} {weakCount === 1 ? 'concept needs' : 'concepts need'} another look</strong><small>A short concept review targets what you missed</small></span>
+          <span className={styles.practiceAction}>Review<ChevronRight size={15}/></span>
+        </button>
+      </div>
+    </section> : null}
+
+    {fromClass.length ? <section className={styles.practiceSection} aria-labelledby="practice-class">
+      <h3 id="practice-class">From your classes</h3>
+      <div className={styles.practiceList}>{fromClass.map(quiz => <button type="button" key={quiz.id} className={styles.practiceRow} onClick={() => openWorkspaceQuiz({ sessionId: quiz.sessionId, quizId: quiz.id, origin: 'ask' })}>
+        <span className={`${styles.practiceIcon} ${own.icon}`} data-kind="class"><GraduationCap size={16}/></span>
+        <span className={styles.practiceRowMain}><strong>{quiz.title || 'Class quiz'}</strong><small>{quiz.score !== null ? `Score ${quiz.score}%` : quiz.attempted ? `${quiz.attempted} of ${quiz.count} answered` : `${quiz.count} ${quiz.count === 1 ? 'question' : 'questions'}`}{quiz.createdAt ? ` · ${when(quiz.createdAt)}` : ''}</small></span>
+        <ChevronRight size={15} className={styles.practiceChevron}/>
+      </button>)}</div>
+    </section> : null}
 
     {history.length ? <details className={styles.practiceHistory}>
       <summary>Recent quizzes <small>{history.length}</small></summary>

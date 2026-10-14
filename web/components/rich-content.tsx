@@ -8,6 +8,8 @@ import { normalizeMathMarkdown } from '@/lib/normalize-math-markdown';
 import styles from './reading.module.css';
 import { encodeConceptLinks, splitTutorContent } from '@/lib/tutor-format';
 import { ExerciseCard } from './exercise-card';
+import { CITATION_SCHEME, encodeCitationMarkers } from '@/lib/answer-reading';
+import { InlineCitation } from './assistant/citation-chip';
 
 function ConceptLink({ href, children, onSelect }: { href: string; children: ReactNode; onSelect?: (term: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -72,11 +74,11 @@ export function RichContent({ body, onExplore, onExerciseResolved, onConceptSele
         key={`markdown-${partIndex}`}
         remarkPlugins={remarkPlugins as never}
         rehypePlugins={rehypePlugins as never}
-        urlTransform={url => url.startsWith('concept:') ? url : defaultUrlTransform(url)}
+        urlTransform={url => url.startsWith('concept:') || url.startsWith(CITATION_SCHEME) ? url : defaultUrlTransform(url)}
         skipHtml
         components={{
           pre: ({ children }) => <CodeBlock onExplore={onExplore} hideHtmlSource={hideHtmlSource}>{children}</CodeBlock>,
-          a: ({ href, children }) => href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+          a: ({ href, children }) => href?.startsWith('concept:') ? <ConceptLink href={href} onSelect={onConceptSelect}>{children}</ConceptLink> : href?.startsWith(CITATION_SCHEME) ? <InlineCitation href={href}>{children}</InlineCitation> : <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
           img: ({ alt }) => <span className={styles.imagePlaceholder}>{alt || 'Image reference'}</span>,
           table: ({ children }) => (
             <div className={styles.table}>
@@ -111,7 +113,7 @@ export function RichContent({ body, onExplore, onExerciseResolved, onConceptSele
           ),
         }}
       >
-        {encodeConceptLinks('body' in part ? part.body : '')}
+        {encodeCitationMarkers(encodeConceptLinks('body' in part ? part.body : ''))}
       </ReactMarkdown>)}
     </div>
   );

@@ -110,7 +110,6 @@
 .noteReceipt{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:9px 0 4px}.noteReceipt>span{display:inline-flex;align-items:center;gap:4px;border:1px solid #d7e2d0;border-radius:6px;padding:3px 5px;background:#f4f8ef;color:#526248;font-size:11px}.noteReceipt span button:first-child{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#4b6540}.noteReceipt details{position:relative}.noteReceipt summary{cursor:pointer;list-style:none;color:#84917c;font-size:10px}.noteReceipt summary::-webkit-details-marker{display:none}.noteReceipt pre{position:absolute;right:0;bottom:calc(100% + 6px);z-index:12;width:min(340px,70vw);max-height:180px;overflow:auto;margin:0;border:1px solid #d7e2d0;border-radius:7px;padding:9px;white-space:pre-wrap;background:#fff;color:#4e5b47;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;box-shadow:0 8px 22px #3543281f}.noteReceipt span button:last-child{display:grid;place-items:center;color:#74816c}.noteReceipt p{flex-basis:100%;margin:2px 0 0;color:#87937e;font-size:10px}.notePicker{position:relative;z-index:5;margin:-2px 0 7px;border:1px solid #d8e1d1;border-radius:8px;background:#fff;box-shadow:0 8px 22px #35432814;overflow:hidden}.notePicker button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;padding:9px 11px;text-align:left;color:#4c5c44}.notePicker button:hover{background:#f0f5eb}.notePicker strong{font-size:12px;font-weight:600}.notePicker small{color:#87927f;font-size:10px}.noteContextReceipt{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:12px 0 0;border-top:1px solid #e4eadd;padding-top:10px}.noteContextReceipt>span{color:#84907d;font-size:11px}.noteContextReceipt button{border:1px solid #d9e3d2;border-radius:5px;padding:3px 6px;color:#5d764e;font-size:11px}.noteContextReceipt button:hover{background:#f0f5eb}
 .noteDraft{margin:14px 0;border:1px solid #dbe7d4;border-radius:12px;padding:13px;background:#fbfdf9}.noteDraft header{display:flex;align-items:center;gap:7px;color:#546a4d;font-size:12px}.noteDraft header span{margin-left:auto;color:#7a8775}.noteDraft h3{margin:9px 0 5px;font-size:15px}.noteDraft pre{max-height:220px;overflow:auto;white-space:pre-wrap;margin:0;padding:10px 11px;border-radius:7px;background:#f1f5ee;color:#3a4436;font-family:var(--font-sans);font-size:13px;line-height:1.65}.noteDraft p{margin:8px 0 0;font-size:12px;color:#61705b}.noteDraftSources{color:#798572!important}
 
-.sourceChip{display:block;margin:6px 0;border:1px solid #dce5d6;border-radius:6px;padding:5px 7px;background:#f8fbf6;color:#53614c;font-size:11px;text-align:left}.sourceChip:hover{background:#edf3e9}
 
 /* Fixed chat surface: responses scroll while the composer remains in reach. */
 .chatShell{position:relative;flex:1;min-width:0;width:100%;display:grid;grid-template-rows:minmax(0,1fr);height:100%;min-height:0;overflow:hidden;background:#fff}
@@ -247,7 +246,6 @@ does not read as a solid white empty slab. */
 :global(.dark) .noteDraft pre,
 :global(.dark) .notePicker,
 :global(.dark) .noteDraft,
-:global(.dark) .sourceChip,
 :global(.dark) .courseBadge { background: var(--secondary); color: var(--secondary-foreground); }
 :global(.dark) .attachment strong,
 :global(.dark) .heading,
@@ -421,3 +419,23 @@ does not read as a solid white empty slab. */
 .userPrompt p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
 .lessonArticle{overflow-wrap:anywhere}
 @media(prefers-reduced-motion:reduce){.outgoingMessage{animation:none}}
+
+/* Composer "+" menu: attach, mode and explanation depth in one place so the input stays a single row. */
+.composerMenu{width:320px;max-width:calc(100vw - 32px);padding:6px;border-radius:14px}
+.menuRow{display:flex;align-items:flex-start;gap:10px;width:100%;padding:8px 10px;border-radius:10px;text-align:left;color:var(--foreground)}
+.menuRow:hover,.menuRow:focus-visible{background:var(--muted);outline:none}
+.menuRow>span:nth-child(2){display:grid;gap:1px;flex:1;min-width:0}
+.menuRow strong{font-size:13px;font-weight:600;line-height:1.3}
+.menuRow small{font-size:12px;line-height:1.35;color:var(--muted-foreground)}
+.menuRow .modeTile{flex:none}
+.menuCheck{flex:none;margin-top:2px;color:var(--brand)}
+.menuSection{display:grid;gap:2px;margin-top:4px;padding-top:6px;border-top:1px solid var(--border)}
+.menuLabel{display:flex;align-items:center;gap:6px;padding:4px 10px 2px;font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted-foreground)}
+.depthSwitch{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;margin:4px 10px 0;padding:3px;border:1px solid var(--border);border-radius:10px;background:var(--muted)}
+.depthSwitch button{min-height:30px;border-radius:7px;font-size:13px;font-weight:500;color:var(--muted-foreground)}
+.depthSwitch button[aria-pressed=true]{background:var(--card);color:var(--foreground);box-shadow:var(--shadow-sm)}
+.menuHint{padding:4px 10px 4px;font-size:12px;color:var(--muted-foreground)}
+.menuFoot{margin:4px 0 0;padding:8px 10px 4px;border-top:1px solid var(--border);font-size:12px;color:var(--muted-foreground)}
+.menuSummary{margin:2px 4px 6px;padding:6px 8px;border-radius:8px;background:var(--brand-soft);font-size:12px;color:var(--brand)}
+.mainComposer .mobileOptionsButton{position:relative}
+.mainComposer .mobileOptionsButton[data-customized=true]::after{content:"";position:absolute;top:8px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--brand);box-shadow:0 0 0 2px var(--surface-2,var(--card))}

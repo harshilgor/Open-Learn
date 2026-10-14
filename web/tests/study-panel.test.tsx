@@ -60,3 +60,15 @@ it('lists unfinished quizzes under Continue and resumes the exact quiz', async (
   window.removeEventListener(WORKSPACE_QUIZ_OPEN_EVENT, opened);
   expect((opened.mock.calls[0][0] as CustomEvent).detail).toMatchObject({ quizId: 'q-open', sessionId: 's1' });
 });
+
+it('reopens a panel closed by dragging as a split, not a full-screen chat or panel', async () => {
+  const { toggledLayout } = await import('@/components/workspace-split');
+  const base = { tabs: ['notes' as const], activeTab: 'notes' as const };
+  // Dragged to the right edge: the panel closed at a sliver width.
+  expect(toggledLayout({ ...base, width: 20, collapsed: true })).toMatchObject({ collapsed: false, focused: false, width: 50 });
+  // Dragged to the left edge: the chat closed and the panel took the screen.
+  expect(toggledLayout({ ...base, width: 40, collapsed: false, focused: true })).toMatchObject({ collapsed: false, focused: false, width: 40 });
+  // A usable width is kept, and an open split closes normally.
+  expect(toggledLayout({ ...base, width: 38, collapsed: true })).toMatchObject({ collapsed: false, width: 38 });
+  expect(toggledLayout({ ...base, width: 38, collapsed: false })).toMatchObject({ collapsed: true });
+});

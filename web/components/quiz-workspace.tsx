@@ -2,7 +2,7 @@
 import { reportVoiceFocus, VOICE_REFRESH } from "@/lib/voice/client";
 
 import {MakeFlashcards} from './flashcard-create';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppReducedMotion } from '@/lib/use-app-reduced-motion';
 import { Button } from '@/components/ui/button';
@@ -12,11 +12,23 @@ import { cancelWorkflow, getQuiz, workflow, waitForJob, type Quiz } from '@/lib/
 import { AssessmentCard, AnswerFeedback } from './assessment-card';
 import { RichContent } from './rich-content';
 import { HypothesisPanel } from './hypothesis-panel';
-import { openWorkspaceSource } from '@/lib/workspace-events';
+import { openReview, openWorkspaceSource } from '@/lib/workspace-events';
 import { ModeTransitionCard } from './mode-transition-card';
 import styles from './quiz.module.css';
+import { KeyHint, SessionProgress, isActivationTarget, isShortcutEvent } from './practice-session';
 import { openWorkspaceQuiz, type WorkspaceQuizOpen } from '@/lib/workspace-events';
 import { readSettingsPreferences, useSettingsPreferences } from '@/lib/settings-preferences';
+
+type QuizAttempt = Quiz['attempts'][number];
+/** A scored miss, or a question the learner skipped / didn't know. Disputed or excluded answers never count. */
+const missedAttempt = (attempt: QuizAttempt) => !['contested', 'invalidated'].includes(attempt.status) && (attempt.score === null ? ['skip', 'dont_know'].includes(attempt.outcome) : attempt.score < 1);
+const missLabel = (attempt: QuizAttempt) => attempt.outcome === 'skip' ? 'Skipped' : attempt.outcome === 'dont_know' ? 'I don’t know' : attempt.score === 0 ? 'Incorrect' : 'Partly correct';
+/** The concept missed most often, so concept review can start where it matters most. */
+function weakestConcept(attempts: QuizAttempt[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const attempt of attempts) if (attempt.conceptId) counts.set(attempt.conceptId, (counts.get(attempt.conceptId) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
 
 export type QuizHistoryItem = { id: string; title: string; sessionId: string; lessonNoteId?: string | null; origin: string; status: string; count: number; attempted: number; score: number | null; assisted: number; skipped: number; dontKnow: number; contested: number; createdAt?: string; updatedAt?: string };
 type QuizHistoryPage = { quizzes: QuizHistoryItem[]; nextCursor: string | null };
@@ -31,6 +43,7 @@ async function loadQuizHistory(lessonNoteId?: string, cursor?: string): Promise<
 export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = false, historyOnly = false, launch, quizId, onStartQuiz, onQuizChange, onReturn, onReviewInLearn, onCreateRepairNote }: { sessionId?: string | null; conceptId?: string; inline?: boolean; compact?: boolean; historyOnly?: boolean; launch?: WorkspaceQuizOpen | null; quizId?: string; onStartQuiz?: () => void; onQuizChange?: () => void; onReturn?: () => void; onReviewInLearn?: (suggestion: ModeTransitionSuggestion) => void; onCreateRepairNote?: (attemptId: string) => void }) {
   const reduceMotion = useAppReducedMotion();
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
   const startedLaunch = useRef<string | null>(null);
   const completedTask = useRef<string | null>(null);
   const [quiz, setQuiz] = useState<Quiz | null>(null);
@@ -221,7 +234,38 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
   }
   const secondsLeft = quiz?.mode === 'timed_short_quiz' ? Math.max(0, Math.ceil((quiz.deadlineAt ? new Date(quiz.deadlineAt).getTime() - now : (quiz.remainingSeconds || 0) * 1000) / 1000)) : null;
   const timeExpired = secondsLeft === 0 && !!quiz?.deadlineAt;
-  return <section className={inline || compact ? styles.inline : styles.page} aria-label={inline ? 'Understanding check' : 'Quiz workspace'}>
+  const canAdvance = !!quiz && quiz.status !== 'completed' && quiz.status !== 'paused' && !timeExpired && (!quiz.current || !!quiz.current.attemptId);
+  // 1–N pick an option, Enter checks the answer or moves on. Only the quiz holding focus (or any quiz
+  // when nothing is focused) responds; the first one to handle a key marks it so others ignore it.
+  const onShortcut = useEffectEvent((event: KeyboardEvent) => {
+    const root = rootRef.current, item = quiz?.current;
+    if (!root || !quiz || busy || quiz.checkingAnswer || !isShortcutEvent(event)) return;
+    const target = event.target;
+    if (target instanceof Node && target !== document.body && target !== document.documentElement && !root.contains(target)) return;
+    if (/^[1-9]$/.test(event.key) && item && !item.attemptId && item.kind !== 'short' && quiz.status !== 'paused' && !timeExpired) {
+      const choice = [...root.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]')].filter(input => input.name === `answer-${item.id}`)[Number(event.key) - 1];
+      if (!choice || choice.disabled) return;
+      event.preventDefault();
+      if (!(item.kind === 'single' && choice.checked)) choice.click();
+      choice.focus({ preventScroll: true });
+    } else if (event.key === 'Enter' && !event.shiftKey && !isActivationTarget(target)) {
+      if (item && !item.attemptId) {
+        const check = root.querySelector<HTMLButtonElement>(`.${styles.answerActions} > button`);
+        if (!check || check.disabled) return;
+        event.preventDefault(); check.click();
+      } else if (canAdvance) {
+        event.preventDefault(); void act(`/quizzes/${quiz.id}/next`, { expectedRevision: quiz.revision });
+      }
+    }
+  });
+  useEffect(() => { const listener = (event: KeyboardEvent) => onShortcut(event); window.addEventListener('keydown', listener); return () => window.removeEventListener('keydown', listener); }, []);
+  const answeredCount = quiz?.summary.attempted ?? 0;
+  const questionNumber = quiz ? Math.min(quiz.count, Math.max(1, answeredCount + (quiz.current && !quiz.current.attemptId ? 1 : 0))) : 0;
+  const reviewed = quiz?.status === 'completed' ? quiz.attempts.filter(attempt => attempt.id !== quiz.current?.attemptId) : [];
+  const missed = reviewed.filter(missedAttempt);
+  const hintItems = !quiz?.current ? [] : quiz.current.attemptId ? [{ keys: ['Enter'], label: 'next question' }] : quiz.current.kind === 'short' ? [] : [{ keys: quiz.current.options.length > 1 ? ['1', String(Math.min(9, quiz.current.options.length))] : ['1'], label: 'to choose' }, { keys: ['Enter'], label: quiz.current.feedbackDeferred ? 'to submit' : 'to check' }];
+  const showReviewCard = (attemptId: string) => { const card = document.getElementById(`quiz-review-${attemptId}`); card?.scrollIntoView({ block: 'start', behavior: 'smooth' }); card?.focus({ preventScroll: true }); };
+  return <section ref={rootRef} className={inline || compact ? styles.inline : styles.page} aria-label={inline ? 'Understanding check' : 'Quiz workspace'}>
     <header><span className={styles.meta}>{inline ? 'CHECK YOUR UNDERSTANDING' : 'PRACTICE WITH PURPOSE'}</span><h1 ref={headingRef} tabIndex={-1}>{inline ? 'Try the idea' : 'Quiz'}</h1><p>Test the reasoning, then try it in a different situation.</p></header>
     {!quiz ? <div className={styles.card}>
       <h2>{inline ? 'One short check' : compact || historyOnly ? 'Your quizzes' : 'Quiz your recent learning'}</h2><p>{(compact || historyOnly) && !launch ? 'Start a quiz from chat, or resume one below.' : 'Questions use the reference material attached to your conversation.'}</p>
@@ -234,20 +278,20 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
       {!inline && saved.map(q => <button className={styles.saved} key={q.id} disabled={busy} onClick={() => { setError(''); if (onReturn) { onReturn(); openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId || undefined, origin: q.lessonNoteId ? 'learn' : 'ask' }); return; } if (q.lessonNoteId && !launch?.lessonNoteId) { openWorkspaceQuiz({ quizId: q.id, sessionId: q.sessionId, lessonNoteId: q.lessonNoteId, origin: 'learn' }); return; } void getQuiz(q.id).then(setQuiz).catch(e => setError(e.message)); }}>{q.title}<Badge variant="secondary">{q.status.replaceAll('_', ' ')} · {q.attempted}/{q.count}</Badge></button>)}
       {!inline && historyCursor ? <Button variant="outline" disabled={historyLoading} onClick={() => void loadOlderQuizzes()}>{historyLoading ? 'Loading…' : 'Load older quizzes'}</Button> : null}
     </div> : <>
-      <div className={styles.progress}><strong>{quiz.title}</strong><span>{quiz.summary.attempted} of {quiz.count} answered</span><div className={styles.progressTrack} aria-hidden="true"><motion.span initial={false} animate={{ width: `${(quiz.summary.attempted / quiz.count) * 100}%` }} transition={reduceMotion ? { duration: 0 } : { duration: 0.24, ease: 'easeOut' }} /></div>{quiz.mode === 'timed_short_quiz' && <span aria-live="polite">Time left {secondsLeft} seconds</span>}</div>
+      <SessionProgress label={quiz.status === 'completed' ? `${answeredCount} of ${quiz.count} answered` : `Question ${questionNumber} of ${quiz.count}`} value={answeredCount} max={quiz.count}><strong className={styles.progressTitle}>{quiz.title}</strong>{quiz.mode === 'timed_short_quiz' && quiz.status !== 'completed' && <span aria-live="polite">Time left {secondsLeft} seconds</span>}</SessionProgress>
       {quiz.contextSource ? <p className={styles.meta}>This quiz uses your study context, which has not been independently verified.</p> : null}
       {quiz.challenges?.map(challenge => <div key={challenge.id} role="status" className={styles.card}>
         <strong>{challenge.status === 'resolved' ? 'Question review complete' : 'Question review pending'}</strong>
         <p>{challenge.explanation || 'Your response is saved and excluded while this question is reviewed.'}</p>
         {challenge.status !== 'resolved' && <Button variant="outline" disabled={busy} onClick={() => void act(`/challenges/${challenge.id}/review`, {})}>Review question</Button>}
       </div>)}
-      {quiz.attempts.filter(attempt=>attempt.status!=='contested' && attempt.status!=='submitted' && attempt.score!==null && attempt.score<1).slice(-1).map(attempt=><MakeFlashcards key={attempt.id} sessionId={quiz.sessionId} sourceRefs={[{kind:'quiz_attempt',id:attempt.id,revision:1}]} origin="quiz" label="Make cards from this mistake"/>)}
+      {quiz.status !== 'completed' && quiz.attempts.filter(attempt=>attempt.status!=='contested' && attempt.status!=='submitted' && attempt.score!==null && attempt.score<1).slice(-1).map(attempt=><MakeFlashcards key={attempt.id} sessionId={quiz.sessionId} sourceRefs={[{kind:'quiz_attempt',id:attempt.id,revision:1}]} origin="quiz" label="Make cards from this mistake"/>)}
       {quiz.sourceSuperseded?<p role="status">The lecture transcript changed after this quiz was prepared. Your answers remain saved; use the In-Class workspace for updated practice.</p>:null}
       {timeExpired && <div className={styles.card} role="status"><h2>Time is up</h2><p>Your saved work is still available, but this timed quiz no longer accepts answers.</p></div>}
       <AnimatePresence mode="wait">{quiz.current && quiz.status !== 'paused' && !timeExpired && <motion.div key={quiz.current.id} initial={reduceMotion ? false : { opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={reduceMotion ? undefined : { opacity: 0, x: -10 }} transition={{ duration: 0.2, ease: 'easeOut' }}><AssessmentCard item={quiz.current} busy={busy || Boolean(quiz.checkingAnswer)} attempt={quiz.attempts.find(a => a.id === quiz.current?.attemptId)}
         onAnswer={answer => void act(`/quizzes/${quiz.id}/attempts`, { ...answer, presentationId: quiz.current!.id, expectedRevision: quiz.revision })}
         onHint={() => void act(`/presentations/${quiz.current!.id}/hints`, {})}
-        onChallenge={reason => void act(`/attempts/${quiz.current!.attemptId}/challenges`, { reason })} onCreateRepairNote={onCreateRepairNote} onOpenSource={openWorkspaceSource} /></motion.div>}</AnimatePresence>
+        onChallenge={reason => void act(`/attempts/${quiz.current!.attemptId}/challenges`, { reason })} onCreateRepairNote={onCreateRepairNote} onOpenSource={openWorkspaceSource} />{!busy && hintItems.length ? <KeyHint items={hintItems}/> : null}</motion.div>}</AnimatePresence>
       {gapSuggestion ? (
         <ModeTransitionCard
           suggestion={gapSuggestion}
@@ -271,7 +315,23 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
           }}
         />
       ) : null}
-      {quiz.status === 'completed' ? <div className={styles.card}><h2>Session complete</h2><p>{quiz.summary.score === null ? 'No scored answers yet.' : `${quiz.summary.score}% across ${quiz.summary.evaluated} evaluated answers.`}</p><p>{quiz.summary.assisted} with help · {quiz.summary.skipped} skipped · {quiz.summary.dontKnow} marked “I don’t know”</p><p className={styles.meta}>Practice score, not mastery. Questions adapt, so scores are not rankings.</p><div className={styles.actions}>{onReturn ? <Button variant="outline" onClick={onReturn}>Return to lesson</Button> : null}<Button variant="outline" disabled={busy} onClick={() => void saveReviewChecklist()}>Save review checklist</Button>{!compact ? <Button variant="ghost" onClick={() => { setQuiz(null); localStorage.removeItem(`forma-${scope}`); }}>New quiz</Button> : null}</div></div> : <div className={styles.actions}>
+      {quiz.status === 'completed' ? <section className={`${styles.card} ${styles.results}`} aria-labelledby={`quiz-results-${quiz.id}`}>
+        <h2 id={`quiz-results-${quiz.id}`}>Session complete</h2>
+        <div className={styles.resultsScore}>{quiz.summary.score === null ? <p>No scored answers yet.</p> : <><strong>{quiz.summary.score}%</strong><p>across {quiz.summary.evaluated} evaluated {quiz.summary.evaluated === 1 ? 'answer' : 'answers'}</p></>}</div>
+        <p className={styles.meta}>{quiz.summary.assisted} with help · {quiz.summary.skipped} skipped · {quiz.summary.dontKnow} marked “I don’t know”</p>
+        <p className={styles.meta}>Practice score, not mastery. Questions adapt, so scores are not rankings.</p>
+        {missed.length ? <div className={styles.missed}>
+          <h3>Questions to revisit <span className="ol-badge" data-tone="warning">{missed.length}</span></h3>
+          <ol>{missed.map(attempt => { const number = reviewed.indexOf(attempt) + 1; return <li key={attempt.id}><span className={styles.missedNumber}>Q{number}</span><div className={styles.missedQuestion}>{attempt.question ? <RichContent body={attempt.question}/> : <p>Question {number}</p>}</div><span className="ol-badge" data-tone={attempt.score === null ? undefined : 'danger'}>{missLabel(attempt)}</span><Button type="button" size="sm" variant="ghost" aria-label={`See feedback for question ${number}`} onClick={() => showReviewCard(attempt.id)}>Feedback</Button></li>; })}</ol>
+        </div> : quiz.summary.score !== null ? <p className={styles.missedNone}>Nothing missed this time. Space it out and try a harder set next.</p> : null}
+        <div className={styles.actions}>
+          {missed.length ? <Button onClick={() => openReview({ conceptId: weakestConcept(missed) })}>Practice weak spots</Button> : null}
+          {missed.length ? <MakeFlashcards sessionId={quiz.sessionId} sourceRefs={missed.map(attempt => ({ kind: 'quiz_attempt' as const, id: attempt.id, revision: 1 }))} origin="quiz" label="Make flashcards from mistakes"/> : null}
+          {onReturn ? <Button variant="outline" onClick={onReturn}>Return to lesson</Button> : null}
+          <Button variant="outline" disabled={busy} onClick={() => void saveReviewChecklist()}>Save review checklist</Button>
+          {!compact ? <Button variant="ghost" onClick={() => { setQuiz(null); localStorage.removeItem(`forma-${scope}`); }}>New quiz</Button> : null}
+        </div>
+      </section> : <div className={styles.actions}>
         {!timeExpired && quiz.status !== 'paused' && (!quiz.current || quiz.current.attemptId) && <Button disabled={busy} onClick={() => void act(`/quizzes/${quiz.id}/next`, { expectedRevision: quiz.revision })}>{quiz.current ? 'Next question' : 'Generate first question'}</Button>}
         {!timeExpired && quiz.sessionPlan?.feedbackPolicy !== 'exam_deferred' && <Button disabled={busy} variant="ghost" onClick={() => void act(`/quizzes/${quiz.id}/${quiz.status === 'paused' ? 'resume' : 'pause'}`, { expectedRevision: quiz.revision })}>{quiz.status === 'paused' ? 'Resume quiz' : 'Pause'}</Button>}
         <Button disabled={busy} variant="outline" onClick={() => void act(`/quizzes/${quiz.id}/finish`, { expectedRevision: quiz.revision })}>Finish and review</Button>
@@ -279,7 +339,7 @@ export function QuizWorkspace({ sessionId, conceptId, inline = false, compact = 
       </div>}
     </>}
     {quiz?.status === 'completed' && <section className={styles.card} aria-label="Quiz usefulness"><p>Did this quiz help you check your understanding?</p><div className={styles.actions}><Button variant="outline" aria-pressed={quiz.usefulness === true} onClick={() => void shareUsefulness(true)}>Yes</Button><Button variant="outline" aria-pressed={quiz.usefulness === false} onClick={() => void shareUsefulness(false)}>Not yet</Button>{quiz.usefulness != null && <span role="status">Feedback saved</span>}</div></section>}
-    {quiz?.status === 'completed' && quiz.attempts.filter(attempt => attempt.id !== quiz.current?.attemptId).map((attempt, index) => <article className={styles.card} key={attempt.id}><h2>Question {index + 1}</h2>{attempt.question && <RichContent body={attempt.question}/>}<p className={styles.meta}>Your answer</p><RichContent body={attempt.response || (attempt.outcome === 'skip' ? 'Skipped' : attempt.outcome === 'dont_know' ? 'I don’t know' : attempt.selectedIds.join(', '))}/><AnswerFeedback attempt={attempt}/></article>)}
+    {quiz?.status === 'completed' && reviewed.map((attempt, index) => <article className={styles.card} key={attempt.id} id={`quiz-review-${attempt.id}`} tabIndex={-1}><h2>Question {index + 1}</h2>{attempt.question && <RichContent body={attempt.question}/>}<p className={styles.meta}>Your answer</p><RichContent body={attempt.response || (attempt.outcome === 'skip' ? 'Skipped' : attempt.outcome === 'dont_know' ? 'I don’t know' : attempt.selectedIds.join(', '))}/><AnswerFeedback attempt={attempt}/></article>)}
     {quiz?.current?.attemptId && (quiz.sessionPlan?.feedbackPolicy !== 'exam_deferred' || quiz.status === 'completed') && <HypothesisPanel conceptId={quiz.current.concept_id} refreshKey={quiz.current.attemptId} />}
     {busy && <div className={styles.preparationStatus}><p role="status">{quiz?.current && !quiz.current.attemptId ? 'Saving and checking your answer…' : 'Preparing and checking your next question…'} Your work is saved as the activity progresses.</p><Button variant="ghost" onClick={() => void cancelWorkflow(scope).catch(cause => setError(cause.message))}>Stop</Button></div>}
     {notice && <p role="status">{notice}</p>}

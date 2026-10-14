@@ -29,6 +29,8 @@ function block(node: Node): string {
     const source = node.querySelector('annotation[encoding="application/x-tex"]')?.textContent;
     if (source) return `$$\n${source}\n$$`;
   }
+  // Embedded visuals are atomic in the editor; serialize them back to their fenced reference.
+  if (node.dataset.noteVisual && node.dataset.noteVisualLang) return `\`\`\`${node.dataset.noteVisualLang}\n${node.dataset.noteVisual}\n\`\`\``;
   const tag = node.tagName.toLowerCase();
   if (tag === 'hr') return '---';
   if (tag === 'table') {
@@ -45,7 +47,10 @@ function block(node: Node): string {
     }).join('\n');
   }
   if (tag === 'blockquote') return Array.from(node.childNodes).map(block).join('\n').split('\n').map(line => `> ${line}`).join('\n');
-  if (tag === 'pre') return `\`\`\`\n${node.textContent || ''}\n\`\`\``;
+  if (tag === 'pre') {
+    const language = node.querySelector('code')?.className.match(/language-([\w-]+)/)?.[1] || '';
+    return `\`\`\`${language}\n${(node.textContent || '').replace(/\n$/, '')}\n\`\`\``;
+  }
   if (/^h[1-6]$/.test(tag)) return `${'#'.repeat(Number(tag[1]))} ${Array.from(node.childNodes).map(inline).join('').trim()}`;
   if (tag === 'div' && node.children.length && Array.from(node.children).some(child => /^(p|div|h[1-6]|ul|ol)$/i.test(child.tagName))) return Array.from(node.childNodes).map(block).filter(Boolean).join('\n\n');
   return Array.from(node.childNodes).map(inline).join('').trim();

@@ -62,7 +62,9 @@ function MiniMap({index}:{index:number}){
 }
 
 function NotesPanelTrigger() {
-  const { collapsed, toggle } = useWorkspacePanel();
+  const { collapsed, toggle, floating, closeFloating } = useWorkspacePanel();
+  // While the chat floats over an expanded panel, this control closes the chat instead.
+  if (floating) return <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" aria-label="Close Buddy chat" title="Close Buddy chat" onClick={closeFloating}><X size={16} /></Button>;
   return (
     <Button
       variant="ghost"
