@@ -240,7 +240,6 @@ does not read as a solid white empty slab. */
 :global(.dark) .gearSelect:hover { background: var(--muted); border-color: var(--border); }
 :global(.dark) .attachments,
 :global(.dark) .attachment,
-:global(.dark) .userPrompt,
 :global(.dark) .quote,
 :global(.dark) .tableWrap th,
 :global(.dark) .noteDraft pre,
@@ -292,17 +291,15 @@ does not read as a solid white empty slab. */
 
 /* Shared conversation surface: content-sized bubbles remain rich-content safe. */
 .turn { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 24px; min-width: 0; }
-.userPrompt { align-self: flex-end; margin: 0; max-width: 85%; background: #e4ebe1; color: #23321f; border-radius: 22px 22px 6px 22px; }
+.userPrompt { align-self: flex-end; margin: 0; max-width: 85%; background: var(--bubble-user); border: 1px solid var(--bubble-user-border); color: var(--bubble-user-foreground); border-radius: 22px 22px 6px 22px; }
 .userPrompt > div { min-width: 0; }
 .userPrompt > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.lessonArticle { width: fit-content; max-width: 94%; min-width: 0; box-sizing: border-box; background: #f1f2ef; color: var(--foreground); border-radius: 22px 22px 22px 6px; padding: 14px 18px; }
+.lessonArticle { width: fit-content; max-width: 94%; min-width: 0; box-sizing: border-box; background: var(--bubble-assistant); border: 1px solid var(--bubble-assistant-border); color: var(--foreground); border-radius: 22px 22px 22px 6px; padding: 14px 18px; }
 .lessonArticle pre, .lessonArticle table { max-width: 100%; }
 .lessonArticle pre { overflow-x: auto; }
 .lessonArticle :global(.katex-display) { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
 .lessonArticle section:first-child { margin-top: 8px; }
 .lessonArticle section:last-child { margin-bottom: 0; }
-:global(.dark) .userPrompt { background: #354332; color: #f1f5ee; }
-:global(.dark) .lessonArticle { background: #252825; color: var(--foreground); }
 .lessonReceipt { display: grid; gap: 8px; padding: 8px 0; }
 .lessonReceipt > span { font-size: 12px; color: var(--muted-foreground); }
 .lessonReceipt > strong { font-size: 16px; line-height: 1.45; }
@@ -360,10 +357,8 @@ does not read as a solid white empty slab. */
 .turn.groupedWithPrevious{margin-top:-14px}
 .turn.groupedWithPrevious .lessonArticle{border-top-left-radius:6px}
 .turn.groupedWithNext .lessonArticle{border-bottom-left-radius:6px}
-.lessonArticle{width:fit-content;max-width:min(80%,620px);padding:9px 13px;border-radius:18px;background:var(--muted);font-size:15px;line-height:1.5}
-:global(.dark) .lessonArticle{background:#262626}
-.userPrompt{width:fit-content;max-width:80%;padding:8px 13px;border-radius:18px;background:var(--secondary);color:var(--foreground);font-size:15px;line-height:1.5}
-:global(.dark) .userPrompt{background:#424242;color:var(--foreground)}
+.lessonArticle{width:fit-content;max-width:min(80%,620px);padding:9px 13px;border-radius:18px;background:var(--bubble-assistant);font-size:15px;line-height:1.5}
+.userPrompt{width:fit-content;max-width:80%;padding:8px 13px;border-radius:18px;background:var(--bubble-user);color:var(--bubble-user-foreground);font-size:15px;line-height:1.5}
 .lessonArticle section[data-reading-block]{margin:0 0 14px!important}
 .lessonArticle section[data-reading-block]:last-child{margin-bottom:0!important}
 .lessonArticle section[data-reading-block] h2{font-size:1em;margin-bottom:6px}

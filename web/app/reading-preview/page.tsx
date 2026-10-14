@@ -20,6 +20,10 @@ $$
 Here, $w$ is a weight, $\eta$ is the **learning rate**, and $L$ is the loss. The derivative measures how the loss changes as the weight changes.
 
 If the gradient is positive, subtracting it reduces the weight. A negative gradient leads to an increase.` },
+  { id: 'currency', heading: 'Prices and formulas together', body: String.raw`**Example 1: An importer.** A UK company agrees to buy $100,000 of goods from a US supplier, payable in 3 months. The current rate is £1 = $1.25, so the cost is about £80,000. It enters a 3-month forward contract to buy $100,000 at a rate of £1 = $1.24.
+
+- If the pound falls to $1.20, the company still pays only about £80,645.
+- The cost in pounds is $C = rac{100{,}000}{F}$, where $F$ is the forward rate.` },
   { id: 'example', heading: 'Show it with numbers', body: String.raw`Suppose $w_{\mathrm{old}}=2$, $\eta=0.1$, and $\frac{\partial L}{\partial w}=3$.
 
 $$
